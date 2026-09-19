@@ -1,0 +1,48 @@
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+import { VitePWA } from 'vite-plugin-pwa'
+
+export default defineConfig({
+  plugins: [
+    react(),
+    VitePWA({
+      registerType: 'autoUpdate',
+      // Prevents Service Worker from caching API requests and causing 405/Network errors
+      workbox: {
+        runtimeCaching: [
+          {
+            urlPattern: /\/api\/.*/i,
+            handler: 'NetworkOnly',
+          }
+        ]
+      },
+      manifest: {
+        name: 'MedStat',
+        short_name: 'MedStat',
+        description: 'MedStat Healthcare Training App',
+        theme_color: '#007AFF',
+        background_color: '#F2F2F7',
+        display: 'standalone',
+        orientation: 'portrait',
+        start_url: '/',
+        scope: '/',
+        icons: [] // Empty array prevents build errors from missing image files
+      }
+    })
+  ],
+  server: {
+    port: 1420,      
+    strictPort: true,  
+    watch: {
+      ignored: ['**/src-tauri/**']
+    },
+    // Bypasses ISP blocking by routing /api calls through Vite locally
+    proxy: {
+      '/api': {
+        target: 'https://medstat-3rxl.onrender.com',
+        changeOrigin: true,
+        secure: true,
+      }
+    }
+  }
+})

@@ -1,0 +1,36 @@
+name: Publish Tauri App
+
+on:
+  push:
+    tags:
+      - 'v*' # Triggers when you push a tag like "v1.0.0"
+
+jobs:
+  publish:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+      - name: Install frontend dependencies
+        run: npm install
+      - name: Build and publish Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          # TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }} # Uncomment if you used a password
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Medstat ${{ github.ref_name }}'
+          releaseBody: 'App updates automatically. Download below if needed.'
+          releaseDraft: false
+          prerelease: false

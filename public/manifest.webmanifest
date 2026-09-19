@@ -1,0 +1,9 @@
+{
+  "short_name": "MedStat",
+  "name": "MedStat App",
+  "description": "Medical Training Management",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#007AFF"
+}

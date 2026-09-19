@@ -1,0 +1,50 @@
+{
+    "productName":  "smartpages",
+    "version": "1.0.3",
+    "identifier":  "com.medstat.app",
+    "build":  {
+                  "frontendDist":  "../dist",
+                  "devUrl":  "http://localhost:1420",
+                  "beforeDevCommand":  "npm run dev",
+                  "beforeBuildCommand":  "npm run build"
+              },
+    "app":  {
+                "windows":  [
+                                {
+                                    "title":  "medstat",
+                                    "width":  800,
+                                    "height":  600
+                                }
+                            ],
+                "security":  {
+                                 "csp":  null
+                             }
+            },
+    "bundle":  {
+                   "active":  true,
+                   "targets":  "all",
+                   "createUpdaterArtifacts":  true,
+                   "icon":  [
+                                "icons/32x32.png",
+                                "icons/128x128.png",
+                                "icons/128x128@2x.png",
+                                "icons/icon.icns",
+                                "icons/icon.ico"
+                            ]
+               },
+    "plugins":  {
+                    "updater":  {
+                                    "pubkey":  "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU5OTRCMDgxM0QwRjhFQjIKUldTeWpnODlnYkNVNmJqbGw3VGVXWDhXYmErRVJNb2puaXJ1dTc1NnRzZC9uTTY2azJ0cmV0K2EK",
+                                    "endpoints":  [
+                                                      "https://github.com/Abdalkam/medstat/releases/latest/download/latest.json"
+                                                  ]
+                                }
+                }
+}
+
+
+
+
+
+
+

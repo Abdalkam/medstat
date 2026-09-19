@@ -1,0 +1,135 @@
+/* Main App */
+.app {
+  min-height: 100vh;
+  background: #f5f8fc;
+  font-family: "Segoe UI", Arial, sans-serif;
+}
+
+
+/* Header */
+.header {
+  background: #007AFF;
+  color: white;
+  padding: 20px 35px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  box-shadow: 0 3px 10px rgba(0,0,0,0.15);
+}
+
+
+.header h1 {
+  margin: 0;
+  font-size: 28px;
+}
+
+
+.header button {
+  background: white;
+  color: #007AFF;
+  border: none;
+  padding: 10px 20px;
+  border-radius: 20px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+
+.header button:hover {
+  opacity: 0.85;
+}
+
+
+/* Dashboard */
+.dashboard {
+
+  padding: 35px;
+
+  display: grid;
+
+  grid-template-columns:
+  repeat(auto-fit, minmax(220px, 1fr));
+
+  gap: 25px;
+
+}
+
+
+/* Cards */
+.card {
+
+  background: white;
+
+  padding: 30px;
+
+  border-radius: 18px;
+
+  text-align: center;
+
+  box-shadow:
+  0 5px 18px rgba(0,0,0,0.08);
+
+  transition: 0.3s;
+
+  cursor: pointer;
+
+}
+
+
+.card:hover {
+
+  transform: translateY(-5px);
+
+  box-shadow:
+  0 10px 25px rgba(0,0,0,0.12);
+
+}
+
+
+.card h2 {
+
+  margin: 15px 0 10px;
+
+  color: #007AFF;
+
+}
+
+
+.card p {
+
+  color: #666;
+
+}
+
+
+/* Admin Card */
+
+.admin {
+
+  border-top: 5px solid #007AFF;
+
+}
+
+
+/* Mobile */
+
+@media(max-width:700px){
+
+  .header {
+
+    flex-direction: column;
+
+    gap:15px;
+
+    text-align:center;
+
+  }
+
+
+  .dashboard {
+
+    padding:20px;
+
+  }
+
+}
