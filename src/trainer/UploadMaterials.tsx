@@ -5,17 +5,29 @@ import { getCourseById } from "../database/courseDB";
 import { getCourseMaterials, addMaterial, deleteMaterial, updateMaterial } from "../database/materialDB";
 import { startLiveSession } from "../database/liveSessionDB";
 import { startPresentation } from "../database/livePresentationDB";
-import type { Course, CourseMaterial, User, BusinessSettings } from "../types";
+import type { Course, CourseMaterial, User } from "../types";
 import { db } from "../database/db";
 import { supabase } from "../auth/supabase";
 
 const C = {
   textPrimary: "#1C1C1E", textTertiary: "#8E8E93", bg: "#F2F2F7", card: "#FFFFFF",
-  medBlue: "#0A84FF", medBlueBg: "#E8F2FF", separator: "#E5E5EA",
+  medBlue: "#007AFF", medBlueBg: "#E8F2FF", separator: "#E5E5EA",
   red: "#FF3B30", redBg: "#FFEFEE", green: "#34C759", greenBg: "#EAF9EE",
   orange: "#FF9F0A", orangeBg: "#FFF6EB", purple: "#AF52DE", purpleBg: "#F5F0FF",
-  shadow: "0 4px 24px rgba(0,0,0,0.06)", shadowHover: "0 8px 32px rgba(0,0,0,0.1)",
-  separatorLight: "#F0F0F2" // ✅ FIX: Added missing separatorLight
+  separatorLight: "#F0F0F2",
+};
+
+const FONT = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif";
+
+const TS = {
+  h1: { fontSize: 28, fontWeight: 800, letterSpacing: "-0.03em", lineHeight: 1.15, color: C.textPrimary, fontFamily: FONT },
+  h2: { fontSize: 22, fontWeight: 700, letterSpacing: "-0.02em", lineHeight: 1.25, color: C.textPrimary, fontFamily: FONT },
+  h3: { fontSize: 17, fontWeight: 600, letterSpacing: "-0.015em", lineHeight: 1.3, color: C.textPrimary, fontFamily: FONT },
+  body: { fontSize: 16, fontWeight: 400, letterSpacing: "-0.005em", lineHeight: 1.75, color: C.textPrimary, fontFamily: FONT },
+  bodySm: { fontSize: 14, fontWeight: 400, letterSpacing: "-0.005em", lineHeight: 1.5, color: C.textTertiary, fontFamily: FONT },
+  label: { fontSize: 13, fontWeight: 500, letterSpacing: "-0.005em", lineHeight: 1.4, fontFamily: FONT },
+  caption: { fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", lineHeight: 1.2, textTransform: "uppercase" as const, fontFamily: FONT },
+  input: { fontSize: 16, fontWeight: 400, letterSpacing: "-0.005em", lineHeight: 1.5, fontFamily: FONT, color: C.textPrimary },
 };
 
 const MAX_FILE_SIZE = 100 * 1024 * 1024;
@@ -91,29 +103,38 @@ export default function UploadMaterials() {
   const [error, setError] = useState("");
   const [dragOver, setDragOver] = useState(false);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
-  const [settings, setSettings] = useState<BusinessSettings | null>(null);
   const [trainer, setTrainer] = useState<User | null>(null);
   const [startingLive, setStartingLive] = useState(false);
-
   const [draggedItemId, setDraggedItemId] = useState<string | null>(null);
   const [dragOverItemId, setDragOverItemId] = useState<string | null>(null);
+  const [business, setBusiness] = useState<{ business_name: string | null; phone: string | null; logo: string | null } | null>(null);
+
+  function handleLogout() {
+    localStorage.removeItem("currentUser");
+    localStorage.removeItem("authToken");
+    localStorage.removeItem("adminDeviceId");
+    localStorage.removeItem("activeAttendanceCourseId");
+    window.dispatchEvent(new Event("authStateChanged"));
+    navigate("/");
+  }
 
   useEffect(() => {
-    const fetchSettings = async () => {
+    if (!currentUser?.tenantId) return;
+    let cancelled = false;
+    const fetchBusiness = async () => {
+      try {
+        const { data } = await supabase.from("business_settings").select("business_name, phone, logo").eq("tenant_id", currentUser.tenantId).maybeSingle();
+        if (!cancelled && data) setBusiness(data as any);
+      } catch (err: unknown) { console.error("Business fetch failed:", err); }
+    };
+    fetchBusiness();
+    return () => { cancelled = true; };
+  }, [currentUser?.tenantId]);
+
+  useEffect(() => {
+    const fetchTrainer = async () => {
       const loggedInUser: any = JSON.parse(localStorage.getItem("currentUser") || "{}");
       const tenantId = loggedInUser?.tenantId;
-      let settingsData: BusinessSettings | null = null;
-      if (tenantId) {
-        try {
-          const { data: s } = await supabase.from("business_settings").select("*").eq("tenant_id", tenantId).maybeSingle();
-          if (s) {
-            settingsData = { id: s.id, businessName: s.business_name || "", address: s.address || "", phone: s.phone || "", email: s.email || "", website: s.website || "", logo: s.logo || "", header: s.header || "", adminProfile: s.admin_profile || "", loginBackground: s.login_background || "", themeColor: s.theme_color || "", appBarItems: s.app_bar_items || [], tenantId: s.tenant_id, createdAt: s.created_at };
-          }
-        } catch (e) { console.warn("Supabase settings fetch failed", e); }
-      }
-      if (!settingsData) { const s = await db.settings.toCollection().first(); settingsData = s as BusinessSettings || null; }
-      setSettings(settingsData);
-
       let trainerData: User | null = null;
       if (tenantId) {
         try {
@@ -124,7 +145,7 @@ export default function UploadMaterials() {
       if (!trainerData) { const u = await db.users.get(loggedInUser.id); if (u) trainerData = u; }
       if (trainerData) setTrainer(trainerData);
     };
-    fetchSettings();
+    fetchTrainer();
   }, [currentUser.id]);
 
   useEffect(() => { loadData(); }, [courseId]);
@@ -204,7 +225,7 @@ export default function UploadMaterials() {
     setUploading(true); setUploadProgress(0); setError("");
     try {
       let fileUrl: string; let storedFileType = file.type || "application/octet-stream";
-      if (file.type.startsWith("image/")) { setUploadProgress(10); fileUrl = await compressImage(file); storedFileType = "image/jpeg"; setUploadProgress(100); } 
+      if (file.type.startsWith("image/")) { setUploadProgress(10); fileUrl = await compressImage(file); storedFileType = "image/jpeg"; setUploadProgress(100); }
       else { fileUrl = await readFileWithProgress(file, (p) => setUploadProgress(p)); }
       const material: CourseMaterial = { id: crypto.randomUUID(), courseId, title: title.trim(), description: "", fileUrl, fileName: file.name, fileType: storedFileType, allowDownload: true, uploadedBy: currentUser.id, uploadedAt: new Date().toISOString(), presentationOrder: materials.length };
       await addMaterial(material);
@@ -260,73 +281,103 @@ export default function UploadMaterials() {
     await deleteMaterial(id); loadData(); deleteMaterialFromSupabase(id);
   }
 
-  function handleLogout() { localStorage.removeItem("currentUser"); localStorage.removeItem("authToken"); window.dispatchEvent(new Event("userChanged")); navigate("/"); }
   useEffect(() => { return () => { if (imagePreview) URL.revokeObjectURL(imagePreview); }; }, [imagePreview]);
 
   const canUpload = !uploading && file !== null && title.trim() !== "";
-  const businessName = settings?.businessName || "";
-  const businessLogo = settings?.logo;
-  const phone = settings?.phone || "";
 
   return (
-    <div style={{ height: "100vh", display: "flex", flexDirection: "column", background: C.bg, fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif", color: C.textPrimary, overflow: "hidden" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 24px", background: "rgba(255,255,255,0.8)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", borderBottom: `1px solid ${C.separator}`, flexShrink: 0, zIndex: 10, width: "100%", boxSizing: "border-box", flexWrap: "wrap", gap: 8 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 12, flex: 1, minWidth: 200 }}>
-          {businessLogo && <img src={businessLogo} alt="Logo" style={{ width: 36, height: 36, borderRadius: 8, objectFit: "cover" }} />}
-          <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
-            {businessName && <h1 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: C.textPrimary, letterSpacing: "-0.2px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{businessName}</h1>}
-            {phone && <a href={`tel:${phone}`} style={{ fontSize: 13, color: C.textTertiary, textDecoration: "none", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg>{phone}</a>}
+    <div style={{ height: "100vh", display: "flex", flexDirection: "column", background: C.card, fontFamily: FONT, WebkitFontSmoothing: "antialiased", MozOsxFontSmoothing: "grayscale", color: C.textPrimary, overflow: "hidden" }}>
+      <div style={{ borderBottom: `1px solid ${C.separator}`, padding: "12px 24px", flexShrink: 0, zIndex: 10, width: "100%", boxSizing: "border-box", background: C.card }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, width: "100%" }}>
+          <button onClick={() => navigate("/trainer")} style={{ background: C.bg, border: `1px solid ${C.separator}`, borderRadius: 10, color: C.medBlue, cursor: "pointer", width: 36, height: 36, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="15 18 9 12 15 6" /></svg>
+          </button>
+
+          <div style={{ display: "flex", alignItems: "center", gap: 12, flex: 1, minWidth: 0 }}>
+            {business?.logo ? (
+              <img src={business.logo} alt={business.business_name || "Business"} style={{ width: 36, height: 36, borderRadius: 8, objectFit: "cover", flexShrink: 0 }} />
+            ) : (
+              <div style={{ ...TS.h3, width: 36, height: 36, borderRadius: 8, background: C.medBlueBg, color: C.medBlue, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, flexShrink: 0 }}>
+                {(business?.business_name || "B").charAt(0).toUpperCase()}
+              </div>
+            )}
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ ...TS.h3, fontSize: 15, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{business?.business_name || "Business"}</div>
+              {business?.phone && (
+                <a href={`tel:${business.phone}`} style={{ ...TS.label, color: C.medBlue, textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4, marginTop: 2 }}>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z" /></svg>
+                  {business.phone}
+                </a>
+              )}
+            </div>
           </div>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, background: C.purpleBg, padding: "4px 14px 4px 4px", borderRadius: 20 }}>
-            {trainer?.profilePic ? <img src={trainer.profilePic} alt="Trainer" style={{ width: 28, height: 28, borderRadius: "50%", objectFit: "cover" }} /> : <div style={{ width: 28, height: 28, borderRadius: "50%", background: C.card, color: C.purple, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700 }}>{trainer?.username?.charAt(0).toUpperCase()}</div>}
-            <span style={{ fontSize: 13, fontWeight: 600, color: C.purple }}>{trainer?.username}</span>
+
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, background: C.purpleBg, padding: "4px 14px 4px 4px", borderRadius: 20 }}>
+              {trainer?.profilePic ? (
+                <img src={trainer.profilePic} alt="Trainer" style={{ width: 28, height: 28, borderRadius: "50%", objectFit: "cover" }} />
+              ) : (
+                <div style={{ ...TS.h3, width: 28, height: 28, borderRadius: "50%", background: C.card, color: C.purple, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12 }}>{trainer?.username?.charAt(0).toUpperCase()}</div>
+              )}
+              <span style={{ ...TS.label, fontSize: 13, fontWeight: 600, color: C.purple }}>{trainer?.username}</span>
+            </div>
+            <button onClick={() => navigate("/trainer/settings")} style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 36, height: 36, borderRadius: 9, background: C.bg, border: `1px solid ${C.separator}`, cursor: "pointer", color: C.textPrimary }} title="Settings">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            </button>
+            <button onClick={handleLogout} style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 36, height: 36, borderRadius: 9, background: C.redBg, border: "none", cursor: "pointer", color: C.red }} title="Logout">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+            </button>
           </div>
-          <button onClick={() => navigate("/trainer/settings")} style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 36, height: 36, borderRadius: 9, background: "rgba(118, 118, 128, 0.12)", border: "none", cursor: "pointer", color: C.textPrimary }} title="Settings"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
-          <button onClick={handleLogout} style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 36, height: 36, borderRadius: 9, background: C.redBg, border: "none", cursor: "pointer", color: C.red }} title="Logout"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg></button>
         </div>
       </div>
 
       <main style={{ flex: 1, overflowY: "auto", WebkitOverflowScrolling: "touch", width: "100%" }}>
-        <div style={{ width: "100%", maxWidth: 800, margin: "0 auto", padding: "32px 24px 120px 24px", boxSizing: "border-box" }}>
+        <div style={{ width: "100%", padding: "32px 24px 120px 24px", boxSizing: "border-box" }}>
           <div style={{ marginBottom: 24, display: "flex", alignItems: "center", gap: 12 }}>
-            <button onClick={() => navigate("/trainer")} style={{ background: C.card, border: `1px solid ${C.separator}`, borderRadius: 12, color: C.medBlue, cursor: "pointer", width: 40, height: 40, display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.15s", flexShrink: 0 }}>
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+            <button onClick={() => navigate("/trainer")} style={{ background: C.bg, border: `1px solid ${C.separator}`, borderRadius: 10, color: C.medBlue, cursor: "pointer", width: 36, height: 36, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="15 18 9 12 15 6"/></svg>
             </button>
-            <h1 style={{ margin: 0, fontSize: 24, fontWeight: 700, color: C.textPrimary }}>{course?.name || "Lesson Builder"}</h1>
+            <h1 style={{ ...TS.h1, fontSize: 24, margin: 0 }}>{course?.name || "Lesson Builder"}</h1>
           </div>
 
-          <div style={{ fontSize: 13, color: C.textTertiary, textTransform: "uppercase", fontWeight: 600, letterSpacing: 0.5, margin: "0 0 8px 0" }}>ADD NEW PAGE</div>
+          <div style={{ ...TS.caption, margin: "0 0 8px 0" }}>ADD NEW PAGE</div>
 
-          <div style={{ background: C.card, borderRadius: 16, overflow: "hidden", boxShadow: C.shadow, border: `1px solid ${C.separatorLight}`, width: "100%", boxSizing: "border-box", marginBottom: 24 }}>
+          <div style={{ background: C.card, borderRadius: 12, overflow: "hidden", border: `1px solid ${C.separator}`, width: "100%", boxSizing: "border-box", marginBottom: 24 }}>
             <div style={{ display: "flex", alignItems: "center", padding: "14px 16px", borderBottom: `1px solid ${C.separatorLight}`, gap: 14 }}>
-              <input style={{ flex: 1, border: "none", outline: "none", fontSize: 16, background: "transparent", fontFamily: "inherit", color: C.textPrimary }} placeholder="Page Title (e.g. Introduction Video)" value={title} onChange={e => setTitle(e.target.value)} disabled={uploading} />
+              <input style={{ ...TS.input, flex: 1, border: "none", outline: "none", background: "transparent" }} placeholder="Page Title (e.g. Introduction Video)" value={title} onChange={e => setTitle(e.target.value)} disabled={uploading} />
             </div>
             <div onDrop={handleDrop} onDragOver={handleDragOver} onDragLeave={handleDragLeave} onClick={() => !uploading && fileInputRef.current?.click()} style={{ display: "flex", padding: 24, gap: 14, cursor: uploading ? "not-allowed" : "pointer", background: dragOver ? C.medBlueBg : "transparent", transition: "background 0.2s", flexDirection: "column", alignItems: "stretch" }}>
               <input ref={fileInputRef} type="file" style={{ display: "none" }} onChange={handleFileInputChange} accept=".pdf,.mp4,.mov,.webm,.mp3,.wav,.png,.jpg,.jpeg,.gif,.webp" disabled={uploading} />
               {file ? (
                 <div style={{ display: "flex", alignItems: "center", gap: 14, width: "100%" }}>
-                  {imagePreview ? <img src={imagePreview} alt="Preview" style={{ width: 48, height: 48, borderRadius: 10, objectFit: "cover" }} /> : <div style={{ width: 48, height: 48, borderRadius: 10, background: getFileMeta(file.type).bg, color: getFileMeta(file.type).color, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24 }}>{getFileMeta(file.type).icon}</div>}
+                  {imagePreview ? (
+                    <img src={imagePreview} alt="Preview" style={{ width: 48, height: 48, borderRadius: 10, objectFit: "cover" }} />
+                  ) : (
+                    <div style={{ width: 48, height: 48, borderRadius: 10, background: getFileMeta(file.type).bg, color: getFileMeta(file.type).color, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24 }}>{getFileMeta(file.type).icon}</div>
+                  )}
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 16, color: C.textPrimary, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{file.name}</div>
-                    <div style={{ fontSize: 12, color: C.textTertiary, marginTop: 2 }}>{formatBytes(file.size)} • {getFileMeta(file.type).label}</div>
+                    <div style={{ ...TS.input, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{file.name}</div>
+                    <div style={{ ...TS.label, fontSize: 12, marginTop: 2 }}>{formatBytes(file.size)} • {getFileMeta(file.type).label}</div>
                   </div>
-                  {!uploading && <button onClick={(e) => { e.stopPropagation(); setFile(null); setImagePreview(null); }} style={{ width: 32, height: 32, background: "transparent", border: "none", color: C.red, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>}
+                  {!uploading && (
+                    <button onClick={(e) => { e.stopPropagation(); setFile(null); setImagePreview(null); }} style={{ width: 32, height: 32, background: "transparent", border: "none", color: C.red, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    </button>
+                  )}
                 </div>
               ) : (
                 <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 16, textAlign: "center" }}>
                   <div style={{ width: 48, height: 48, borderRadius: 12, background: dragOver ? C.medBlue : C.medBlueBg, color: dragOver ? "#fff" : C.medBlue, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 12, transition: "background 0.2s" }}>
                     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
                   </div>
-                  <div style={{ fontSize: 16, fontWeight: 600, color: dragOver ? C.medBlue : C.textPrimary }}>{dragOver ? "Drop file here" : "Tap to browse or drag a file"}</div>
-                  <div style={{ fontSize: 12, color: C.textTertiary, marginTop: 4 }}>PDF, Video, Audio, or Image • Max {formatBytes(MAX_FILE_SIZE)}</div>
+                  <div style={{ ...TS.body, fontWeight: 600, color: dragOver ? C.medBlue : C.textPrimary }}>{dragOver ? "Drop file here" : "Tap to browse or drag a file"}</div>
+                  <div style={{ ...TS.label, fontSize: 12, marginTop: 4 }}>PDF, Video, Audio, or Image • Max {formatBytes(MAX_FILE_SIZE)}</div>
                 </div>
               )}
             </div>
             {uploading && (
               <div style={{ padding: "0 16px 14px 16px" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6, fontSize: 12, color: C.textTertiary }}>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6, ...TS.label, fontSize: 12 }}>
                   <span>{file?.type.startsWith("image/") ? "Compressing image..." : "Uploading..."}</span>
                   <span>{uploadProgress}%</span>
                 </div>
@@ -337,35 +388,40 @@ export default function UploadMaterials() {
             )}
           </div>
 
-          {error && <div style={{ margin: "0 0 16px 0", padding: "12px 16px", background: C.redBg, borderRadius: 10, fontSize: 14, color: C.red, display: "flex", alignItems: "center", gap: 8 }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>{error}</div>}
+          {error && (
+            <div style={{ margin: "0 0 16px 0", padding: "12px 16px", background: C.redBg, borderRadius: 10, ...TS.body, fontSize: 14, color: C.red, display: "flex", alignItems: "center", gap: 8 }}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+              {error}
+            </div>
+          )}
 
           <div style={{ padding: "0 0 32px 0" }}>
-            <button onClick={handleUpload} disabled={!canUpload} style={{ width: "100%", padding: 16, background: canUpload ? C.medBlue : "#D1D1D6", color: "#fff", border: "none", borderRadius: 14, fontSize: 16, fontWeight: 600, cursor: canUpload ? "pointer" : "not-allowed", transition: "background 0.2s", boxShadow: canUpload ? "0 4px 16px rgba(0,122,255,0.3)" : "none" }}>
+            <button onClick={handleUpload} disabled={!canUpload} style={{ ...TS.input, width: "100%", padding: 16, background: canUpload ? C.medBlue : "#D1D1D6", color: "#fff", border: "none", borderRadius: 12, fontSize: 16, fontWeight: 600, cursor: canUpload ? "pointer" : "not-allowed", transition: "background 0.2s" }}>
               {uploading ? "Processing..." : "+ Add to Lesson"}
             </button>
           </div>
 
-          <div style={{ fontSize: 13, color: C.textTertiary, textTransform: "uppercase", fontWeight: 600, letterSpacing: 0.5, margin: "0 0 8px 0" }}>LESSON PAGES ({materials.length}) - DRAG TO REORDER</div>
+          <div style={{ ...TS.caption, margin: "0 0 8px 0" }}>LESSON PAGES ({materials.length}) - DRAG TO REORDER</div>
 
           {materials.length === 0 ? (
-            <div style={{ background: C.card, borderRadius: 16, padding: 48, textAlign: "center", color: C.textTertiary, fontSize: 15, boxShadow: C.shadow, border: `1px solid ${C.separatorLight}` }}>No files added yet. Add your first page above.</div>
+            <div style={{ background: C.bg, borderRadius: 12, padding: 48, textAlign: "center", ...TS.bodySm, fontSize: 15, color: C.textTertiary, border: `1px solid ${C.separatorLight}` }}>No files added yet. Add your first page above.</div>
           ) : (
-            <div style={{ background: C.card, borderRadius: 16, overflow: "hidden", boxShadow: C.shadow, border: `1px solid ${C.separatorLight}` }}>
+            <div style={{ background: C.card, borderRadius: 12, overflow: "hidden", border: `1px solid ${C.separator}` }}>
               {materials.map((mat, index) => {
                 const meta = getFileMeta(mat.fileType);
                 const isDragging = draggedItemId === mat.id;
                 const isDragOver = dragOverItemId === mat.id;
                 return (
                   <div key={mat.id} draggable onDragStart={(e) => handleItemDragStart(e, mat.id)} onDragOver={(e) => handleItemDragOver(e, mat.id)} onDrop={(e) => handleItemDrop(e, mat.id)} onDragEnd={resetDragState} style={{ display: "flex", alignItems: "center", padding: "14px 16px", borderBottom: index === materials.length - 1 ? "none" : `1px solid ${C.separatorLight}`, opacity: isDragging ? 0.4 : 1, background: isDragOver ? C.medBlueBg : "transparent", transition: "background 0.15s, opacity 0.15s" }}>
-                    <div style={{ cursor: "grab", color: C.textTertiary, display: "flex", alignItems: "center", marginRight: 14 }}>
+                    <div style={{ cursor: "grab", display: "flex", alignItems: "center", marginRight: 14, color: C.textTertiary }}>
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.5"/><circle cx="15" cy="6" r="1.5"/><circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/><circle cx="9" cy="18" r="1.5"/><circle cx="15" cy="18" r="1.5"/></svg>
                     </div>
                     <div style={{ display: "flex", alignItems: "center", gap: 12, flex: 1, minWidth: 0 }}>
-                      <span style={{ fontSize: 12, color: C.textTertiary, fontWeight: 600, width: 20, textAlign: "center" }}>{index + 1}</span>
+                      <span style={{ ...TS.label, fontSize: 12, fontWeight: 600, width: 20, textAlign: "center" }}>{index + 1}</span>
                       <div style={{ width: 40, height: 40, borderRadius: 10, background: meta.bg, color: meta.color, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, flexShrink: 0 }}>{meta.icon}</div>
                       <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 16, color: C.textPrimary, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{mat.title}</div>
-                        <div style={{ fontSize: 12, color: C.textTertiary, marginTop: 2 }}>{meta.label} • {mat.fileName}</div>
+                        <div style={{ ...TS.input, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{mat.title}</div>
+                        <div style={{ ...TS.label, fontSize: 12, marginTop: 2 }}>{meta.label} • {mat.fileName}</div>
                       </div>
                     </div>
                     <button onClick={() => removeMaterial(mat.id)} style={{ width: 32, height: 32, background: "transparent", border: "none", color: C.red, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -379,7 +435,7 @@ export default function UploadMaterials() {
 
           {materials.length > 0 && (
             <div style={{ padding: "32px 0 0 0" }}>
-              <button onClick={startLesson} disabled={startingLive} style={{ width: "100%", padding: 16, background: startingLive ? "#D1D1D6" : C.green, color: "#fff", border: "none", borderRadius: 14, fontSize: 17, fontWeight: 600, cursor: startingLive ? "wait" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, opacity: startingLive ? 0.7 : 1, boxShadow: startingLive ? "none" : "0 4px 16px rgba(52,199,89,0.3)", transition: "all 0.2s" }}>
+              <button onClick={startLesson} disabled={startingLive} style={{ ...TS.input, width: "100%", padding: 16, background: startingLive ? "#D1D1D6" : C.green, color: "#fff", border: "none", borderRadius: 12, fontSize: 17, fontWeight: 600, cursor: startingLive ? "wait" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, opacity: startingLive ? 0.7 : 1, transition: "all 0.2s" }}>
                 {startingLive ? (
                   <><span style={{ display: "inline-block", width: 20, height: 20, border: "2px solid rgba(255,255,255,0.3)", borderTopColor: "#fff", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />Starting Live Session...</>
                 ) : (
