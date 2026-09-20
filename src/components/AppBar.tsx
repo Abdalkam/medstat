@@ -132,18 +132,17 @@ export default function AppBar() {
         return () => document.removeEventListener("mousedown", handleClickOutside);
     }, []);
 
-    // ✅ FIX: Borrowed EXACTLY from UserDashboard.tsx / TrainerDashboard.tsx
+    // ✅ BULLETPROOF LOGOUT: Hard refresh destroys the heavy React tree instantly
     const handleLogout = () => {
-        // Clear absolutely ALL local storage and session data to prevent infinite loops
+        // 1. Clear all local storage instantly
         localStorage.removeItem("currentUser");
         localStorage.removeItem("authToken");
+        localStorage.removeItem("activeTenantId");
         localStorage.removeItem("adminDeviceId");
 
-        // Notify the rest of the app
-        window.dispatchEvent(new Event("authStateChanged"));
-        
-        // Send them to the root "/" (Startup) on logout
-        navigate("/");
+        // 2. Hard refresh the app to the login screen.
+        // This bypasses React's unmount phase completely, preventing the crash/blank screen.
+        window.location.replace("/login");
     };
 
     const handleSettingsClick = () => {
