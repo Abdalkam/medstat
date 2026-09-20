@@ -42,15 +42,6 @@ export default function AssignmentBuilder() {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [uploadingFieldId, setUploadingFieldId] = useState<string | null>(null);
 
-  // ✅ Borrowed EXACTLY from TrainerDashboard.tsx
-  const handleLogout = () => {
-    localStorage.removeItem("currentUser");
-    localStorage.removeItem("authToken");
-    localStorage.removeItem("adminDeviceId");
-    window.dispatchEvent(new Event("authStateChanged"));
-    navigate("/");
-  };
-
   useEffect(() => {
     if (!assignmentId) { setLoadingData(false); return; }
     setIsEditing(true);
@@ -247,10 +238,6 @@ export default function AssignmentBuilder() {
             <button onClick={() => setShowDeleteConfirm(true)} style={{ padding: "8px 14px", background: C.redBg, color: C.red, border: `1px solid ${C.red}22`, borderRadius: 8, fontWeight: 600, cursor: "pointer", fontSize: 13 }}>Delete</button>
             <button onClick={handleSave} disabled={saving || !title.trim()} style={{ padding: "10px 24px", background: saving || !title.trim() ? C.textTertiary : `linear-gradient(135deg, ${C.medBlue}, #0055D4)`, color: "#fff", border: "none", borderRadius: 10, fontWeight: 700, cursor: saving || !title.trim() ? "default" : "pointer", fontSize: 13, boxShadow: saving || !title.trim() ? "none" : "0 2px 12px rgba(0,122,255,0.35)" }}>
               {saving ? "Saving..." : "Save Module"}
-            </button>
-            {/* SINGLE LOGOUT ICON (Matches TrainerDashboard style) */}
-            <button onClick={handleLogout} title="Logout" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 36, height: 36, borderRadius: 9, background: C.redBg, border: "none", cursor: "pointer", color: C.red, transition: "background 0.2s" }}>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></svg>
             </button>
           </div>
         </div>
