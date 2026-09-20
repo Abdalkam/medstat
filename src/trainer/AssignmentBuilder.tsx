@@ -181,7 +181,6 @@ export default function AssignmentBuilder() {
   const questionFields = activeFields.filter((f) => f.type !== "note" && f.type !== "header" && f.type !== "file");
 
   return (
-    // ✅ FIX: Changed height to 100% so it doesn't cover the global AppBar
     <div style={{ display: "flex", height: "100%", background: C.bg, overflow: "hidden" }}>
       <style>{`
         @keyframes fadeSlideIn { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
@@ -192,7 +191,8 @@ export default function AssignmentBuilder() {
       {/* SIDEBAR */}
       <div style={{ width: 240, background: C.sidebarBg, borderRight: `1px solid ${C.separator}`, display: "flex", flexDirection: "column", flexShrink: 0 }}>
         <div style={{ padding: "20px 16px", borderBottom: `1px solid ${C.separator}`, display: "flex", alignItems: "center", gap: 10 }}>
-          <button onClick={() => navigate(-1)} style={{ background: C.card, border: `1px solid ${C.separator}`, borderRadius: 8, color: C.medBlue, cursor: "pointer", width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          {/* ✅ FIX: Route back to Trainer Dashboard explicitly */}
+          <button onClick={() => navigate("/trainer")} style={{ background: C.card, border: `1px solid ${C.separator}`, borderRadius: 8, color: C.medBlue, cursor: "pointer", width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center" }}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="15 18 9 12 15 6" /></svg>
           </button>
           <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>Slides</h2>

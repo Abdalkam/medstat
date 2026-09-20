@@ -52,7 +52,7 @@ export default function UserAssignments() {
   return (
     <div style={{ padding: "24px 16px", maxWidth: "800px", margin: "0 auto" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 32 }}>
-        <button onClick={() => navigate(-1)} style={{ background: "none", border: "none", color: C.medBlue, cursor: "pointer", padding: 0 }}>
+        <button onClick={() => navigate("/user")} style={{ background: "none", border: "none", color: C.medBlue, cursor: "pointer", padding: 0 }}>
           <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="15 18 9 12 15 6" /></svg>
         </button>
         <div>
