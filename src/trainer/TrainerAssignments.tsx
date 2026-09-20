@@ -13,7 +13,7 @@ const C = {
 };
 
 interface AssignmentSummary { id: string; title: string; description: string; created_at: string; submission_count: number; graded_count: number; }
-interface ProfileData { username: string; phone: string | null; avatar_url: string | null; }
+interface BusinessData { business_name: string | null; phone: string | null; logo: string | null; }
 
 export default function TrainerAssignments() {
   const { courseId } = useParams<{ courseId: string }>();
@@ -21,7 +21,7 @@ export default function TrainerAssignments() {
   const currentUser = JSON.parse(localStorage.getItem("currentUser") || "{}");
   const [assignments, setAssignments] = useState<AssignmentSummary[]>([]);
   const [loading, setLoading] = useState(true);
-  const [profile, setProfile] = useState<ProfileData | null>(null);
+  const [business, setBusiness] = useState<BusinessData | null>(null);
 
   function handleLogout() {
     localStorage.removeItem("currentUser");
@@ -33,17 +33,17 @@ export default function TrainerAssignments() {
   }
 
   useEffect(() => {
-    if (!currentUser?.id) return;
+    if (!currentUser?.tenantId) return;
     let cancelled = false;
-    const fetchProfile = async () => {
+    const fetchBusiness = async () => {
       try {
-        const { data } = await supabase.from("profile_settings").select("username, phone, avatar_url").eq("user_id", currentUser.id).maybeSingle();
-        if (!cancelled && data) setProfile(data as ProfileData);
-      } catch (err: unknown) { console.error("Profile fetch failed:", err); }
+        const { data } = await supabase.from("business_settings").select("business_name, phone, logo").eq("tenant_id", currentUser.tenantId).maybeSingle();
+        if (!cancelled && data) setBusiness(data as BusinessData);
+      } catch (err: unknown) { console.error("Business fetch failed:", err); }
     };
-    fetchProfile();
+    fetchBusiness();
     return () => { cancelled = true; };
-  }, [currentUser?.id]);
+  }, [currentUser?.tenantId]);
 
   useEffect(() => {
     if (!courseId) { setLoading(false); return; }
@@ -81,45 +81,50 @@ export default function TrainerAssignments() {
 
   return (
     <div style={{ minHeight: "100vh", background: C.bg, display: "flex", flexDirection: "column" }}>
-      <div style={{ background: "linear-gradient(180deg, #FFFFFF 0%, #F9FAFE 100%)", borderBottom: `1px solid ${C.separator}`, padding: "16px 24px 20px", boxShadow: "0 1px 6px rgba(0,0,0,0.04)", position: "sticky", top: 0, zIndex: 10 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 16, maxWidth: "800px", margin: "0 auto" }}>
+      {/* UNIFIED APP BAR */}
+      <div style={{ 
+        background: "linear-gradient(180deg, #FFFFFF 0%, #F9FAFE 100%)", 
+        borderBottom: `1px solid ${C.separator}`, 
+        padding: "12px 16px", 
+        boxShadow: "0 1px 6px rgba(0,0,0,0.04)", 
+        position: "sticky", top: 0, zIndex: 10 
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, maxWidth: "800px", margin: "0 auto" }}>
           <button onClick={() => navigate(-1)} style={{ background: C.card, border: `1px solid ${C.separator}`, borderRadius: 10, color: C.medBlue, cursor: "pointer", width: 36, height: 36, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
           </button>
-          <h1 style={{ margin: 0, fontSize: 24, fontWeight: 700, flex: 1, letterSpacing: "-0.5px" }}>Modules</h1>
-          
-          <button onClick={() => navigate(`/trainer/assignment-builder/${courseId}`)} style={{ padding: "10px 18px", background: `linear-gradient(135deg, ${C.medBlue}, #0055D4)`, color: "#fff", border: "none", borderRadius: 10, fontWeight: 600, cursor: "pointer", fontSize: 14, display: "flex", alignItems: "center", gap: 7, boxShadow: "0 4px 16px rgba(0,122,255,0.3)", flexShrink: 0 }}>
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
-            New Module
+
+          <div style={{ display: "flex", alignItems: "center", gap: 12, flex: 1, minWidth: 0 }}>
+            {business?.logo ? (
+              <img src={business.logo} alt={business.business_name || "Business"} style={{ width: 36, height: 36, borderRadius: 8, objectFit: "cover", flexShrink: 0 }} />
+            ) : (
+              <div style={{ width: 36, height: 36, borderRadius: 8, background: C.medBlueBg, color: C.medBlue, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 16, flexShrink: 0 }}>
+                {(business?.business_name || "B").charAt(0).toUpperCase()}
+              </div>
+            )}
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 15, fontWeight: 700, color: C.textPrimary, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{business?.business_name || "Business"}</div>
+              {business?.phone && (
+                <a href={`tel:${business.phone}`} style={{ fontSize: 13, color: C.medBlue, textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4, marginTop: 2 }}>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z" /></svg>
+                  {business.phone}
+                </a>
+              )}
+            </div>
+          </div>
+
+          <button onClick={() => navigate(`/trainer/assignment-builder/${courseId}`)} style={{ padding: "8px 16px", background: `linear-gradient(135deg, ${C.medBlue}, #0055D4)`, color: "#fff", border: "none", borderRadius: 10, fontWeight: 600, cursor: "pointer", fontSize: 13, display: "flex", alignItems: "center", gap: 7, boxShadow: "0 4px 16px rgba(0,122,255,0.3)", flexShrink: 0 }}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
+            New
           </button>
 
           <button onClick={handleLogout} title="Logout" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 36, height: 36, borderRadius: 9, background: C.redBg, border: "none", cursor: "pointer", color: C.red, flexShrink: 0 }}>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></svg>
           </button>
         </div>
-
-        {profile && (
-          <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 12px", background: "rgba(255,255,255,0.7)", borderRadius: 12, border: `1px solid ${C.separator}`, maxWidth: "800px", margin: "0 auto" }}>
-            {profile.avatar_url ? (
-              <img src={profile.avatar_url} alt={profile.username || "Profile"} style={{ width: 40, height: 40, borderRadius: 8, objectFit: "cover", flexShrink: 0 }} />
-            ) : (
-              <div style={{ width: 40, height: 40, borderRadius: 8, background: C.medBlueBg, color: C.medBlue, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 18, flexShrink: 0 }}>
-                {(profile.username || "B").charAt(0).toUpperCase()}
-              </div>
-            )}
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 15, fontWeight: 700, color: C.textPrimary, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{profile.username || "Business"}</div>
-              {profile.phone && (
-                <a href={`tel:${profile.phone}`} style={{ fontSize: 13, color: C.medBlue, textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4, marginTop: 2 }}>
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z" /></svg>
-                  {profile.phone}
-                </a>
-              )}
-            </div>
-          </div>
-        )}
       </div>
 
+      {/* BODY */}
       <div style={{ flex: 1, padding: "24px 16px", maxWidth: "800px", margin: "0 auto", width: "100%", boxSizing: "border-box", display: "flex", flexDirection: "column" }}>
         <style>{`@keyframes fadeSlideIn { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } } .assignment-card { animation: fadeSlideIn 0.3s ease-out; }`}</style>
 

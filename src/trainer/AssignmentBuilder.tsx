@@ -22,7 +22,7 @@ interface FormField {
   correctAnswer?: string; page_id?: string; file_url?: string;
 }
 interface SlidePage { id: string; title: string; }
-interface ProfileData { username: string; phone: string | null; avatar_url: string | null; }
+interface BusinessData { business_name: string | null; phone: string | null; logo: string | null; }
 
 export default function AssignmentBuilder() {
   const { courseId, assignmentId } = useParams<{ courseId: string; assignmentId: string }>();
@@ -40,7 +40,7 @@ export default function AssignmentBuilder() {
   const [status, setStatus] = useState<"draft" | "published" | "closed">("draft");
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [uploadingFieldId, setUploadingFieldId] = useState<string | null>(null);
-  const [profile, setProfile] = useState<ProfileData | null>(null);
+  const [business, setBusiness] = useState<BusinessData | null>(null);
 
   function handleLogout() {
     localStorage.removeItem("currentUser");
@@ -52,17 +52,17 @@ export default function AssignmentBuilder() {
   }
 
   useEffect(() => {
-    if (!currentUser?.id) return;
+    if (!currentUser?.tenantId) return;
     let cancelled = false;
-    const fetchProfile = async () => {
+    const fetchBusiness = async () => {
       try {
-        const { data } = await supabase.from("profile_settings").select("username, phone, avatar_url").eq("user_id", currentUser.id).maybeSingle();
-        if (!cancelled && data) setProfile(data as ProfileData);
-      } catch (err: unknown) { console.error("Profile fetch failed:", err); }
+        const { data } = await supabase.from("business_settings").select("business_name, phone, logo").eq("tenant_id", currentUser.tenantId).maybeSingle();
+        if (!cancelled && data) setBusiness(data as BusinessData);
+      } catch (err: unknown) { console.error("Business fetch failed:", err); }
     };
-    fetchProfile();
+    fetchBusiness();
     return () => { cancelled = true; };
-  }, [currentUser?.id]);
+  }, [currentUser?.tenantId]);
 
   useEffect(() => {
     if (!assignmentId) { setLoadingData(false); return; }
@@ -223,21 +223,21 @@ export default function AssignmentBuilder() {
             </div>
           </div>
 
-          {profile && (
+          {business && (
             <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 12px", background: "rgba(255,255,255,0.7)", borderRadius: 12, border: `1px solid ${C.separator}` }}>
-              {profile.avatar_url ? (
-                <img src={profile.avatar_url} alt={profile.username || "Profile"} style={{ width: 36, height: 36, borderRadius: 8, objectFit: "cover", flexShrink: 0 }} />
+              {business.logo ? (
+                <img src={business.logo} alt={business.business_name || "Business"} style={{ width: 36, height: 36, borderRadius: 8, objectFit: "cover", flexShrink: 0 }} />
               ) : (
                 <div style={{ width: 36, height: 36, borderRadius: 8, background: C.medBlueBg, color: C.medBlue, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 16, flexShrink: 0 }}>
-                  {(profile.username || "B").charAt(0).toUpperCase()}
+                  {(business.business_name || "B").charAt(0).toUpperCase()}
                 </div>
               )}
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 14, fontWeight: 700, color: C.textPrimary, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{profile.username || "Business"}</div>
-                {profile.phone && (
-                  <a href={`tel:${profile.phone}`} style={{ fontSize: 12, color: C.medBlue, textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4, marginTop: 2 }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: C.textPrimary, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{business.business_name || "Business"}</div>
+                {business.phone && (
+                  <a href={`tel:${business.phone}`} style={{ fontSize: 12, color: C.medBlue, textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4, marginTop: 2 }}>
                     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z" /></svg>
-                    {profile.phone}
+                    {business.phone}
                   </a>
                 )}
               </div>
@@ -285,16 +285,32 @@ export default function AssignmentBuilder() {
             }
             if (field.type === "note") {
               return (
-                <div key={field.id} className="field-card" style={{ background: C.card, borderRadius: 16, overflow: "hidden", borderLeft: `6px solid ${C.orange}`, marginBottom: 16, boxShadow: C.shadow }}>
-                  <div style={{ padding: "14px 18px 10px", display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: `1px solid ${C.separatorLight}` }}>
+                <div key={field.id} className="field-card" style={{ 
+                  width: "calc(100% + 96px)",
+                  marginLeft: "-48px",
+                  marginRight: "-48px",
+                  boxSizing: "border-box",
+                  background: C.card, 
+                  overflow: "hidden", 
+                  borderLeft: `6px solid ${C.orange}`, 
+                  marginBottom: 16, 
+                  boxShadow: C.shadow 
+                }}>
+                  <div style={{ 
+                    padding: "14px 48px 10px", 
+                    display: "flex", 
+                    justifyContent: "space-between", 
+                    alignItems: "center", 
+                    borderBottom: `1px solid ${C.separatorLight}` 
+                  }}>
                     <span style={{ fontSize: 11, fontWeight: 700, color: C.orange, textTransform: "uppercase", letterSpacing: "0.8px" }}>Teaching Note / Text</span>
-                    <div style={{ display: "flex", gap: 4 }}>
+                    <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
                       <button onClick={() => moveField(index, "up")} disabled={index === 0} style={{ ...moveBtnStyle, opacity: index === 0 ? 0.3 : 1 }}>↑</button>
                       <button onClick={() => moveField(index, "down")} disabled={index === activeFields.length - 1} style={{ ...moveBtnStyle, opacity: index === activeFields.length - 1 ? 0.3 : 1 }}>↓</button>
                       <button onClick={() => removeField(field.id)} style={{ ...moveBtnStyle, color: C.red, borderColor: C.red + "22", background: C.redBg }}>✕</button>
                     </div>
                   </div>
-                  <div style={{ padding: "0 18px 16px" }}>
+                  <div style={{ padding: "0 48px 16px" }}>
                     <textarea placeholder="Type your notes, paragraphs, or lesson text here..." value={field.label || ""} onChange={(e) => updateField(field.id, "label", e.target.value)} style={{ width: "100%", padding: "12px 14px", border: `1.5px solid ${C.separator}`, borderRadius: 12, outline: "none", fontSize: 14, background: `${C.orange}06`, boxSizing: "border-box", minHeight: 64, resize: "vertical", fontFamily: "inherit", lineHeight: 1.6, color: C.textSecondary }} />
                   </div>
                 </div>

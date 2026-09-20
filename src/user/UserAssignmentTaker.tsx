@@ -11,7 +11,7 @@ const C = {
 };
 
 interface FormField { id: string; type: string; label: string; required: boolean; options: string[]; page_id: string; file_url: string; }
-interface ProfileData { username: string; phone: string | null; avatar_url: string | null; }
+interface BusinessData { business_name: string | null; phone: string | null; logo: string | null; }
 
 export default function UserAssignmentTaker() {
   const { assignmentId } = useParams();
@@ -25,7 +25,7 @@ export default function UserAssignmentTaker() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [activeSlide, setActiveSlide] = useState(0);
-  const [profile, setProfile] = useState<ProfileData | null>(null);
+  const [business, setBusiness] = useState<BusinessData | null>(null);
 
   function handleLogout() {
     localStorage.removeItem("currentUser");
@@ -37,21 +37,17 @@ export default function UserAssignmentTaker() {
   }
 
   useEffect(() => {
-    if (!currentUser?.id) return;
+    if (!currentUser?.tenantId) return;
     let cancelled = false;
-    const fetchProfile = async () => {
+    const fetchBusiness = async () => {
       try {
-        const { data } = await supabase
-          .from("profile_settings")
-          .select("username, phone, avatar_url")
-          .eq("user_id", currentUser.id)
-          .maybeSingle();
-        if (!cancelled && data) setProfile(data as ProfileData);
-      } catch (err: unknown) { console.error("Profile fetch failed:", err); }
+        const { data } = await supabase.from("business_settings").select("business_name, phone, logo").eq("tenant_id", currentUser.tenantId).maybeSingle();
+        if (!cancelled && data) setBusiness(data as BusinessData);
+      } catch (err: unknown) { console.error("Business fetch failed:", err); }
     };
-    fetchProfile();
+    fetchBusiness();
     return () => { cancelled = true; };
-  }, [currentUser?.id]);
+  }, [currentUser?.tenantId]);
 
   useEffect(() => {
     if (!assignmentId) return;
@@ -112,19 +108,19 @@ export default function UserAssignmentTaker() {
           </button>
 
           <div style={{ display: "flex", alignItems: "center", gap: 12, flex: 1, minWidth: 0 }}>
-            {profile?.avatar_url ? (
-              <img src={profile.avatar_url} alt={profile.username || "Profile"} style={{ width: 36, height: 36, borderRadius: 8, objectFit: "cover", flexShrink: 0 }} />
+            {business?.logo ? (
+              <img src={business.logo} alt={business.business_name || "Business"} style={{ width: 36, height: 36, borderRadius: 8, objectFit: "cover", flexShrink: 0 }} />
             ) : (
               <div style={{ width: 36, height: 36, borderRadius: 8, background: C.medBlueBg, color: C.medBlue, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 16, flexShrink: 0 }}>
-                {(profile?.username || "B").charAt(0).toUpperCase()}
+                {(business?.business_name || "B").charAt(0).toUpperCase()}
               </div>
             )}
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 15, fontWeight: 700, color: C.textPrimary, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{profile?.username || "Business"}</div>
-              {profile?.phone && (
-                <a href={`tel:${profile.phone}`} style={{ fontSize: 13, color: C.medBlue, textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4, marginTop: 2 }}>
+              <div style={{ fontSize: 15, fontWeight: 700, color: C.textPrimary, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{business?.business_name || "Business"}</div>
+              {business?.phone && (
+                <a href={`tel:${business.phone}`} style={{ fontSize: 13, color: C.medBlue, textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4, marginTop: 2 }}>
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z" /></svg>
-                  {profile.phone}
+                  {business.phone}
                 </a>
               )}
             </div>
@@ -158,7 +154,23 @@ export default function UserAssignmentTaker() {
             }
             if (field.type === "note") {
               return (
-                <div key={field.id} style={{ width: "calc(100% + 32px)", marginLeft: "-16px", marginRight: "-16px", boxSizing: "border-box", background: C.orangeBg, borderLeft: `6px solid ${C.orange}`, padding: "20px 24px", color: C.textPrimary, fontSize: 15, lineHeight: 1.7, marginBottom: 8, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{field.label}</div>
+                <div key={field.id} style={{ 
+                  width: "100vw",
+                  marginLeft: "calc(50% - 50vw)",
+                  marginRight: "calc(50% - 50vw)",
+                  boxSizing: "border-box",
+                  background: C.orangeBg, 
+                  borderLeft: `6px solid ${C.orange}`, 
+                  padding: "20px max(16px, calc(50vw - 400px + 16px))", 
+                  color: C.textPrimary, 
+                  fontSize: 15, 
+                  lineHeight: 1.7, 
+                  marginBottom: 8,
+                  whiteSpace: "pre-wrap",
+                  wordBreak: "break-word",
+                }}>
+                  {field.label}
+                </div>
               );
             }
             if (field.type === "file" && field.file_url) {
