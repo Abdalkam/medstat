@@ -74,8 +74,11 @@ git push origin :refs/tags/$newVersion 2>$null
 
 git tag -a $newVersion -m "$commitMessage"
 
+Write-Host "Pulling latest changes from remote..." -ForegroundColor DarkGray
+git pull --rebase origin main
+
 Write-Host "Pushing to remote..." -ForegroundColor DarkGray
-git push --follow-tags --quiet
+git push --follow-tags
 
 if (!$?) {
     Write-Host "ERROR: Git push failed! Aborting build." -ForegroundColor Red

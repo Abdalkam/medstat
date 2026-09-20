@@ -25,4 +25,9 @@ dist-ssr
 
 .vercel
 server/node_modules/ 
-".env" 
+".env"
+
+# Tauri build artifacts (CRITICAL: Prevents GitHub push failures)
+src-tauri/target
+src-tauri/gen
+src-tauri/Cargo.lock
