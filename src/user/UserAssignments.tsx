@@ -76,7 +76,7 @@ export default function UserAssignments() {
   }, [courseId, currentUser?.id]);
 
   if (loading) return (
-    <div style={{ minHeight: "100vh", background: C.bg, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: FONT, WebkitFontSmoothing: "antialiased" }}>
+    <div style={{ minHeight: "100vh", background: C.card, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: FONT, WebkitFontSmoothing: "antialiased" }}>
       <span style={{ ...TS.body, fontWeight: 500 }}>Loading...</span>
     </div>
   );
@@ -89,11 +89,11 @@ export default function UserAssignments() {
   };
 
   return (
-    <div style={{ minHeight: "100vh", background: C.bg, display: "flex", flexDirection: "column", fontFamily: FONT, WebkitFontSmoothing: "antialiased", MozOsxFontSmoothing: "grayscale" }}>
+    <div style={{ minHeight: "100vh", background: C.card, fontFamily: FONT, WebkitFontSmoothing: "antialiased", MozOsxFontSmoothing: "grayscale" }}>
       {/* APP BAR */}
-      <div style={{ background: "linear-gradient(180deg, #FFFFFF 0%, #F9FAFE 100%)", borderBottom: `1px solid ${C.separator}`, padding: "12px 24px", boxShadow: "0 1px 6px rgba(0,0,0,0.04)", position: "sticky", top: 0, zIndex: 10, width: "100%", boxSizing: "border-box" }}>
+      <div style={{ borderBottom: `1px solid ${C.separator}`, padding: "12px 24px", position: "sticky", top: 0, zIndex: 10, width: "100%", boxSizing: "border-box", background: C.card }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, width: "100%" }}>
-          <button onClick={() => navigate("/user")} style={{ background: C.card, border: `1px solid ${C.separator}`, borderRadius: 10, color: C.medBlue, cursor: "pointer", width: 36, height: 36, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+          <button onClick={() => navigate("/user")} style={{ background: C.bg, border: `1px solid ${C.separator}`, borderRadius: 10, color: C.medBlue, cursor: "pointer", width: 36, height: 36, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="15 18 9 12 15 6" /></svg>
           </button>
 
@@ -123,9 +123,9 @@ export default function UserAssignments() {
       </div>
 
       {/* BODY */}
-      <div style={{ flex: 1, padding: "32px 24px 40px", width: "100%", boxSizing: "border-box" }}>
+      <div style={{ padding: "40px 48px 40px", width: "100%", boxSizing: "border-box" }}>
         {assignments.length === 0 && (
-          <div style={{ background: C.card, borderRadius: 20, padding: "60px 40px", textAlign: "center", boxShadow: "0 1px 3px rgba(0,0,0,0.04)", width: "100%", boxSizing: "border-box" }}>
+          <div style={{ padding: "80px 40px", textAlign: "center", width: "100%", boxSizing: "border-box" }}>
             <div style={{ width: 72, height: 72, borderRadius: "50%", background: C.medBlueBg, margin: "0 auto 20px", display: "flex", alignItems: "center", justifyContent: "center" }}>
               <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke={C.medBlue} strokeWidth="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /></svg>
             </div>
@@ -134,7 +134,7 @@ export default function UserAssignments() {
           </div>
         )}
 
-        <div style={{ display: "flex", flexDirection: "column", gap: 16, position: "relative", width: "100%" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12, position: "relative", width: "100%" }}>
           {assignments.length > 1 && <div style={{ position: "absolute", left: "27px", top: "20px", bottom: "20px", width: "2px", background: C.separator, zIndex: 0 }} />}
           {assignments.map((a, index) => {
             const sub = submissions[a.id];
@@ -144,10 +144,10 @@ export default function UserAssignments() {
             const hasVideo = !!a.video_url;
             return (
               <div key={a.id} style={{ display: "flex", gap: 16, alignItems: "center", position: "relative", zIndex: 1, width: "100%" }}>
-                <div style={{ ...TS.h2, width: 56, height: 56, borderRadius: "50%", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", background: isComplete ? C.green : locked ? C.bg : C.medBlue, color: isComplete ? "#fff" : locked ? C.textTertiary : "#fff", border: `4px solid ${isComplete ? C.greenBg : locked ? C.bg : C.medBlueBg}`, boxShadow: "0 4px 12px rgba(0,0,0,0.05)" }}>
+                <div style={{ ...TS.h2, width: 56, height: 56, borderRadius: "50%", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", background: isComplete ? C.green : locked ? C.bg : C.medBlue, color: isComplete ? "#fff" : locked ? C.textTertiary : "#fff", border: `4px solid ${isComplete ? C.greenBg : locked ? C.bg : C.medBlueBg}` }}>
                   {isComplete ? <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12" /></svg> : locked ? <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></svg> : index + 1}
                 </div>
-                <div onClick={() => !locked && navigate(`/user/assignment-taker/${a.id}`)} style={{ flex: 1, background: C.card, borderRadius: 16, padding: "18px 24px", boxShadow: "0 2px 12px rgba(0,0,0,0.04)", cursor: locked ? "not-allowed" : "pointer", opacity: locked ? 0.6 : 1, transition: "all 0.2s", border: `1px solid ${isPending ? C.orange + "33" : isComplete ? C.green + "33" : C.separator}`, minWidth: 0 }}>
+                <div onClick={() => !locked && navigate(`/user/assignment-taker/${a.id}`)} style={{ flex: 1, background: C.bg, borderRadius: 12, padding: "18px 24px", cursor: locked ? "not-allowed" : "pointer", opacity: locked ? 0.6 : 1, transition: "all 0.2s", border: `1px solid ${isPending ? C.orange + "33" : isComplete ? C.green + "33" : C.separator}`, minWidth: 0 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
                     <span style={{ ...TS.caption, color: isComplete ? C.green : locked ? C.textTertiary : C.medBlue }}>{isComplete ? "Completed" : isPending ? "Pending Review" : locked ? "Locked" : hasVideo ? "Video Lesson" : "Exam Module"}</span>
                     {!locked && <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={C.textTertiary} strokeWidth="2"><polyline points="9 18 15 12 9 6" /></svg>}

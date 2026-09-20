@@ -108,7 +108,7 @@ export default function UserAssignmentTaker() {
   }
 
   if (loading) return (
-    <div style={{ minHeight: "100vh", background: C.bg, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: FONT, WebkitFontSmoothing: "antialiased" }}>
+    <div style={{ minHeight: "100vh", background: C.card, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: FONT, WebkitFontSmoothing: "antialiased" }}>
       <span style={{ ...TS.body, fontWeight: 500 }}>Loading Module...</span>
     </div>
   );
@@ -117,11 +117,11 @@ export default function UserAssignmentTaker() {
   const hasQuestions = fields.some(f => f.type !== "note" && f.type !== "header" && f.type !== "file");
 
   return (
-    <div style={{ minHeight: "100vh", background: C.bg, display: "flex", flexDirection: "column", fontFamily: FONT, WebkitFontSmoothing: "antialiased", MozOsxFontSmoothing: "grayscale" }}>
+    <div style={{ minHeight: "100vh", background: C.card, fontFamily: FONT, WebkitFontSmoothing: "antialiased", MozOsxFontSmoothing: "grayscale" }}>
       {/* APP BAR */}
-      <div style={{ background: "linear-gradient(180deg, #FFFFFF 0%, #F9FAFE 100%)", borderBottom: `1px solid ${C.separator}`, padding: "12px 24px", boxShadow: "0 1px 6px rgba(0,0,0,0.04)", position: "sticky", top: 0, zIndex: 10, width: "100%", boxSizing: "border-box" }}>
+      <div style={{ borderBottom: `1px solid ${C.separator}`, padding: "12px 24px", position: "sticky", top: 0, zIndex: 10, width: "100%", boxSizing: "border-box", background: C.card }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, width: "100%" }}>
-          <button onClick={() => navigate("/user")} style={{ background: C.card, border: `1px solid ${C.separator}`, borderRadius: 10, color: C.medBlue, cursor: "pointer", width: 36, height: 36, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+          <button onClick={() => navigate("/user")} style={{ background: C.bg, border: `1px solid ${C.separator}`, borderRadius: 10, color: C.medBlue, cursor: "pointer", width: 36, height: 36, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="15 18 9 12 15 6" /></svg>
           </button>
 
@@ -151,11 +151,11 @@ export default function UserAssignmentTaker() {
       </div>
 
       {/* BODY */}
-      <div style={{ flex: 1, padding: "32px 24px 100px", width: "100%", boxSizing: "border-box" }}>
-        <h1 style={{ ...TS.h1, margin: "0 0 28px" }}>{assignment?.title}</h1>
+      <div style={{ padding: "40px 48px 100px", width: "100%", boxSizing: "border-box" }}>
+        <h1 style={{ ...TS.h1, margin: "0 0 32px" }}>{assignment?.title}</h1>
 
         {isGraded && (
-          <div style={{ background: C.greenBg, borderRadius: 14, padding: "20px 24px", marginBottom: 28, border: `1px solid ${C.green}33`, display: "flex", alignItems: "center", gap: 16, width: "100%", boxSizing: "border-box" }}>
+          <div style={{ background: C.greenBg, borderRadius: 14, padding: "20px 24px", marginBottom: 32, border: `1px solid ${C.green}33`, display: "flex", alignItems: "center", gap: 16, width: "100%", boxSizing: "border-box" }}>
             <div style={{ width: 44, height: 44, borderRadius: "50%", background: C.green, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3"><polyline points="20 6 9 17 4 12" /></svg>
             </div>
@@ -169,7 +169,7 @@ export default function UserAssignmentTaker() {
         <div style={{ display: "flex", flexDirection: "column", gap: 16, width: "100%" }}>
           {currentSlideFields.map((field) => {
             if (field.type === "header") {
-              return <h2 key={field.id} style={{ ...TS.h2, margin: "12px 0 8px" }}>{field.label}</h2>;
+              return <h2 key={field.id} style={{ ...TS.h2, margin: "16px 0 8px" }}>{field.label}</h2>;
             }
             if (field.type === "note") {
               return (
@@ -178,11 +178,12 @@ export default function UserAssignmentTaker() {
                   width: "100%",
                   boxSizing: "border-box",
                   background: C.orangeBg,
-                  borderLeft: `6px solid ${C.orange}`,
-                  padding: "24px 28px",
+                  borderLeft: `4px solid ${C.orange}`,
+                  padding: "20px 24px",
                   marginBottom: 8,
                   whiteSpace: "pre-wrap",
                   wordBreak: "break-word",
+                  borderRadius: 8,
                 }}>
                   {field.label}
                 </div>
@@ -192,9 +193,9 @@ export default function UserAssignmentTaker() {
               const isImage = field.file_url.match(/\.(jpeg|jpg|gif|png|webp)$/i);
               const isVideo = field.file_url.match(/\.(mp4|webm|mov)$/i);
               return (
-                <div key={field.id} style={{ background: C.card, borderRadius: 16, overflow: "hidden", boxShadow: C.shadow, marginBottom: 8, width: "100%" }}>
+                <div key={field.id} style={{ background: C.bg, borderRadius: 12, overflow: "hidden", marginBottom: 8, width: "100%", border: `1px solid ${C.separator}` }}>
                   {isImage ? <img src={field.file_url} alt={field.label} style={{ width: "100%", maxHeight: "400px", objectFit: "cover" }} /> : isVideo ? <video controls style={{ width: "100%", maxHeight: "400px" }} src={field.file_url} /> : (
-                    <a href={field.file_url} target="_blank" rel="noreferrer" style={{ display: "flex", alignItems: "center", gap: 12, padding: "16px 20px", background: C.bg, color: C.medBlue, textDecoration: "none" }}>
+                    <a href={field.file_url} target="_blank" rel="noreferrer" style={{ display: "flex", alignItems: "center", gap: 12, padding: "16px 20px", color: C.medBlue, textDecoration: "none" }}>
                       <span style={{ fontSize: 28 }}>📄</span>
                       <div>
                         <div style={{ ...TS.h3, fontSize: 15, fontWeight: 600 }}>{field.label || "View File"}</div>
@@ -206,8 +207,8 @@ export default function UserAssignmentTaker() {
               );
             }
             return (
-              <div key={field.id} style={{ background: C.card, borderRadius: 16, padding: "24px 28px", boxShadow: C.shadow, marginBottom: 8, width: "100%", boxSizing: "border-box" }}>
-                <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
+              <div key={field.id} style={{ width: "100%", boxSizing: "border-box", marginBottom: 8 }}>
+                <div style={{ display: "flex", gap: 12, marginBottom: 12 }}>
                   <span style={{ ...TS.caption, fontSize: 13, color: C.medBlue, background: C.medBlueBg, height: 28, minWidth: 28, borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, letterSpacing: "-0.01em", textTransform: "none" }}>Q</span>
                   <h3 style={{ ...TS.h3, margin: 0, lineHeight: 1.4 }}>{field.label}</h3>
                 </div>
@@ -239,20 +240,20 @@ export default function UserAssignmentTaker() {
         </div>
 
         {slides.length > 1 && (
-          <div style={{ display: "flex", justifyContent: "space-between", marginTop: 36, width: "100%" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", marginTop: 40, width: "100%" }}>
             <button onClick={() => setActiveSlide(prev => Math.max(0, prev - 1))} disabled={activeSlide === 0}
-              style={{ ...TS.input, padding: "12px 24px", background: C.card, border: `1px solid ${C.separator}`, borderRadius: 12, fontWeight: 600, cursor: activeSlide === 0 ? "not-allowed" : "pointer", opacity: activeSlide === 0 ? 0.5 : 1, color: C.textPrimary, fontSize: 15 }}>
+              style={{ ...TS.input, padding: "12px 24px", background: C.bg, border: `1px solid ${C.separator}`, borderRadius: 10, fontWeight: 600, cursor: activeSlide === 0 ? "not-allowed" : "pointer", opacity: activeSlide === 0 ? 0.5 : 1, color: C.textPrimary, fontSize: 15 }}>
               Previous
             </button>
             {activeSlide < slides.length - 1 ? (
               <button onClick={() => setActiveSlide(prev => Math.min(slides.length - 1, prev + 1))}
-                style={{ ...TS.input, padding: "12px 24px", background: C.medBlue, color: "#fff", border: "none", borderRadius: 12, fontWeight: 600, cursor: "pointer", fontSize: 15 }}>
+                style={{ ...TS.input, padding: "12px 24px", background: C.medBlue, color: "#fff", border: "none", borderRadius: 10, fontWeight: 600, cursor: "pointer", fontSize: 15 }}>
                 Next Slide
               </button>
             ) : (
               !isSubmitted && (
                 <button onClick={handleSubmit} disabled={submitting}
-                  style={{ ...TS.input, padding: "12px 24px", background: C.green, color: "#fff", border: "none", borderRadius: 12, fontWeight: 700, cursor: "pointer", opacity: submitting ? 0.5 : 1, fontSize: 15 }}>
+                  style={{ ...TS.input, padding: "12px 24px", background: C.green, color: "#fff", border: "none", borderRadius: 10, fontWeight: 700, cursor: "pointer", opacity: submitting ? 0.5 : 1, fontSize: 15 }}>
                   {submitting ? "Saving..." : "Finish & Submit"}
                 </button>
               )
@@ -260,8 +261,8 @@ export default function UserAssignmentTaker() {
           </div>
         )}
         {slides.length <= 1 && !isSubmitted && (
-          <div style={{ marginTop: 36, width: "100%" }}>
-            <button onClick={handleSubmit} disabled={submitting} style={{ ...TS.input, width: "100%", padding: "16px 24px", background: C.green, color: "#fff", border: "none", borderRadius: 14, fontWeight: 700, fontSize: 17, cursor: "pointer", boxShadow: "0 4px 12px rgba(52,199,89,0.3)" }}>
+          <div style={{ marginTop: 40, width: "100%" }}>
+            <button onClick={handleSubmit} disabled={submitting} style={{ ...TS.input, width: "100%", padding: "16px 24px", background: C.medBlue, color: "#fff", border: "none", borderRadius: 12, fontWeight: 700, fontSize: 17, cursor: "pointer" }}>
               {submitting ? "Saving..." : hasQuestions ? "Submit Assessment" : "Complete & Unlock Next Module"}
             </button>
           </div>
