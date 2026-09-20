@@ -37,6 +37,18 @@ import ProfileSettings from "./components/ProfileSettings";
 import Updater from "./components/Updater";
 
 export default function App() {
+    // ⚠️ TEMPORARY: Force kill the old Service Worker to clear corrupted cache causing blank screens
+    useEffect(() => {
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.getRegistrations().then(function(registrations) {
+          for(let registration of registrations) {
+            registration.unregister();
+            console.log("🧹 Old Service Worker unregistered!");
+          }
+        });
+      }
+    }, []);
+
     const [currentUser, setCurrentUser] = useState<any>(() => {
         const saved = localStorage.getItem("currentUser");
         return saved ? JSON.parse(saved) : null;
@@ -54,12 +66,13 @@ export default function App() {
         if (needRefresh) { updateServiceWorker(true); setNeedRefresh(false); }
     }, [needRefresh, updateServiceWorker, setNeedRefresh]);
 
-    // ✅ FIX: Centralized auth handler.
+    // ✅ FIX: Centralized auth handler. It ONLY updates state if the user actually changed.
     useEffect(() => {
         const loadUser = () => {
             const saved = localStorage.getItem("currentUser");
             const parsedUser = saved ? JSON.parse(saved) : null;
             
+            // Only trigger a state update if the user ID changed or they logged out
             setCurrentUser((prev: any) => {
                 if (prev?.id === parsedUser?.id) return prev;
                 return parsedUser;
@@ -68,7 +81,10 @@ export default function App() {
         loadUser();
         
         window.addEventListener("authStateChanged", loadUser);
-        return () => window.removeEventListener("authStateChanged", loadUser);
+        
+        return () => {
+            window.removeEventListener("authStateChanged", loadUser);
+        };
     }, []);
 
     const getDashboardPath = (role: string) => {
@@ -77,6 +93,7 @@ export default function App() {
         return "/user";
     };
 
+    // ✅ FIX: Redirect to /login explicitly to prevent flashing the dashboard
     const ProtectedAdmin = useCallback(({ children }: { children: React.ReactNode }) => {
         if (!currentUser) return <Navigate to="/login" replace />;
         if (currentUser.role !== "admin") return <Navigate to={getDashboardPath(currentUser.role)} replace />;
@@ -136,8 +153,11 @@ export default function App() {
                     {/* USER STANDALONE */}
                     <Route path="/user/classroom/:courseId" element={<ProtectedUser><Classroom /></ProtectedUser>} />
 
+                    {/* ✅ FIX: Send unknown routes to login instead of root */}
                     <Route path="*" element={<Navigate to="/login" replace />} />
                 </Routes>
+                
+                {/* ✅ Added the Updater component globally so it checks for updates on startup */}
                 <Updater />
             </BrowserRouter>
         </DailyProvider>

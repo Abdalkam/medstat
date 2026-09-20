@@ -37,7 +37,6 @@ export default function AppBar() {
     const [settings, setSettings] = useState<BusinessSettings | null>(null);
     const [currentUser, setCurrentUser] = useState<SupabaseUser | null>(null);
     const [menuOpen, setMenuOpen] = useState(false);
-    const [isLoggingOut] = useState(false);
     const menuRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
@@ -132,7 +131,7 @@ export default function AppBar() {
         return () => document.removeEventListener("mousedown", handleClickOutside);
     }, []);
 
-    // ✅ BULLETPROOF LOGOUT: Hard refresh destroys the heavy React tree instantly
+    // ✅ DIRECT LINK TO LOGIN PAGE
     const handleLogout = () => {
         // 1. Clear all local storage instantly
         localStorage.removeItem("currentUser");
@@ -140,10 +139,9 @@ export default function AppBar() {
         localStorage.removeItem("activeTenantId");
         localStorage.removeItem("adminDeviceId");
 
-        // 2. Instantly reload the app to the root.
-        // This completely destroys the heavy React tree, preventing the crash/blank screen.
-        // React will boot up fresh, see no user in local storage, and safely redirect to /login.
-        window.location.href = "/";
+        // 2. Hard link directly to the login page. This acts like typing the URL 
+        // and hitting enter, completely bypassing React Router's unmount phase.
+        window.location.replace("/login");
     };
 
     const handleSettingsClick = () => {
@@ -228,8 +226,8 @@ export default function AppBar() {
                                     Settings
                                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
                                 </button>
-                                <button onClick={handleLogout} disabled={isLoggingOut} style={{ width: "100%", padding: "10px 12px", border: "none", background: "transparent", color: "#FF3B30", fontSize: "15px", fontWeight: "500", textAlign: "left", cursor: isLoggingOut ? "not-allowed" : "pointer", borderRadius: "10px", display: "flex", alignItems: "center", justifyContent: "space-between", fontFamily: "inherit", boxSizing: "border-box", opacity: isLoggingOut ? 0.5 : 1 }} onMouseEnter={(e) => e.currentTarget.style.background = "rgba(0,0,0,0.05)"} onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}>
-                                    {isLoggingOut ? "Signing out..." : "Logout"}
+                                <button onClick={handleLogout} style={{ width: "100%", padding: "10px 12px", border: "none", background: "transparent", color: "#FF3B30", fontSize: "15px", fontWeight: "500", textAlign: "left", cursor: "pointer", borderRadius: "10px", display: "flex", alignItems: "center", justifyContent: "space-between", fontFamily: "inherit", boxSizing: "border-box" }} onMouseEnter={(e) => e.currentTarget.style.background = "rgba(0,0,0,0.05)"} onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}>
+                                    Logout
                                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
                                 </button>
                             </div>
