@@ -6,7 +6,7 @@ import { supabase } from "../auth/supabase";
 const C = {
   textPrimary: "#1C1C1E", textTertiary: "#8E8E93", bg: "#F2F2F7", card: "#FFFFFF",
   separator: "#E5E5EA", medBlue: "#007AFF", medBlueBg: "#E8F2FF", green: "#34C759", 
-  greenBg: "#EAF9EE", orange: "#FF9F0A", orangeBg: "#FFF6EB", red: "#FF3B30", purple: "#AF52DE",
+  greenBg: "#EAF9EE", orange: "#FF9F0A", orangeBg: "#FFF6EB", red: "#FF3B30", redBg: "#FFEFEE", purple: "#AF52DE",
 };
 
 interface AssignmentData { id: string; title: string; description: string; video_url?: string; }
@@ -19,6 +19,21 @@ export default function UserAssignments() {
   const [assignments, setAssignments] = useState<AssignmentData[]>([]);
   const [submissions, setSubmissions] = useState<Record<string, SubmissionData>>({});
   const [loading, setLoading] = useState(true);
+
+  // ✅ FIX: Bulletproof logout (Borrowed EXACTLY from UserDashboard.tsx)
+  function handleLogout() {
+    // Clear absolutely ALL local storage and session data to prevent infinite loops
+    localStorage.removeItem("currentUser");
+    localStorage.removeItem("authToken");
+    localStorage.removeItem("adminDeviceId");
+    localStorage.removeItem("activeAttendanceCourseId");
+
+    // Notify the rest of the app
+    window.dispatchEvent(new Event("authStateChanged"));
+    
+    // Send them to the root "/" (Startup) on logout
+    navigate("/");
+  }
 
   useEffect(() => {
     if (!courseId || !currentUser?.id) { setLoading(false); return; }
@@ -51,14 +66,42 @@ export default function UserAssignments() {
 
   return (
     <div style={{ padding: "24px 16px", maxWidth: "800px", margin: "0 auto" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 32 }}>
-        <button onClick={() => navigate("/user")} style={{ background: "none", border: "none", color: C.medBlue, cursor: "pointer", padding: 0 }}>
-          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="15 18 9 12 15 6" /></svg>
-        </button>
-        <div>
-          <h1 style={{ margin: 0, fontSize: 28, fontWeight: 800, letterSpacing: "-0.5px" }}>Course Path</h1>
-          <p style={{ margin: 0, color: C.textTertiary, fontSize: 14 }}>Complete modules in order to unlock the next level.</p>
+      {/* Header with Logout (borrowed from UserDashboard) */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 32, gap: 12 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flex: 1, minWidth: 0 }}>
+          <button onClick={() => navigate("/user")} style={{ background: "none", border: "none", color: C.medBlue, cursor: "pointer", padding: 0, flexShrink: 0 }}>
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="15 18 9 12 15 6" /></svg>
+          </button>
+          <div style={{ minWidth: 0 }}>
+            <h1 style={{ margin: 0, fontSize: 28, fontWeight: 800, letterSpacing: "-0.5px" }}>Course Path</h1>
+            <p style={{ margin: 0, color: C.textTertiary, fontSize: 14 }}>Complete modules in order to unlock the next level.</p>
+          </div>
         </div>
+        
+        {/* BULLETPROOF LOGOUT (from UserDashboard) */}
+        <button
+          onClick={handleLogout}
+          title="Logout"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 40,
+            height: 40,
+            borderRadius: 9,
+            background: C.redBg,
+            border: "none",
+            cursor: "pointer",
+            color: C.red,
+            flexShrink: 0,
+          }}
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+            <polyline points="16 17 21 12 16 7" />
+            <line x1="21" y1="12" x2="9" y2="12" />
+          </svg>
+        </button>
       </div>
 
       {assignments.length === 0 && (

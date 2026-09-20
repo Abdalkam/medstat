@@ -28,6 +28,21 @@ export default function UserAssignmentTaker() {
   const [submitting, setSubmitting] = useState(false);
   const [activeSlide, setActiveSlide] = useState(0);
 
+  // ✅ FIX: Bulletproof logout (Borrowed EXACTLY from UserDashboard.tsx)
+  function handleLogout() {
+    // Clear absolutely ALL local storage and session data to prevent infinite loops
+    localStorage.removeItem("currentUser");
+    localStorage.removeItem("authToken");
+    localStorage.removeItem("adminDeviceId");
+    localStorage.removeItem("activeAttendanceCourseId");
+
+    // Notify the rest of the app
+    window.dispatchEvent(new Event("authStateChanged"));
+    
+    // Send them to the root "/" (Startup) on logout
+    navigate("/");
+  }
+
   useEffect(() => {
     if (!assignmentId) return;
     const load = async () => {
@@ -101,15 +116,42 @@ export default function UserAssignmentTaker() {
     <div style={{ paddingBottom: 100, background: C.bg, minHeight: "calc(100vh - 60px)" }}>
       <div style={{ maxWidth: "800px", margin: "0 auto", padding: "24px 16px" }}>
         
-        {/* Header */}
-        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 24 }}>
-          <button onClick={() => navigate("/user")} style={{ background: C.card, border: `1px solid ${C.separator}`, borderRadius: 12, color: C.medBlue, cursor: "pointer", width: 40, height: 40, display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="15 18 9 12 15 6" /></svg>
-          </button>
-          <div>
-            <span style={{ fontSize: 12, fontWeight: 600, color: hasQuestions ? C.purple : C.medBlue, textTransform: "uppercase" }}>{hasQuestions ? "Assessment" : "Lesson"}</span>
-            <h1 style={{ margin: 0, fontSize: 24, fontWeight: 700 }}>{assignment?.title}</h1>
+        {/* Header with Logout (borrowed from UserDashboard) */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 24, gap: 12 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, flex: 1, minWidth: 0 }}>
+            <button onClick={() => navigate("/user")} style={{ background: C.card, border: `1px solid ${C.separator}`, borderRadius: 12, color: C.medBlue, cursor: "pointer", width: 40, height: 40, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="15 18 9 12 15 6" /></svg>
+            </button>
+            <div style={{ minWidth: 0 }}>
+              <span style={{ fontSize: 12, fontWeight: 600, color: hasQuestions ? C.purple : C.medBlue, textTransform: "uppercase" }}>{hasQuestions ? "Assessment" : "Lesson"}</span>
+              <h1 style={{ margin: 0, fontSize: 24, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{assignment?.title}</h1>
+            </div>
           </div>
+          
+          {/* BULLETPROOF LOGOUT (from UserDashboard) */}
+          <button
+            onClick={handleLogout}
+            title="Logout"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: 40,
+              height: 40,
+              borderRadius: 9,
+              background: C.redBg,
+              border: "none",
+              cursor: "pointer",
+              color: C.red,
+              flexShrink: 0,
+            }}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+              <polyline points="16 17 21 12 16 7" />
+              <line x1="21" y1="12" x2="9" y2="12" />
+            </svg>
+          </button>
         </div>
 
         {isGraded && (
