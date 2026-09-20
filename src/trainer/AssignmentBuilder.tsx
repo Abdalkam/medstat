@@ -42,10 +42,13 @@ export default function AssignmentBuilder() {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [uploadingFieldId, setUploadingFieldId] = useState<string | null>(null);
 
-  const handleLogout = async () => {
-    await supabase.auth.signOut();
+  // ✅ BORROWED LOGIC FROM TRAINER DASHBOARD
+  const handleLogout = () => {
     localStorage.removeItem("currentUser");
-    navigate("/login");
+    localStorage.removeItem("authToken");
+    localStorage.removeItem("adminDeviceId");
+    window.dispatchEvent(new Event("authStateChanged"));
+    navigate("/");
   };
 
   useEffect(() => {
@@ -123,7 +126,6 @@ export default function AssignmentBuilder() {
   const handleFileUpload = async (fieldId: string, file: File) => {
     setUploadingFieldId(fieldId);
     const fileName = `${Date.now()}-${file.name}`;
-    // Fix: Removed unused 'data' variable to resolve TypeScript warning
     const { error } = await supabase.storage.from('slide-materials').upload(fileName, file);
     
     if (error) {
