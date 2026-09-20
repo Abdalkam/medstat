@@ -133,7 +133,7 @@ export default function AppBar() {
         return () => document.removeEventListener("mousedown", handleClickOutside);
     }, []);
 
-    // ✅ FIX: Borrowed EXACTLY from TrainerDashboard.tsx
+    // ✅ FIX: Hard refresh prevents freezing on heavy components like AssignmentBuilder
     const handleLogout = () => {
         if (isLoggingOut) return;
         setIsLoggingOut(true);
@@ -144,13 +144,17 @@ export default function AppBar() {
         // 2. Clear absolutely ALL local storage and session data
         localStorage.removeItem("currentUser");
         localStorage.removeItem("authToken");
+        localStorage.removeItem("activeTenantId");
         localStorage.removeItem("adminDeviceId");
 
-        // 3. Notify the rest of the app
+        // 3. Fire and forget Supabase sign out
+        supabase.auth.signOut().catch(err => console.warn(err));
+
+        // 4. Notify the rest of the app
         window.dispatchEvent(new Event("authStateChanged"));
         
-        // 4. Send them to the root "/" (Startup) on logout
-        navigate("/");
+        // 5. Hard refresh to login screen (Prevents React from freezing)
+        window.location.replace("/login");
     };
 
     const handleSettingsClick = () => {
