@@ -42,6 +42,15 @@ export default function AssignmentBuilder() {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [uploadingFieldId, setUploadingFieldId] = useState<string | null>(null);
 
+  // ✅ BULLETPROOF LOGOUT: Destroys the React tree instantly
+  const handleLogout = () => {
+    localStorage.removeItem("currentUser");
+    localStorage.removeItem("authToken");
+    localStorage.removeItem("activeTenantId");
+    localStorage.removeItem("adminDeviceId");
+    window.location.replace("/login");
+  };
+
   useEffect(() => {
     if (!assignmentId) { setLoadingData(false); return; }
     setIsEditing(true);
@@ -181,7 +190,7 @@ export default function AssignmentBuilder() {
   const questionFields = activeFields.filter((f) => f.type !== "note" && f.type !== "header" && f.type !== "file");
 
   return (
-    <div style={{ display: "flex", height: "100%", background: C.bg, overflow: "hidden" }}>
+    <div style={{ display: "flex", height: "100vh", background: C.bg, overflow: "hidden" }}>
       <style>{`
         @keyframes fadeSlideIn { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
         .field-card { animation: fadeSlideIn 0.25s ease-out; }
@@ -191,7 +200,6 @@ export default function AssignmentBuilder() {
       {/* SIDEBAR */}
       <div style={{ width: 240, background: C.sidebarBg, borderRight: `1px solid ${C.separator}`, display: "flex", flexDirection: "column", flexShrink: 0 }}>
         <div style={{ padding: "20px 16px", borderBottom: `1px solid ${C.separator}`, display: "flex", alignItems: "center", gap: 10 }}>
-          {/* ✅ FIX: Route back to Trainer Dashboard explicitly */}
           <button onClick={() => navigate("/trainer")} style={{ background: C.card, border: `1px solid ${C.separator}`, borderRadius: 8, color: C.medBlue, cursor: "pointer", width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center" }}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="15 18 9 12 15 6" /></svg>
           </button>
@@ -223,7 +231,7 @@ export default function AssignmentBuilder() {
       {/* MAIN CONTENT */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
         
-        {/* SECONDARY HEADER */}
+        {/* SECONDARY HEADER WITH LOGOUT */}
         <div style={{ padding: "16px 32px", background: C.card, borderBottom: `1px solid ${C.separator}`, display: "flex", alignItems: "center", gap: 16, flexShrink: 0 }}>
           <div style={{ flex: 1, minWidth: 0 }}>
             <input placeholder="Presentation Title" value={title} onChange={(e) => setTitle(e.target.value)} style={{ fontSize: 20, fontWeight: 700, border: "none", outline: "none", padding: 0, margin: 0, background: "transparent", width: "100%", color: C.textPrimary }} />
@@ -239,6 +247,10 @@ export default function AssignmentBuilder() {
             <button onClick={() => setShowDeleteConfirm(true)} style={{ padding: "8px 14px", background: C.redBg, color: C.red, border: `1px solid ${C.red}22`, borderRadius: 8, fontWeight: 600, cursor: "pointer", fontSize: 13 }}>Delete</button>
             <button onClick={handleSave} disabled={saving || !title.trim()} style={{ padding: "10px 24px", background: saving || !title.trim() ? C.textTertiary : `linear-gradient(135deg, ${C.medBlue}, #0055D4)`, color: "#fff", border: "none", borderRadius: 10, fontWeight: 700, cursor: saving || !title.trim() ? "default" : "pointer", fontSize: 13, boxShadow: saving || !title.trim() ? "none" : "0 2px 12px rgba(0,122,255,0.35)" }}>
               {saving ? "Saving..." : "Save Module"}
+            </button>
+            {/* BULLETPROOF LOGOUT ICON */}
+            <button onClick={handleLogout} title="Logout" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 40, height: 40, borderRadius: 9, background: C.bg, border: `1px solid ${C.separator}`, cursor: "pointer", color: C.red, transition: "background 0.2s" }}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></svg>
             </button>
           </div>
         </div>
