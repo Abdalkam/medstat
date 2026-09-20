@@ -68,6 +68,7 @@ if (Test-Path $cargoPath) {
 git add .
 git commit -m "$commitMessage" --quiet
 
+# SAFETY: Delete tag if it already exists locally and remotely
 git tag -d $newVersion 2>$null
 git push origin :refs/tags/$newVersion 2>$null
 
@@ -123,7 +124,14 @@ if (!$jsonPath -and $exePath -and $sigPath) {
 }
 
 if ($exePath -and $jsonPath) {
-    gh release create $newVersion --title "$newVersion" --notes "Release $newVersion" $exePath $jsonPath
+    # Attempt to create the release
+    gh release create $newVersion --title "$newVersion" --notes "Release $newVersion" $exePath $jsonPath 2>$null
+    
+    # FALLBACK: If it already exists, upload to the existing release instead
+    if (!$?) {
+        Write-Host "Release already exists. Uploading files to existing release..." -ForegroundColor Yellow
+        gh release upload $newVersion $exePath $jsonPath --clobber
+    }
         
     if ($?) {
         Write-Host "Release $newVersion published successfully!" -ForegroundColor Green

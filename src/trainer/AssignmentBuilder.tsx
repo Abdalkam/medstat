@@ -15,28 +15,14 @@ const C = {
 };
 
 interface FormField {
-  id: string; type: AssignmentFieldType | "note" | "header"; label: string;
+  id: string; type: AssignmentFieldType | "note" | "header" | "file"; label: string;
   required: boolean; options: string[]; fileTypes: string[];
   blocksNext?: boolean; blockMessage?: string; sort_order?: number;
   maxChars?: number; points?: number; placeholder?: string;
-  correctAnswer?: string; page_id?: string;
+  correctAnswer?: string; page_id?: string; file_url?: string;
 }
 
-interface SlidePage {
-  id: string;
-  title: string;
-}
-
-const FIELD_TYPES: Array<[string, string, string, string, string]> = [
-  ["note", "📝", "Topic Note", C.orangeBg, C.orange],
-  ["header", "📌", "Section Header", C.purpleBg, C.purple],
-  ["text", "💬", "Short Text", C.medBlueBg, C.medBlue],
-  ["paragraph", "📄", "Essay / Notes", C.medBlueSoft, C.medBlue],
-  ["dropdown", "📋", "Single Choice", C.purpleBg, C.purple],
-  ["checkbox", "☑️", "Multiple Choice", C.greenBg, C.green],
-  ["toggle", "🔀", "Yes/No", C.orangeBg, C.orange],
-  ["file", "📎", "Material Upload", C.redBg, C.red],
-];
+interface SlidePage { id: string; title: string; }
 
 export default function AssignmentBuilder() {
   const { courseId, assignmentId } = useParams<{ courseId: string; assignmentId: string }>();
@@ -46,19 +32,16 @@ export default function AssignmentBuilder() {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [fields, setFields] = useState<FormField[]>([]);
-  const [pages, setPages] = useState<SlidePage[]>([{ id: "page-1", title: "Page 1" }]);
+  const [pages, setPages] = useState<SlidePage[]>([{ id: "page-1", title: "Slide 1" }]);
   const [activePageId, setActivePageId] = useState("page-1");
   
   const [saving, setSaving] = useState(false);
   const [loadingData, setLoadingData] = useState(true);
   const [isEditing, setIsEditing] = useState(false);
-  const [allowDownload, setAllowDownload] = useState(false);
-  const [dueDate, setDueDate] = useState("");
   const [status, setStatus] = useState<"draft" | "published" | "closed">("draft");
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
-  const [passmark, setPassmark] = useState(50);
+  const [uploadingFieldId, setUploadingFieldId] = useState<string | null>(null);
 
-  // --- Mock Auth Logout ---
   const handleLogout = async () => {
     await supabase.auth.signOut();
     localStorage.removeItem("currentUser");
@@ -72,34 +55,25 @@ export default function AssignmentBuilder() {
       try {
         const { data: a } = await supabase.from("assignments").select("*").eq("id", assignmentId).maybeSingle();
         if (a) {
-          setTitle(a.title || ""); setDescription(a.description || ""); setAllowDownload(a.allow_download || false);
-          setDueDate(a.due_date ? a.due_date.slice(0, 16) : "");
+          setTitle(a.title || ""); setDescription(a.description || "");
           setStatus(a.status || "draft");
-          setPassmark(a.passmark || 50); 
         }
         const { data: f } = await supabase.from("assignment_fields").select("*").eq("assignment_id", assignmentId).order("sort_order", { ascending: true });
-        
-        // Group fields into pages based on a 'page_id' or fallback to page 1
         const loadedFields = (f || []).map((field: Record<string, unknown>): FormField => ({
-          id: field.id as string, type: (field.type as string) as AssignmentFieldType | "note" | "header",
+          id: field.id as string, type: (field.type as string) as AssignmentFieldType | "note" | "header" | "file",
           label: (field.label as string) || "", required: (field.required as boolean) || false,
           options: (field.options as string[]) || [], fileTypes: (field.file_types as string[]) || [],
-          blocksNext: (field.blocks_next as boolean) || false, blockMessage: (field.block_message as string) || "",
           sort_order: (field.sort_order as number) ?? 0, maxChars: (field.max_chars as number) || undefined,
           points: (field.points as number) || undefined, placeholder: (field.placeholder as string) || "",
-          correctAnswer: (field.correct_answer as string) || "",
-          page_id: (field.page_id as string) || "page-1"
+          correctAnswer: (field.correct_answer as string) || "", page_id: (field.page_id as string) || "page-1",
+          file_url: (field.file_url as string) || undefined
         }));
-
         setFields(loadedFields);
-
-        // Extract unique pages
         const uniquePages = Array.from(new Set(loadedFields.map(f => f.page_id).filter(Boolean))) as string[];
         if (uniquePages.length > 0) {
-          setPages(uniquePages.map((id, i) => ({ id, title: `Page ${i+1}`})));
+          setPages(uniquePages.map((id, i) => ({ id, title: `Slide ${i+1}`})));
           setActivePageId(uniquePages[0]);
         }
-
       } catch (err) { console.error("Failed to load:", err); }
       finally { setLoadingData(false); }
     };
@@ -108,27 +82,26 @@ export default function AssignmentBuilder() {
 
   const addPage = () => {
     const newId = `page-${Date.now()}`;
-    setPages(prev => [...prev, { id: newId, title: `Page ${prev.length + 1}` }]);
+    setPages(prev => [...prev, { id: newId, title: `Slide ${prev.length + 1}` }]);
     setActivePageId(newId);
   };
 
   const deletePage = (pageId: string) => {
-    if (pages.length === 1) return alert("You must have at least one page.");
+    if (pages.length === 1) return alert("You must have at least one slide.");
     setPages(prev => prev.filter(p => p.id !== pageId));
     setFields(prev => prev.filter(f => f.page_id !== pageId));
     if (activePageId === pageId) setActivePageId(pages[0].id);
   };
 
-  const addField = (type: AssignmentFieldType | "note" | "header") => 
+  const addField = (type: AssignmentFieldType | "note" | "header" | "file") => 
     setFields((p) => [...p, { 
       id: crypto.randomUUID(), type, label: "", required: false, 
       options: type === "dropdown" || type === "checkbox" ? ["Option 1", "Option 2"] : [], 
-      fileTypes: type === "file" ? ["image", "pdf"] : [], blocksNext: false, blockMessage: "", 
-      sort_order: p.length, maxChars: undefined, points: undefined, placeholder: "", correctAnswer: "",
+      fileTypes: [], sort_order: p.length, points: undefined, correctAnswer: "",
       page_id: activePageId
     }]);
 
-  const updateField = (id: string, key: keyof FormField, value: unknown) => 
+  const updateField = (id: string, key: keyof FormField, value: any) => 
     setFields((p) => p.map((f) => (f.id === id ? { ...f, [key]: value } : f)));
   
   const removeField = (id: string) => setFields((p) => p.filter((f) => f.id !== id).map((f, i) => ({ ...f, sort_order: i })));
@@ -147,6 +120,22 @@ export default function AssignmentBuilder() {
   const removeOption = (fid: string, oi: number) => setFields((p) => p.map((f) => { if (f.id !== fid) return f; const o = [...f.options]; o.splice(oi, 1); return { ...f, options: o }; }));
   const updateOption = (fid: string, oi: number, v: string) => setFields((p) => p.map((f) => { if (f.id !== fid) return f; const o = [...f.options]; o[oi] = v; return { ...f, options: o }; }));
 
+  const handleFileUpload = async (fieldId: string, file: File) => {
+    setUploadingFieldId(fieldId);
+    const fileName = `${Date.now()}-${file.name}`;
+    // Fix: Removed unused 'data' variable to resolve TypeScript warning
+    const { error } = await supabase.storage.from('slide-materials').upload(fileName, file);
+    
+    if (error) {
+      alert("Upload failed: " + error.message);
+    } else {
+      const { data: publicUrlData } = supabase.storage.from('slide-materials').getPublicUrl(fileName);
+      updateField(fieldId, "file_url", publicUrlData.publicUrl);
+      updateField(fieldId, "label", file.name);
+    }
+    setUploadingFieldId(null);
+  };
+
   async function handleSave() {
     if (!courseId || !title.trim()) return alert("Please enter a module title.");
     setSaving(true);
@@ -155,8 +144,7 @@ export default function AssignmentBuilder() {
       let tid = assignmentId;
       const { data: aData, error: aErr } = await supabase.from("assignments").upsert({
         id: tid || crypto.randomUUID(), tenant_id: currentUser.tenantId, course_id: courseId, trainer_id: currentUser.id,
-        title: title.trim(), description: description.trim(), allow_download: allowDownload,
-        due_date: dueDate ? new Date(dueDate).toISOString() : null, status: status, passmark: passmark, 
+        title: title.trim(), description: description.trim(), status: status, 
         created_at: isEditing ? undefined : now, updated_at: now,
       }, { onConflict: "id" }).select("id").single();
       if (aErr) throw aErr;
@@ -166,10 +154,9 @@ export default function AssignmentBuilder() {
         const { error: fErr } = await supabase.from("assignment_fields").upsert(fields.map((f, i) => ({
           id: f.id, tenant_id: currentUser.tenantId, assignment_id: tid, type: f.type, label: f.label || "",
           required: f.required, options: f.options.length > 0 ? f.options : null,
-          file_types: f.fileTypes.length > 0 ? f.fileTypes : null, blocks_next: f.blocksNext || false,
-          block_message: f.blockMessage || null, sort_order: i, max_chars: f.maxChars || null,
+          file_types: f.fileTypes.length > 0 ? f.fileTypes : null, sort_order: i, max_chars: f.maxChars || null,
           points: f.points || null, placeholder: f.placeholder || null, correct_answer: f.correctAnswer || null,
-          page_id: f.page_id || pages[0].id,
+          page_id: f.page_id || pages[0].id, file_url: f.file_url || null,
         })), { onConflict: "id" });
         if (fErr) throw fErr;
       }
@@ -198,7 +185,7 @@ export default function AssignmentBuilder() {
   if (loadingData) return <div style={{ padding: 40, textAlign: "center", color: C.textTertiary }}>Loading slides...</div>;
 
   const activeFields = fields.filter(f => f.page_id === activePageId);
-  const questionFields = activeFields.filter((f) => f.type !== "note" && f.type !== "header");
+  const questionFields = activeFields.filter((f) => f.type !== "note" && f.type !== "header" && f.type !== "file");
 
   return (
     <div style={{ display: "flex", height: "100vh", background: C.bg, overflow: "hidden" }}>
@@ -209,12 +196,12 @@ export default function AssignmentBuilder() {
       `}</style>
 
       {/* SIDEBAR */}
-      <div style={{ width: 260, background: C.sidebarBg, borderRight: `1px solid ${C.separator}`, display: "flex", flexDirection: "column", flexShrink: 0 }}>
+      <div style={{ width: 240, background: C.sidebarBg, borderRight: `1px solid ${C.separator}`, display: "flex", flexDirection: "column", flexShrink: 0 }}>
         <div style={{ padding: "20px 16px", borderBottom: `1px solid ${C.separator}`, display: "flex", alignItems: "center", gap: 10 }}>
           <button onClick={() => navigate(-1)} style={{ background: C.card, border: `1px solid ${C.separator}`, borderRadius: 8, color: C.medBlue, cursor: "pointer", width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center" }}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="15 18 9 12 15 6" /></svg>
           </button>
-          <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>Slide Pages</h2>
+          <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>Slides</h2>
         </div>
 
         <div style={{ flex: 1, overflowY: "auto", padding: "12px 8px" }}>
@@ -225,26 +212,16 @@ export default function AssignmentBuilder() {
                 display: "flex", alignItems: "center", gap: 10, padding: "12px 14px", marginBottom: 6, borderRadius: 10, cursor: "pointer",
                 background: activePageId === page.id ? C.medBlueBg : "transparent",
                 border: activePageId === page.id ? `1px solid ${C.medBlue}33` : `1px solid transparent`,
-                transition: "all 0.15s"
               }}>
               <span style={{ fontSize: 12, fontWeight: 700, color: activePageId === page.id ? C.medBlue : C.textTertiary }}>{index + 1}</span>
-              <span style={{ fontSize: 14, fontWeight: 600, color: activePageId === page.id ? C.medBlue : C.textSecondary, flex: 1 }}>Page {index + 1}</span>
+              <span style={{ fontSize: 14, fontWeight: 600, color: activePageId === page.id ? C.medBlue : C.textSecondary, flex: 1 }}>Slide {index + 1}</span>
               {pages.length > 1 && (
                 <button onClick={(e) => { e.stopPropagation(); deletePage(page.id); }} style={{ background: "transparent", border: "none", color: C.textTertiary, cursor: "pointer", opacity: 0.6 }}>✕</button>
               )}
             </div>
           ))}
-          <button onClick={addPage} style={{ width: "100%", padding: "12px", marginTop: 8, background: C.card, border: `1.5px dashed ${C.separator}`, borderRadius: 10, color: C.textTertiary, fontWeight: 600, cursor: "pointer", fontSize: 13, transition: "all 0.15s" }}
-            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.borderColor = C.medBlue; (e.currentTarget as HTMLElement).style.color = C.medBlue; }}
-            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.borderColor = C.separator; (e.currentTarget as HTMLElement).style.color = C.textTertiary; }}>
-            + Add Page
-          </button>
-        </div>
-
-        <div style={{ padding: "16px", borderTop: `1px solid ${C.separator}` }}>
-          <button onClick={handleLogout} style={{ width: "100%", padding: "12px", background: C.redBg, color: C.red, border: `1px solid ${C.red}22`, borderRadius: 10, fontWeight: 600, cursor: "pointer", fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></svg>
-            Logout
+          <button onClick={addPage} style={{ width: "100%", padding: "12px", marginTop: 8, background: C.card, border: `1.5px dashed ${C.separator}`, borderRadius: 10, color: C.textTertiary, fontWeight: 600, cursor: "pointer", fontSize: 13 }}>
+            + Add Slide
           </button>
         </div>
       </div>
@@ -255,8 +232,8 @@ export default function AssignmentBuilder() {
         {/* APP BAR */}
         <div style={{ padding: "16px 32px", background: C.card, borderBottom: `1px solid ${C.separator}`, display: "flex", alignItems: "center", gap: 16, flexShrink: 0 }}>
           <div style={{ flex: 1, minWidth: 0 }}>
-            <input placeholder="Module Title" value={title} onChange={(e) => setTitle(e.target.value)} style={{ fontSize: 20, fontWeight: 700, border: "none", outline: "none", padding: 0, margin: 0, background: "transparent", width: "100%", color: C.textPrimary }} />
-            <input placeholder="Add a description..." value={description} onChange={(e) => setDescription(e.target.value)} style={{ fontSize: 13, border: "none", outline: "none", padding: 0, margin: "4px 0 0", background: "transparent", width: "100%", color: C.textTertiary }} />
+            <input placeholder="Presentation Title" value={title} onChange={(e) => setTitle(e.target.value)} style={{ fontSize: 20, fontWeight: 700, border: "none", outline: "none", padding: 0, margin: 0, background: "transparent", width: "100%", color: C.textPrimary }} />
+            <input placeholder="Add a subtitle or description..." value={description} onChange={(e) => setDescription(e.target.value)} style={{ fontSize: 13, border: "none", outline: "none", padding: 0, margin: "4px 0 0", background: "transparent", width: "100%", color: C.textTertiary }} />
           </div>
           
           <div style={{ display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
@@ -269,6 +246,10 @@ export default function AssignmentBuilder() {
             <button onClick={handleSave} disabled={saving || !title.trim()} style={{ padding: "10px 24px", background: saving || !title.trim() ? C.textTertiary : `linear-gradient(135deg, ${C.medBlue}, #0055D4)`, color: "#fff", border: "none", borderRadius: 10, fontWeight: 700, cursor: saving || !title.trim() ? "default" : "pointer", fontSize: 13, boxShadow: saving || !title.trim() ? "none" : "0 2px 12px rgba(0,122,255,0.35)" }}>
               {saving ? "Saving..." : "Save Module"}
             </button>
+            {/* LOGOUT ICON IN APP BAR */}
+            <button onClick={handleLogout} title="Logout" style={{ background: C.bg, border: `1px solid ${C.separator}`, borderRadius: 8, color: C.red, cursor: "pointer", width: 40, height: 40, display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></svg>
+            </button>
           </div>
         </div>
 
@@ -277,15 +258,14 @@ export default function AssignmentBuilder() {
           
           {/* Add Content Toolbar */}
           <div style={{ marginBottom: 24, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-            <span style={{ fontSize: 11, color: C.textTertiary, textTransform: "uppercase", fontWeight: 700, letterSpacing: "1px", marginRight: 8 }}>Add Section:</span>
-            {FIELD_TYPES.map(([type, icon, label, bg, color]) => (
-              <button key={type} onClick={() => addField(type as AssignmentFieldType | "note" | "header")}
-                style={{ padding: "8px 14px", background: bg, color, border: "none", borderRadius: 10, fontSize: 12, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 6, transition: "all 0.2s", boxShadow: "0 1px 4px rgba(0,0,0,0.04)" }}
-                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.transform = "translateY(-1px)"; (e.currentTarget as HTMLElement).style.boxShadow = "0 4px 12px rgba(0,0,0,0.08)"; }}
-                onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.transform = "none"; (e.currentTarget as HTMLElement).style.boxShadow = "0 1px 4px rgba(0,0,0,0.04)"; }}>
-                <span>{icon}</span> {label}
-              </button>
-            ))}
+            <span style={{ fontSize: 11, color: C.textTertiary, textTransform: "uppercase", fontWeight: 700, letterSpacing: "1px", marginRight: 8 }}>Add to Slide:</span>
+            <button onClick={() => addField("header")} style={{ padding: "8px 14px", background: C.purpleBg, color: C.purple, border: "none", borderRadius: 10, fontSize: 12, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>📌 Title / Header</button>
+            <button onClick={() => addField("note")} style={{ padding: "8px 14px", background: C.orangeBg, color: C.orange, border: "none", borderRadius: 10, fontSize: 12, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>📝 Rich Text Note</button>
+            <button onClick={() => addField("file")} style={{ padding: "8px 14px", background: C.redBg, color: C.red, border: "none", borderRadius: 10, fontSize: 12, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>📎 Upload Material</button>
+            <button onClick={() => addField("text")} style={{ padding: "8px 14px", background: C.medBlueBg, color: C.medBlue, border: "none", borderRadius: 10, fontSize: 12, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>💬 Short Answer</button>
+            <button onClick={() => addField("paragraph")} style={{ padding: "8px 14px", background: C.medBlueSoft, color: C.medBlue, border: "none", borderRadius: 10, fontSize: 12, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>📄 Essay Question</button>
+            <button onClick={() => addField("dropdown")} style={{ padding: "8px 14px", background: C.purpleBg, color: C.purple, border: "none", borderRadius: 10, fontSize: 12, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>📋 Single Choice</button>
+            <button onClick={() => addField("checkbox")} style={{ padding: "8px 14px", background: C.greenBg, color: C.green, border: "none", borderRadius: 10, fontSize: 12, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>☑️ Multiple Choice</button>
           </div>
 
           {/* Empty Slide State */}
@@ -295,7 +275,7 @@ export default function AssignmentBuilder() {
                 <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke={C.medBlue} strokeWidth="1.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" /></svg>
               </div>
               <h3 style={{ margin: "0 0 6px", fontSize: 17, fontWeight: 600, color: C.textPrimary }}>Empty Slide</h3>
-              <p style={{ color: C.textTertiary, fontSize: 13, margin: 0 }}>Use the buttons above to add headers, notes, or questions to this slide.</p>
+              <p style={{ color: C.textTertiary, fontSize: 13, margin: 0 }}>Use the buttons above to add titles, notes, files, or questions to this slide.</p>
             </div>
           )}
 
@@ -305,14 +285,14 @@ export default function AssignmentBuilder() {
               return (
                 <div key={field.id} className="field-card" style={{ margin: "0 0 16px", padding: "18px 22px", background: `linear-gradient(135deg, ${C.purpleBg}, ${C.card})`, borderRadius: 16, borderLeft: `4px solid ${C.purple}`, boxShadow: C.shadow }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                    <span style={{ fontSize: 11, fontWeight: 700, color: C.purple, textTransform: "uppercase", letterSpacing: "0.8px" }}>📌 Section Header</span>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: C.purple, textTransform: "uppercase", letterSpacing: "0.8px" }}>Slide Title / Header</span>
                     <div style={{ display: "flex", gap: 4 }}>
                       <button onClick={() => moveField(index, "up")} disabled={index === 0} style={{ ...moveBtnStyle, opacity: index === 0 ? 0.3 : 1 }}>↑</button>
                       <button onClick={() => moveField(index, "down")} disabled={index === activeFields.length - 1} style={{ ...moveBtnStyle, opacity: index === activeFields.length - 1 ? 0.3 : 1 }}>↓</button>
                       <button onClick={() => removeField(field.id)} style={{ ...moveBtnStyle, color: C.red, borderColor: C.red + "22", background: C.redBg }}>✕</button>
                     </div>
                   </div>
-                  <textarea placeholder="Section header..." value={field.label || ""} onChange={(e) => updateField(field.id, "label", e.target.value)} style={{ width: "100%", padding: "6px 0", border: "none", outline: "none", fontSize: 18, fontWeight: 700, color: C.purple, background: "transparent", resize: "vertical", fontFamily: "inherit", lineHeight: 1.4 }} />
+                  <textarea placeholder="Enter slide title..." value={field.label || ""} onChange={(e) => updateField(field.id, "label", e.target.value)} style={{ width: "100%", padding: "6px 0", border: "none", outline: "none", fontSize: 22, fontWeight: 700, color: C.purple, background: "transparent", resize: "vertical", fontFamily: "inherit", lineHeight: 1.4 }} />
                 </div>
               );
             }
@@ -320,7 +300,7 @@ export default function AssignmentBuilder() {
               return (
                 <div key={field.id} className="field-card" style={{ background: C.card, borderRadius: 16, overflow: "hidden", borderLeft: `4px solid ${C.orange}`, marginBottom: 16, boxShadow: C.shadow }}>
                   <div style={{ padding: "14px 18px 10px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <span style={{ fontSize: 11, fontWeight: 700, color: C.orange, textTransform: "uppercase", letterSpacing: "0.8px" }}>📝 Note / Essay</span>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: C.orange, textTransform: "uppercase", letterSpacing: "0.8px" }}>Teaching Note / Text</span>
                     <div style={{ display: "flex", gap: 4 }}>
                       <button onClick={() => moveField(index, "up")} disabled={index === 0} style={{ ...moveBtnStyle, opacity: index === 0 ? 0.3 : 1 }}>↑</button>
                       <button onClick={() => moveField(index, "down")} disabled={index === activeFields.length - 1} style={{ ...moveBtnStyle, opacity: index === activeFields.length - 1 ? 0.3 : 1 }}>↓</button>
@@ -328,14 +308,50 @@ export default function AssignmentBuilder() {
                     </div>
                   </div>
                   <div style={{ padding: "0 18px 16px" }}>
-                    <textarea placeholder="Instructions or essay text for learners..." value={field.label || ""} onChange={(e) => updateField(field.id, "label", e.target.value)} style={{ width: "100%", padding: "12px 14px", border: `1.5px solid ${C.separator}`, borderRadius: 12, outline: "none", fontSize: 14, background: `${C.orange}06`, boxSizing: "border-box", minHeight: 64, resize: "vertical", fontFamily: "inherit", lineHeight: 1.6, color: C.textSecondary }} />
+                    <textarea placeholder="Type your notes, paragraphs, or lesson text here..." value={field.label || ""} onChange={(e) => updateField(field.id, "label", e.target.value)} style={{ width: "100%", padding: "12px 14px", border: `1.5px solid ${C.separator}`, borderRadius: 12, outline: "none", fontSize: 14, background: `${C.orange}06`, boxSizing: "border-box", minHeight: 64, resize: "vertical", fontFamily: "inherit", lineHeight: 1.6, color: C.textSecondary }} />
                   </div>
+                </div>
+              );
+            }
+            if (field.type === "file") {
+              return (
+                <div key={field.id} className="field-card" style={{ background: C.card, borderRadius: 16, padding: "20px 22px", marginBottom: 16, border: `1px solid ${C.separatorLight}`, boxShadow: C.shadow }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: C.red, textTransform: "uppercase", letterSpacing: "0.8px" }}>📎 Uploaded Material</span>
+                    <div style={{ display: "flex", gap: 4 }}>
+                      <button onClick={() => moveField(index, "up")} disabled={index === 0} style={{ ...moveBtnStyle, opacity: index === 0 ? 0.3 : 1 }}>↑</button>
+                      <button onClick={() => moveField(index, "down")} disabled={index === activeFields.length - 1} style={{ ...moveBtnStyle, opacity: index === activeFields.length - 1 ? 0.3 : 1 }}>↓</button>
+                      <button onClick={() => removeField(field.id)} style={{ ...moveBtnStyle, color: C.red, borderColor: C.red + "22", background: C.redBg }}>✕</button>
+                    </div>
+                  </div>
+                  {field.file_url ? (
+                    <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "16px", background: C.redBg, borderRadius: 12, border: `1px solid ${C.red}22` }}>
+                      <span style={{ fontSize: 24 }}>📄</span>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <p style={{ margin: 0, fontSize: 14, fontWeight: 600, color: C.textPrimary, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{field.label || "Uploaded File"}</p>
+                        <a href={field.file_url} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: C.medBlue, textDecoration: "none" }}>View File</a>
+                      </div>
+                      <button onClick={() => updateField(field.id, "file_url", "")} style={{ padding: "6px 12px", background: C.card, border: `1px solid ${C.separator}`, borderRadius: 8, fontSize: 12, cursor: "pointer", color: C.textTertiary }}>Replace</button>
+                    </div>
+                  ) : (
+                    <label style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "24px", border: `2px dashed ${C.separator}`, borderRadius: 12, cursor: "pointer", transition: "all 0.15s", background: C.bg }}>
+                      <input type="file" style={{ display: "none" }} onChange={(e) => e.target.files && handleFileUpload(field.id, e.target.files[0])} accept="image/*,application/pdf,audio/*,video/*,.doc,.docx,.ppt,.pptx" />
+                      {uploadingFieldId === field.id ? (
+                        <p style={{ color: C.medBlue, fontSize: 14, fontWeight: 600 }}>Uploading...</p>
+                      ) : (
+                        <>
+                          <span style={{ fontSize: 24, marginBottom: 8 }}>⬆️</span>
+                          <span style={{ fontSize: 13, color: C.textTertiary, fontWeight: 600 }}>Click to upload PDF, PPT, Word, Image, Video, or Audio</span>
+                        </>
+                      )}
+                    </label>
+                  )}
                 </div>
               );
             }
             
             // Question Types
-            const typeInfo: Record<string, [string, string, string]> = { text: ["💬", "Short Text", C.medBlueBg], paragraph: ["📄", "Essay / Notes", C.medBlueSoft], dropdown: ["📋", "Single Choice", C.purpleBg], checkbox: ["☑️", "Multiple Choice", C.greenBg], toggle: ["🔀", "Yes/No", C.orangeBg], file: ["📎", "Material Upload", C.redBg] };
+            const typeInfo: Record<string, [string, string, string]> = { text: ["💬", "Short Answer", C.medBlueBg], paragraph: ["📄", "Essay Question", C.medBlueSoft], dropdown: ["📋", "Single Choice", C.purpleBg], checkbox: ["☑️", "Multiple Choice", C.greenBg] };
             const [icon, label, bg] = typeInfo[field.type] || ["❓", field.type, C.bg];
             return (
               <div key={field.id} className="field-card" style={{ background: C.card, borderRadius: 16, padding: "20px 22px", marginBottom: 16, border: `1px solid ${C.separatorLight}`, boxShadow: C.shadow }}>
@@ -361,7 +377,7 @@ export default function AssignmentBuilder() {
                     <button onClick={() => removeField(field.id)} style={{ ...moveBtnStyle, color: C.red, borderColor: C.red + "22", background: C.redBg }}>✕</button>
                   </div>
                 </div>
-                <textarea placeholder="Write your question..." value={field.label} onChange={(e) => updateField(field.id, "label", e.target.value)} style={{ ...inputStyle, minHeight: 48, resize: "vertical", marginBottom: (field.type === "dropdown" || field.type === "checkbox" || field.type === "file") ? 12 : 0, fontSize: 15, lineHeight: 1.5 }} />
+                <textarea placeholder="Write your question..." value={field.label} onChange={(e) => updateField(field.id, "label", e.target.value)} style={{ ...inputStyle, minHeight: 48, resize: "vertical", marginBottom: (field.type === "dropdown" || field.type === "checkbox") ? 12 : 0, fontSize: 15, lineHeight: 1.5 }} />
                 
                 {(field.type === "dropdown" || field.type === "checkbox") && (
                   <div style={{ display: "flex", flexDirection: "column", gap: 6, paddingLeft: 4 }}>
