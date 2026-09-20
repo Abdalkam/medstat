@@ -29,3 +29,4 @@ tauri-plugin-updater = "2"
 # Prevents Cargo from searching parent directories (like Desktop) for a workspace
 [workspace]
 
+
