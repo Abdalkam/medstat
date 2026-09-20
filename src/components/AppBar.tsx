@@ -140,9 +140,10 @@ export default function AppBar() {
         localStorage.removeItem("activeTenantId");
         localStorage.removeItem("adminDeviceId");
 
-        // 2. Hard refresh the app to the login screen.
-        // This bypasses React's unmount phase completely, preventing the crash/blank screen.
-        window.location.replace("/login");
+        // 2. Instantly reload the app to the root.
+        // This completely destroys the heavy React tree, preventing the crash/blank screen.
+        // React will boot up fresh, see no user in local storage, and safely redirect to /login.
+        window.location.href = "/";
     };
 
     const handleSettingsClick = () => {
