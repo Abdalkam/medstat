@@ -13,7 +13,7 @@ const C = {
 };
 
 interface AssignmentSummary { id: string; title: string; description: string; created_at: string; submission_count: number; graded_count: number; }
-interface TenantData { name: string; phone: string | null; logo_url: string | null; }
+interface ProfileData { username: string; phone: string | null; avatar_url: string | null; }
 
 export default function TrainerAssignments() {
   const { courseId } = useParams<{ courseId: string }>();
@@ -21,9 +21,8 @@ export default function TrainerAssignments() {
   const currentUser = JSON.parse(localStorage.getItem("currentUser") || "{}");
   const [assignments, setAssignments] = useState<AssignmentSummary[]>([]);
   const [loading, setLoading] = useState(true);
-  const [tenant, setTenant] = useState<TenantData | null>(null);
+  const [profile, setProfile] = useState<ProfileData | null>(null);
 
-  // ✅ Bulletproof logout
   function handleLogout() {
     localStorage.removeItem("currentUser");
     localStorage.removeItem("authToken");
@@ -33,19 +32,18 @@ export default function TrainerAssignments() {
     navigate("/");
   }
 
-  // Fetch tenant business info
   useEffect(() => {
-    if (!currentUser?.tenantId) return;
+    if (!currentUser?.id) return;
     let cancelled = false;
-    const fetchTenant = async () => {
+    const fetchProfile = async () => {
       try {
-        const { data } = await supabase.from("tenants").select("name, phone, logo_url").eq("id", currentUser.tenantId).maybeSingle();
-        if (!cancelled && data) setTenant(data as TenantData);
-      } catch (err: unknown) { console.error("Tenant fetch failed:", err); }
+        const { data } = await supabase.from("profile_settings").select("username, phone, avatar_url").eq("user_id", currentUser.id).maybeSingle();
+        if (!cancelled && data) setProfile(data as ProfileData);
+      } catch (err: unknown) { console.error("Profile fetch failed:", err); }
     };
-    fetchTenant();
+    fetchProfile();
     return () => { cancelled = true; };
-  }, [currentUser?.tenantId]);
+  }, [currentUser?.id]);
 
   useEffect(() => {
     if (!courseId) { setLoading(false); return; }
@@ -83,14 +81,7 @@ export default function TrainerAssignments() {
 
   return (
     <div style={{ minHeight: "100vh", background: C.bg, display: "flex", flexDirection: "column" }}>
-      {/* APP BAR with gradient */}
-      <div style={{
-        background: "linear-gradient(180deg, #FFFFFF 0%, #F9FAFE 100%)",
-        borderBottom: `1px solid ${C.separator}`,
-        padding: "16px 24px 20px",
-        boxShadow: "0 1px 6px rgba(0,0,0,0.04)",
-        position: "sticky", top: 0, zIndex: 10,
-      }}>
+      <div style={{ background: "linear-gradient(180deg, #FFFFFF 0%, #F9FAFE 100%)", borderBottom: `1px solid ${C.separator}`, padding: "16px 24px 20px", boxShadow: "0 1px 6px rgba(0,0,0,0.04)", position: "sticky", top: 0, zIndex: 10 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 16, maxWidth: "800px", margin: "0 auto" }}>
           <button onClick={() => navigate(-1)} style={{ background: C.card, border: `1px solid ${C.separator}`, borderRadius: 10, color: C.medBlue, cursor: "pointer", width: 36, height: 36, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
@@ -107,22 +98,21 @@ export default function TrainerAssignments() {
           </button>
         </div>
 
-        {/* BUSINESS DETAILS */}
-        {tenant && (
+        {profile && (
           <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 12px", background: "rgba(255,255,255,0.7)", borderRadius: 12, border: `1px solid ${C.separator}`, maxWidth: "800px", margin: "0 auto" }}>
-            {tenant.logo_url ? (
-              <img src={tenant.logo_url} alt={tenant.name || "Business"} style={{ width: 40, height: 40, borderRadius: 8, objectFit: "cover", flexShrink: 0 }} />
+            {profile.avatar_url ? (
+              <img src={profile.avatar_url} alt={profile.username || "Profile"} style={{ width: 40, height: 40, borderRadius: 8, objectFit: "cover", flexShrink: 0 }} />
             ) : (
               <div style={{ width: 40, height: 40, borderRadius: 8, background: C.medBlueBg, color: C.medBlue, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 18, flexShrink: 0 }}>
-                {(tenant.name || "B").charAt(0).toUpperCase()}
+                {(profile.username || "B").charAt(0).toUpperCase()}
               </div>
             )}
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 15, fontWeight: 700, color: C.textPrimary, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{tenant.name || "Business"}</div>
-              {tenant.phone && (
-                <a href={`tel:${tenant.phone}`} style={{ fontSize: 13, color: C.medBlue, textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4, marginTop: 2 }}>
+              <div style={{ fontSize: 15, fontWeight: 700, color: C.textPrimary, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{profile.username || "Business"}</div>
+              {profile.phone && (
+                <a href={`tel:${profile.phone}`} style={{ fontSize: 13, color: C.medBlue, textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4, marginTop: 2 }}>
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z" /></svg>
-                  {tenant.phone}
+                  {profile.phone}
                 </a>
               )}
             </div>
@@ -130,11 +120,9 @@ export default function TrainerAssignments() {
         )}
       </div>
 
-      {/* BODY */}
       <div style={{ flex: 1, padding: "24px 16px", maxWidth: "800px", margin: "0 auto", width: "100%", boxSizing: "border-box", display: "flex", flexDirection: "column" }}>
         <style>{`@keyframes fadeSlideIn { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } } .assignment-card { animation: fadeSlideIn 0.3s ease-out; }`}</style>
 
-        {/* Empty State */}
         {assignments.length === 0 && (
           <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center", padding: "40px 24px" }}>
             <div style={{ width: 88, height: 88, borderRadius: 24, background: `linear-gradient(135deg, ${C.purpleBg}, ${C.medBlueBg})`, marginBottom: 24, display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -146,7 +134,6 @@ export default function TrainerAssignments() {
           </div>
         )}
 
-        {/* Module List */}
         {assignments.length > 0 && (
           <div style={{ display: "flex", flexDirection: "column", gap: 12, flex: 1, width: "100%" }}>
             {assignments.map((a, idx) => {

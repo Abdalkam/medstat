@@ -21,9 +21,8 @@ interface FormField {
   maxChars?: number; points?: number; placeholder?: string;
   correctAnswer?: string; page_id?: string; file_url?: string;
 }
-
 interface SlidePage { id: string; title: string; }
-interface TenantData { name: string; phone: string | null; logo_url: string | null; }
+interface ProfileData { username: string; phone: string | null; avatar_url: string | null; }
 
 export default function AssignmentBuilder() {
   const { courseId, assignmentId } = useParams<{ courseId: string; assignmentId: string }>();
@@ -35,16 +34,14 @@ export default function AssignmentBuilder() {
   const [fields, setFields] = useState<FormField[]>([]);
   const [pages, setPages] = useState<SlidePage[]>([{ id: "page-1", title: "Slide 1" }]);
   const [activePageId, setActivePageId] = useState("page-1");
-  
   const [saving, setSaving] = useState(false);
   const [loadingData, setLoadingData] = useState(true);
   const [isEditing, setIsEditing] = useState(false);
   const [status, setStatus] = useState<"draft" | "published" | "closed">("draft");
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [uploadingFieldId, setUploadingFieldId] = useState<string | null>(null);
-  const [tenant, setTenant] = useState<TenantData | null>(null);
+  const [profile, setProfile] = useState<ProfileData | null>(null);
 
-  // ✅ Bulletproof logout
   function handleLogout() {
     localStorage.removeItem("currentUser");
     localStorage.removeItem("authToken");
@@ -54,19 +51,18 @@ export default function AssignmentBuilder() {
     navigate("/");
   }
 
-  // Fetch tenant business info
   useEffect(() => {
-    if (!currentUser?.tenantId) return;
+    if (!currentUser?.id) return;
     let cancelled = false;
-    const fetchTenant = async () => {
+    const fetchProfile = async () => {
       try {
-        const { data } = await supabase.from("tenants").select("name, phone, logo_url").eq("id", currentUser.tenantId).maybeSingle();
-        if (!cancelled && data) setTenant(data as TenantData);
-      } catch (err: unknown) { console.error("Tenant fetch failed:", err); }
+        const { data } = await supabase.from("profile_settings").select("username, phone, avatar_url").eq("user_id", currentUser.id).maybeSingle();
+        if (!cancelled && data) setProfile(data as ProfileData);
+      } catch (err: unknown) { console.error("Profile fetch failed:", err); }
     };
-    fetchTenant();
+    fetchProfile();
     return () => { cancelled = true; };
-  }, [currentUser?.tenantId]);
+  }, [currentUser?.id]);
 
   useEffect(() => {
     if (!assignmentId) { setLoadingData(false); return; }
@@ -74,10 +70,7 @@ export default function AssignmentBuilder() {
     const loadData = async () => {
       try {
         const { data: a } = await supabase.from("assignments").select("*").eq("id", assignmentId).maybeSingle();
-        if (a) {
-          setTitle(a.title || ""); setDescription(a.description || "");
-          setStatus(a.status || "draft");
-        }
+        if (a) { setTitle(a.title || ""); setDescription(a.description || ""); setStatus(a.status || "draft"); }
         const { data: f } = await supabase.from("assignment_fields").select("*").eq("assignment_id", assignmentId).order("sort_order", { ascending: true });
         const loadedFields = (f || []).map((field: Record<string, unknown>): FormField => ({
           id: field.id as string, type: (field.type as string) as AssignmentFieldType | "note" | "header" | "file",
@@ -90,12 +83,8 @@ export default function AssignmentBuilder() {
         }));
         setFields(loadedFields);
         const uniquePages = Array.from(new Set(loadedFields.map(f => f.page_id).filter(Boolean))) as string[];
-        if (uniquePages.length > 0) {
-          setPages(uniquePages.map((id, i) => ({ id, title: `Slide ${i+1}`})));
-          setActivePageId(uniquePages[0]);
-        }
-      } catch (err) { console.error("Failed to load:", err); }
-      finally { setLoadingData(false); }
+        if (uniquePages.length > 0) { setPages(uniquePages.map((id, i) => ({ id, title: `Slide ${i+1}`}))); setActivePageId(uniquePages[0]); }
+      } catch (err) { console.error("Failed to load:", err); } finally { setLoadingData(false); }
     };
     loadData();
   }, [assignmentId]);
@@ -105,27 +94,16 @@ export default function AssignmentBuilder() {
     setPages(prev => [...prev, { id: newId, title: `Slide ${prev.length + 1}` }]);
     setActivePageId(newId);
   };
-
   const deletePage = (pageId: string) => {
     if (pages.length === 1) return alert("You must have at least one slide.");
     setPages(prev => prev.filter(p => p.id !== pageId));
     setFields(prev => prev.filter(f => f.page_id !== pageId));
     if (activePageId === pageId) setActivePageId(pages[0].id);
   };
-
   const addField = (type: AssignmentFieldType | "note" | "header" | "file") => 
-    setFields((p) => [...p, { 
-      id: crypto.randomUUID(), type, label: "", required: false, 
-      options: type === "dropdown" || type === "checkbox" ? ["Option 1", "Option 2"] : [], 
-      fileTypes: [], sort_order: p.length, points: undefined, correctAnswer: "",
-      page_id: activePageId
-    }]);
-
-  const updateField = (id: string, key: keyof FormField, value: any) => 
-    setFields((p) => p.map((f) => (f.id === id ? { ...f, [key]: value } : f)));
-  
+    setFields((p) => [...p, { id: crypto.randomUUID(), type, label: "", required: false, options: type === "dropdown" || type === "checkbox" ? ["Option 1", "Option 2"] : [], fileTypes: [], sort_order: p.length, points: undefined, correctAnswer: "", page_id: activePageId }]);
+  const updateField = (id: string, key: keyof FormField, value: any) => setFields((p) => p.map((f) => (f.id === id ? { ...f, [key]: value } : f)));
   const removeField = (id: string) => setFields((p) => p.filter((f) => f.id !== id).map((f, i) => ({ ...f, sort_order: i })));
-  
   const moveField = (i: number, dir: "up" | "down") => {
     const pageFields = fields.filter(f => f.page_id === activePageId);
     const globalIndex = fields.findIndex(f => f.id === pageFields[i].id);
@@ -135,7 +113,6 @@ export default function AssignmentBuilder() {
     [n[globalIndex], n[swapIndex]] = [n[swapIndex], n[globalIndex]];
     setFields(n.map((f, idx) => ({ ...f, sort_order: idx })));
   };
-  
   const addOption = (fid: string) => setFields((p) => p.map((f) => (f.id === fid ? { ...f, options: [...f.options, `Option ${f.options.length + 1}`] } : f)));
   const removeOption = (fid: string, oi: number) => setFields((p) => p.map((f) => { if (f.id !== fid) return f; const o = [...f.options]; o.splice(oi, 1); return { ...f, options: o }; }));
   const updateOption = (fid: string, oi: number, v: string) => setFields((p) => p.map((f) => { if (f.id !== fid) return f; const o = [...f.options]; o[oi] = v; return { ...f, options: o }; }));
@@ -144,10 +121,8 @@ export default function AssignmentBuilder() {
     setUploadingFieldId(fieldId);
     const fileName = `${Date.now()}-${file.name}`;
     const { error } = await supabase.storage.from('slide-materials').upload(fileName, file);
-    
-    if (error) {
-      alert("Upload failed: " + error.message);
-    } else {
+    if (error) { alert("Upload failed: " + error.message); } 
+    else {
       const { data: publicUrlData } = supabase.storage.from('slide-materials').getPublicUrl(fileName);
       updateField(fieldId, "file_url", publicUrlData.publicUrl);
       updateField(fieldId, "label", file.name);
@@ -208,13 +183,8 @@ export default function AssignmentBuilder() {
 
   return (
     <div style={{ display: "flex", height: "100vh", background: C.bg, overflow: "hidden" }}>
-      <style>{`
-        @keyframes fadeSlideIn { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
-        .field-card { animation: fadeSlideIn 0.25s ease-out; }
-        input:focus, textarea:focus { border-color: ${C.medBlue} !important; box-shadow: 0 0 0 3px ${C.medBlueBg} !important; }
-      `}</style>
+      <style>{`@keyframes fadeSlideIn { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } } .field-card { animation: fadeSlideIn 0.25s ease-out; } input:focus, textarea:focus { border-color: ${C.medBlue} !important; box-shadow: 0 0 0 3px ${C.medBlueBg} !important; }`}</style>
 
-      {/* SIDEBAR */}
       <div style={{ width: 240, background: C.sidebarBg, borderRight: `1px solid ${C.separator}`, display: "flex", flexDirection: "column", flexShrink: 0 }}>
         <div style={{ padding: "20px 16px", borderBottom: `1px solid ${C.separator}`, display: "flex", alignItems: "center", gap: 10 }}>
           <button onClick={() => navigate("/trainer")} style={{ background: C.card, border: `1px solid ${C.separator}`, borderRadius: 8, color: C.medBlue, cursor: "pointer", width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -222,78 +192,52 @@ export default function AssignmentBuilder() {
           </button>
           <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>Slides</h2>
         </div>
-
         <div style={{ flex: 1, overflowY: "auto", padding: "12px 8px" }}>
           {pages.map((page, index) => (
-            <div key={page.id} 
-              onClick={() => setActivePageId(page.id)}
-              style={{
-                display: "flex", alignItems: "center", gap: 10, padding: "12px 14px", marginBottom: 6, borderRadius: 10, cursor: "pointer",
-                background: activePageId === page.id ? C.medBlueBg : "transparent",
-                border: activePageId === page.id ? `1px solid ${C.medBlue}33` : `1px solid transparent`,
-              }}>
+            <div key={page.id} onClick={() => setActivePageId(page.id)} style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 14px", marginBottom: 6, borderRadius: 10, cursor: "pointer", background: activePageId === page.id ? C.medBlueBg : "transparent", border: activePageId === page.id ? `1px solid ${C.medBlue}33` : `1px solid transparent` }}>
               <span style={{ fontSize: 12, fontWeight: 700, color: activePageId === page.id ? C.medBlue : C.textTertiary }}>{index + 1}</span>
               <span style={{ fontSize: 14, fontWeight: 600, color: activePageId === page.id ? C.medBlue : C.textSecondary, flex: 1 }}>Slide {index + 1}</span>
-              {pages.length > 1 && (
-                <button onClick={(e) => { e.stopPropagation(); deletePage(page.id); }} style={{ background: "transparent", border: "none", color: C.textTertiary, cursor: "pointer", opacity: 0.6 }}>✕</button>
-              )}
+              {pages.length > 1 && (<button onClick={(e) => { e.stopPropagation(); deletePage(page.id); }} style={{ background: "transparent", border: "none", color: C.textTertiary, cursor: "pointer", opacity: 0.6 }}>✕</button>)}
             </div>
           ))}
-          <button onClick={addPage} style={{ width: "100%", padding: "12px", marginTop: 8, background: C.card, border: `1.5px dashed ${C.separator}`, borderRadius: 10, color: C.textTertiary, fontWeight: 600, cursor: "pointer", fontSize: 13 }}>
-            + Add Slide
-          </button>
+          <button onClick={addPage} style={{ width: "100%", padding: "12px", marginTop: 8, background: C.card, border: `1.5px dashed ${C.separator}`, borderRadius: 10, color: C.textTertiary, fontWeight: 600, cursor: "pointer", fontSize: 13 }}>+ Add Slide</button>
         </div>
       </div>
 
-      {/* MAIN CONTENT */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-        
-        {/* APP BAR WITH GRADIENT + BUSINESS DETAILS */}
-        <div style={{ 
-          padding: "16px 32px", 
-          background: "linear-gradient(180deg, #FFFFFF 0%, #F9FAFE 100%)", 
-          borderBottom: `1px solid ${C.separator}`, 
-          display: "flex", flexDirection: "column", gap: 12, flexShrink: 0 
-        }}>
+        <div style={{ padding: "16px 32px", background: "linear-gradient(180deg, #FFFFFF 0%, #F9FAFE 100%)", borderBottom: `1px solid ${C.separator}`, display: "flex", flexDirection: "column", gap: 12, flexShrink: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
             <div style={{ flex: 1, minWidth: 0 }}>
               <input placeholder="Presentation Title" value={title} onChange={(e) => setTitle(e.target.value)} style={{ fontSize: 20, fontWeight: 700, border: "none", outline: "none", padding: 0, margin: 0, background: "transparent", width: "100%", color: C.textPrimary }} />
               <input placeholder="Add a subtitle or description..." value={description} onChange={(e) => setDescription(e.target.value)} style={{ fontSize: 13, border: "none", outline: "none", padding: 0, margin: "4px 0 0", background: "transparent", width: "100%", color: C.textTertiary }} />
             </div>
-            
             <div style={{ display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
               <select value={status} onChange={(e) => setStatus(e.target.value as any)} style={{ padding: "8px 12px", border: `1px solid ${C.separator}`, borderRadius: 8, fontSize: 13, background: C.bg, cursor: "pointer", outline: "none" }}>
-                <option value="draft">Draft</option>
-                <option value="published">Published</option>
-                <option value="closed">Closed</option>
+                <option value="draft">Draft</option><option value="published">Published</option><option value="closed">Closed</option>
               </select>
               <button onClick={() => setShowDeleteConfirm(true)} style={{ padding: "8px 14px", background: C.redBg, color: C.red, border: `1px solid ${C.red}22`, borderRadius: 8, fontWeight: 600, cursor: "pointer", fontSize: 13 }}>Delete</button>
-              <button onClick={handleSave} disabled={saving || !title.trim()} style={{ padding: "10px 24px", background: saving || !title.trim() ? C.textTertiary : `linear-gradient(135deg, ${C.medBlue}, #0055D4)`, color: "#fff", border: "none", borderRadius: 10, fontWeight: 700, cursor: saving || !title.trim() ? "default" : "pointer", fontSize: 13, boxShadow: saving || !title.trim() ? "none" : "0 2px 12px rgba(0,122,255,0.35)" }}>
-                {saving ? "Saving..." : "Save Module"}
-              </button>
-              {/* LOGOUT ICON */}
+              <button onClick={handleSave} disabled={saving || !title.trim()} style={{ padding: "10px 24px", background: saving || !title.trim() ? C.textTertiary : `linear-gradient(135deg, ${C.medBlue}, #0055D4)`, color: "#fff", border: "none", borderRadius: 10, fontWeight: 700, cursor: saving || !title.trim() ? "default" : "pointer", fontSize: 13, boxShadow: saving || !title.trim() ? "none" : "0 2px 12px rgba(0,122,255,0.35)" }}>{saving ? "Saving..." : "Save Module"}</button>
               <button onClick={handleLogout} title="Logout" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 40, height: 40, borderRadius: 9, background: C.redBg, border: "none", cursor: "pointer", color: C.red }}>
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></svg>
               </button>
             </div>
           </div>
 
-          {/* BUSINESS DETAILS */}
-          {tenant && (
+          {profile && (
             <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 12px", background: "rgba(255,255,255,0.7)", borderRadius: 12, border: `1px solid ${C.separator}` }}>
-              {tenant.logo_url ? (
-                <img src={tenant.logo_url} alt={tenant.name || "Business"} style={{ width: 36, height: 36, borderRadius: 8, objectFit: "cover", flexShrink: 0 }} />
+              {profile.avatar_url ? (
+                <img src={profile.avatar_url} alt={profile.username || "Profile"} style={{ width: 36, height: 36, borderRadius: 8, objectFit: "cover", flexShrink: 0 }} />
               ) : (
                 <div style={{ width: 36, height: 36, borderRadius: 8, background: C.medBlueBg, color: C.medBlue, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 16, flexShrink: 0 }}>
-                  {(tenant.name || "B").charAt(0).toUpperCase()}
+                  {(profile.username || "B").charAt(0).toUpperCase()}
                 </div>
               )}
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 14, fontWeight: 700, color: C.textPrimary, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{tenant.name || "Business"}</div>
-                {tenant.phone && (
-                  <a href={`tel:${tenant.phone}`} style={{ fontSize: 12, color: C.medBlue, textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4, marginTop: 2 }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: C.textPrimary, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{profile.username || "Business"}</div>
+                {profile.phone && (
+                  <a href={`tel:${profile.phone}`} style={{ fontSize: 12, color: C.medBlue, textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4, marginTop: 2 }}>
                     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z" /></svg>
-                    {tenant.phone}
+                    {profile.phone}
                   </a>
                 )}
               </div>
@@ -301,10 +245,7 @@ export default function AssignmentBuilder() {
           )}
         </div>
 
-        {/* SLIDE CONTENT AREA */}
         <div style={{ flex: 1, overflowY: "auto", padding: "32px 48px" }}>
-          
-          {/* Add Content Toolbar */}
           <div style={{ marginBottom: 24, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
             <span style={{ fontSize: 11, color: C.textTertiary, textTransform: "uppercase", fontWeight: 700, letterSpacing: "1px", marginRight: 8 }}>Add to Slide:</span>
             <button onClick={() => addField("header")} style={{ padding: "8px 14px", background: C.purpleBg, color: C.purple, border: "none", borderRadius: 10, fontSize: 12, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>📌 Title / Header</button>
@@ -316,7 +257,6 @@ export default function AssignmentBuilder() {
             <button onClick={() => addField("checkbox")} style={{ padding: "8px 14px", background: C.greenBg, color: C.green, border: "none", borderRadius: 10, fontSize: 12, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>☑️ Multiple Choice</button>
           </div>
 
-          {/* Empty Slide State */}
           {activeFields.length === 0 && (
             <div style={{ background: C.card, borderRadius: 24, padding: "56px 40px", textAlign: "center", boxShadow: C.shadow, border: `2px dashed ${C.separator}`, marginTop: 20 }}>
               <div style={{ width: 76, height: 76, borderRadius: 22, background: `linear-gradient(135deg, ${C.medBlueBg}, ${C.purpleBg})`, margin: "0 auto 18px", display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -327,7 +267,6 @@ export default function AssignmentBuilder() {
             </div>
           )}
 
-          {/* Slide Cards */}
           {activeFields.map((field, index) => {
             if (field.type === "header") {
               return (
@@ -384,21 +323,12 @@ export default function AssignmentBuilder() {
                   ) : (
                     <label style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "24px", border: `2px dashed ${C.separator}`, borderRadius: 12, cursor: "pointer", transition: "all 0.15s", background: C.bg }}>
                       <input type="file" style={{ display: "none" }} onChange={(e) => e.target.files && handleFileUpload(field.id, e.target.files[0])} accept="image/*,application/pdf,audio/*,video/*,.doc,.docx,.ppt,.pptx" />
-                      {uploadingFieldId === field.id ? (
-                        <p style={{ color: C.medBlue, fontSize: 14, fontWeight: 600 }}>Uploading...</p>
-                      ) : (
-                        <>
-                          <span style={{ fontSize: 24, marginBottom: 8 }}>⬆️</span>
-                          <span style={{ fontSize: 13, color: C.textTertiary, fontWeight: 600 }}>Click to upload PDF, PPT, Word, Image, Video, or Audio</span>
-                        </>
-                      )}
+                      {uploadingFieldId === field.id ? (<p style={{ color: C.medBlue, fontSize: 14, fontWeight: 600 }}>Uploading...</p>) : (<><span style={{ fontSize: 24, marginBottom: 8 }}>⬆️</span><span style={{ fontSize: 13, color: C.textTertiary, fontWeight: 600 }}>Click to upload PDF, PPT, Word, Image, Video, or Audio</span></>)}
                     </label>
                   )}
                 </div>
               );
             }
-            
-            // Question Types
             const typeInfo: Record<string, [string, string, string]> = { text: ["💬", "Short Answer", C.medBlueBg], paragraph: ["📄", "Essay Question", C.medBlueSoft], dropdown: ["📋", "Single Choice", C.purpleBg], checkbox: ["☑️", "Multiple Choice", C.greenBg] };
             const [icon, label, bg] = typeInfo[field.type] || ["❓", field.type, C.bg];
             return (
@@ -426,7 +356,6 @@ export default function AssignmentBuilder() {
                   </div>
                 </div>
                 <textarea placeholder="Write your question..." value={field.label} onChange={(e) => updateField(field.id, "label", e.target.value)} style={{ ...inputStyle, minHeight: 48, resize: "vertical", marginBottom: (field.type === "dropdown" || field.type === "checkbox") ? 12 : 0, fontSize: 15, lineHeight: 1.5 }} />
-                
                 {(field.type === "dropdown" || field.type === "checkbox") && (
                   <div style={{ display: "flex", flexDirection: "column", gap: 6, paddingLeft: 4 }}>
                     <p style={{ margin: "0 0 4px 0", fontSize: 11, color: C.textTertiary, fontWeight: 600 }}>Select the correct answer:</p>
@@ -447,7 +376,6 @@ export default function AssignmentBuilder() {
         </div>
       </div>
 
-      {/* DELETE CONFIRMATION MODAL */}
       {showDeleteConfirm && (
         <div onClick={() => setShowDeleteConfirm(false)} style={{ position: "fixed", top: 0, left: 0, width: "100%", height: "100%", background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 16, boxSizing: "border-box" }}>
           <div onClick={(e) => e.stopPropagation()} style={{ background: C.card, borderRadius: 20, padding: 28, maxWidth: 400, width: "100%", boxShadow: "0 20px 50px rgba(0,0,0,0.2)", textAlign: "center" }}>

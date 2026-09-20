@@ -11,7 +11,7 @@ const C = {
 };
 
 interface FormField { id: string; type: string; label: string; required: boolean; options: string[]; page_id: string; file_url: string; }
-interface TenantData { name: string; phone: string | null; logo_url: string | null; }
+interface ProfileData { username: string; phone: string | null; avatar_url: string | null; }
 
 export default function UserAssignmentTaker() {
   const { assignmentId } = useParams();
@@ -25,7 +25,7 @@ export default function UserAssignmentTaker() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [activeSlide, setActiveSlide] = useState(0);
-  const [tenant, setTenant] = useState<TenantData | null>(null);
+  const [profile, setProfile] = useState<ProfileData | null>(null);
 
   function handleLogout() {
     localStorage.removeItem("currentUser");
@@ -37,17 +37,21 @@ export default function UserAssignmentTaker() {
   }
 
   useEffect(() => {
-    if (!currentUser?.tenantId) return;
+    if (!currentUser?.id) return;
     let cancelled = false;
-    const fetchTenant = async () => {
+    const fetchProfile = async () => {
       try {
-        const { data } = await supabase.from("tenants").select("name, phone, logo_url").eq("id", currentUser.tenantId).maybeSingle();
-        if (!cancelled && data) setTenant(data as TenantData);
-      } catch (err: unknown) { console.error("Tenant fetch failed:", err); }
+        const { data } = await supabase
+          .from("profile_settings")
+          .select("username, phone, avatar_url")
+          .eq("user_id", currentUser.id)
+          .maybeSingle();
+        if (!cancelled && data) setProfile(data as ProfileData);
+      } catch (err: unknown) { console.error("Profile fetch failed:", err); }
     };
-    fetchTenant();
+    fetchProfile();
     return () => { cancelled = true; };
-  }, [currentUser?.tenantId]);
+  }, [currentUser?.id]);
 
   useEffect(() => {
     if (!assignmentId) return;
@@ -101,36 +105,26 @@ export default function UserAssignmentTaker() {
 
   return (
     <div style={{ minHeight: "100vh", background: C.bg, display: "flex", flexDirection: "column" }}>
-      {/* APP BAR with gradient */}
-      <div style={{
-        background: "linear-gradient(180deg, #FFFFFF 0%, #F9FAFE 100%)",
-        borderBottom: `1px solid ${C.separator}`,
-        padding: "12px 16px",
-        boxShadow: "0 1px 6px rgba(0,0,0,0.04)",
-        position: "sticky", top: 0, zIndex: 10,
-      }}>
+      <div style={{ background: "linear-gradient(180deg, #FFFFFF 0%, #F9FAFE 100%)", borderBottom: `1px solid ${C.separator}`, padding: "12px 16px", boxShadow: "0 1px 6px rgba(0,0,0,0.04)", position: "sticky", top: 0, zIndex: 10 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <button onClick={() => navigate("/user")} style={{ background: C.card, border: `1px solid ${C.separator}`, borderRadius: 10, color: C.medBlue, cursor: "pointer", width: 36, height: 36, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="15 18 9 12 15 6" /></svg>
           </button>
 
-          {/* BUSINESS DETAILS directly in AppBar */}
           <div style={{ display: "flex", alignItems: "center", gap: 12, flex: 1, minWidth: 0 }}>
-            {tenant?.logo_url ? (
-              <img src={tenant.logo_url} alt={tenant.name || "Business"} style={{ width: 36, height: 36, borderRadius: 8, objectFit: "cover", flexShrink: 0 }} />
+            {profile?.avatar_url ? (
+              <img src={profile.avatar_url} alt={profile.username || "Profile"} style={{ width: 36, height: 36, borderRadius: 8, objectFit: "cover", flexShrink: 0 }} />
             ) : (
               <div style={{ width: 36, height: 36, borderRadius: 8, background: C.medBlueBg, color: C.medBlue, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 16, flexShrink: 0 }}>
-                {(tenant?.name || "B").charAt(0).toUpperCase()}
+                {(profile?.username || "B").charAt(0).toUpperCase()}
               </div>
             )}
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 15, fontWeight: 700, color: C.textPrimary, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                {tenant?.name || "Business"}
-              </div>
-              {tenant?.phone && (
-                <a href={`tel:${tenant.phone}`} style={{ fontSize: 13, color: C.medBlue, textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4, marginTop: 2 }}>
+              <div style={{ fontSize: 15, fontWeight: 700, color: C.textPrimary, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{profile?.username || "Business"}</div>
+              {profile?.phone && (
+                <a href={`tel:${profile.phone}`} style={{ fontSize: 13, color: C.medBlue, textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4, marginTop: 2 }}>
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z" /></svg>
-                  {tenant.phone}
+                  {profile.phone}
                 </a>
               )}
             </div>
@@ -142,13 +136,8 @@ export default function UserAssignmentTaker() {
         </div>
       </div>
 
-      {/* BODY */}
       <div style={{ flex: 1, padding: "24px 16px 100px", maxWidth: "800px", margin: "0 auto", width: "100%", boxSizing: "border-box" }}>
-        
-        {/* Assignment Title moved to body */}
-        <h1 style={{ margin: "0 0 24px", fontSize: 28, fontWeight: 800, letterSpacing: "-0.5px", color: C.textPrimary }}>
-          {assignment?.title}
-        </h1>
+        <h1 style={{ margin: "0 0 24px", fontSize: 28, fontWeight: 800, letterSpacing: "-0.5px", color: C.textPrimary }}>{assignment?.title}</h1>
 
         {isGraded && (
           <div style={{ background: C.greenBg, borderRadius: 14, padding: 20, marginBottom: 24, border: `1px solid ${C.green}33`, display: "flex", alignItems: "center", gap: 16 }}>
@@ -169,14 +158,7 @@ export default function UserAssignmentTaker() {
             }
             if (field.type === "note") {
               return (
-                <div key={field.id} style={{
-                  width: "calc(100% + 32px)", marginLeft: "-16px", marginRight: "-16px", boxSizing: "border-box",
-                  background: C.orangeBg, borderLeft: `6px solid ${C.orange}`, padding: "20px 24px",
-                  color: C.textPrimary, fontSize: 15, lineHeight: 1.7, marginBottom: 8,
-                  whiteSpace: "pre-wrap", wordBreak: "break-word",
-                }}>
-                  {field.label}
-                </div>
+                <div key={field.id} style={{ width: "calc(100% + 32px)", marginLeft: "-16px", marginRight: "-16px", boxSizing: "border-box", background: C.orangeBg, borderLeft: `6px solid ${C.orange}`, padding: "20px 24px", color: C.textPrimary, fontSize: 15, lineHeight: 1.7, marginBottom: 8, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{field.label}</div>
               );
             }
             if (field.type === "file" && field.file_url) {
@@ -184,19 +166,7 @@ export default function UserAssignmentTaker() {
               const isVideo = field.file_url.match(/\.(mp4|webm|mov)$/i);
               return (
                 <div key={field.id} style={{ background: C.card, borderRadius: 16, overflow: "hidden", boxShadow: C.shadow, marginBottom: 8 }}>
-                  {isImage ? (
-                    <img src={field.file_url} alt={field.label} style={{ width: "100%", maxHeight: "400px", objectFit: "cover" }} />
-                  ) : isVideo ? (
-                    <video controls style={{ width: "100%", maxHeight: "400px" }} src={field.file_url} />
-                  ) : (
-                    <a href={field.file_url} target="_blank" rel="noreferrer" style={{ display: "flex", alignItems: "center", gap: 12, padding: "16px", background: C.bg, color: C.medBlue, textDecoration: "none" }}>
-                      <span style={{ fontSize: 24 }}>📄</span>
-                      <div>
-                        <div style={{ fontWeight: 600, color: C.textPrimary }}>{field.label || "View File"}</div>
-                        <div style={{ fontSize: 12 }}>Click to download/view</div>
-                      </div>
-                    </a>
-                  )}
+                  {isImage ? <img src={field.file_url} alt={field.label} style={{ width: "100%", maxHeight: "400px", objectFit: "cover" }} /> : isVideo ? <video controls style={{ width: "100%", maxHeight: "400px" }} src={field.file_url} /> : <a href={field.file_url} target="_blank" rel="noreferrer" style={{ display: "flex", alignItems: "center", gap: 12, padding: "16px", background: C.bg, color: C.medBlue, textDecoration: "none" }}><span style={{ fontSize: 24 }}>📄</span><div><div style={{ fontWeight: 600, color: C.textPrimary }}>{field.label || "View File"}</div><div style={{ fontSize: 12 }}>Click to download/view</div></div></a>}
                 </div>
               );
             }
@@ -208,26 +178,8 @@ export default function UserAssignmentTaker() {
                 </div>
                 {field.type === "text" && <input type="text" value={answers[field.id] || ""} onChange={(e) => setAnswer(field.id, e.target.value)} disabled={isSubmitted} style={{ width: "100%", padding: "12px", border: `1px solid ${C.separator}`, borderRadius: 10, fontSize: 15 }} />}
                 {field.type === "paragraph" && <textarea rows={4} value={answers[field.id] || ""} onChange={(e) => setAnswer(field.id, e.target.value)} disabled={isSubmitted} style={{ width: "100%", padding: "12px", border: `1px solid ${C.separator}`, borderRadius: 10, fontSize: 15 }} />}
-                {field.type === "dropdown" && (
-                  <select value={answers[field.id] || ""} onChange={(e) => setAnswer(field.id, e.target.value)} disabled={isSubmitted} style={{ width: "100%", padding: "12px", border: `1px solid ${C.separator}`, borderRadius: 10, fontSize: 15 }}>
-                    <option value="" disabled>Select...</option>
-                    {field.options?.map((opt: string) => <option key={opt} value={opt}>{opt}</option>)}
-                  </select>
-                )}
-                {field.type === "checkbox" && (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                    {field.options?.map((opt: string) => (
-                      <label key={opt} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 15, cursor: "pointer" }}>
-                        <input type="checkbox" checked={answers[field.id]?.includes(opt) || false} onChange={(e) => {
-                          const current = answers[field.id] || [];
-                          if (e.target.checked) setAnswer(field.id, [...current, opt]);
-                          else setAnswer(field.id, current.filter((o: string) => o !== opt));
-                        }} disabled={isSubmitted} />
-                        {opt}
-                      </label>
-                    ))}
-                  </div>
-                )}
+                {field.type === "dropdown" && <select value={answers[field.id] || ""} onChange={(e) => setAnswer(field.id, e.target.value)} disabled={isSubmitted} style={{ width: "100%", padding: "12px", border: `1px solid ${C.separator}`, borderRadius: 10, fontSize: 15 }}><option value="" disabled>Select...</option>{field.options?.map((opt: string) => <option key={opt} value={opt}>{opt}</option>)}</select>}
+                {field.type === "checkbox" && <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>{field.options?.map((opt: string) => (<label key={opt} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 15, cursor: "pointer" }}><input type="checkbox" checked={answers[field.id]?.includes(opt) || false} onChange={(e) => { const current = answers[field.id] || []; if (e.target.checked) setAnswer(field.id, [...current, opt]); else setAnswer(field.id, current.filter((o: string) => o !== opt)); }} disabled={isSubmitted} />{opt}</label>))}</div>}
               </div>
             );
           })}
@@ -235,31 +187,13 @@ export default function UserAssignmentTaker() {
 
         {slides.length > 1 && (
           <div style={{ display: "flex", justifyContent: "space-between", marginTop: 32 }}>
-            <button onClick={() => setActiveSlide(prev => Math.max(0, prev - 1))} disabled={activeSlide === 0}
-              style={{ padding: "12px 24px", background: C.card, border: `1px solid ${C.separator}`, borderRadius: 12, fontWeight: 600, cursor: activeSlide === 0 ? "not-allowed" : "pointer", opacity: activeSlide === 0 ? 0.5 : 1, color: C.textPrimary }}>
-              Previous
-            </button>
-            {activeSlide < slides.length - 1 ? (
-              <button onClick={() => setActiveSlide(prev => Math.min(slides.length - 1, prev + 1))}
-                style={{ padding: "12px 24px", background: C.medBlue, color: "#fff", border: "none", borderRadius: 12, fontWeight: 600, cursor: "pointer" }}>
-                Next Slide
-              </button>
-            ) : (
-              !isSubmitted && (
-                <button onClick={handleSubmit} disabled={submitting}
-                  style={{ padding: "12px 24px", background: C.green, color: "#fff", border: "none", borderRadius: 12, fontWeight: 700, cursor: "pointer", opacity: submitting ? 0.5 : 1 }}>
-                  {submitting ? "Saving..." : "Finish & Submit"}
-                </button>
-              )
-            )}
+            <button onClick={() => setActiveSlide(prev => Math.max(0, prev - 1))} disabled={activeSlide === 0} style={{ padding: "12px 24px", background: C.card, border: `1px solid ${C.separator}`, borderRadius: 12, fontWeight: 600, cursor: activeSlide === 0 ? "not-allowed" : "pointer", opacity: activeSlide === 0 ? 0.5 : 1, color: C.textPrimary }}>Previous</button>
+            {activeSlide < slides.length - 1 ? <button onClick={() => setActiveSlide(prev => Math.min(slides.length - 1, prev + 1))} style={{ padding: "12px 24px", background: C.medBlue, color: "#fff", border: "none", borderRadius: 12, fontWeight: 600, cursor: "pointer" }}>Next Slide</button> : !isSubmitted && <button onClick={handleSubmit} disabled={submitting} style={{ padding: "12px 24px", background: C.green, color: "#fff", border: "none", borderRadius: 12, fontWeight: 700, cursor: "pointer", opacity: submitting ? 0.5 : 1 }}>{submitting ? "Saving..." : "Finish & Submit"}</button>}
           </div>
         )}
-
         {slides.length <= 1 && !isSubmitted && (
           <div style={{ marginTop: 32, display: "flex", justifyContent: "center" }}>
-            <button onClick={handleSubmit} disabled={submitting} style={{ width: "100%", padding: 16, background: C.green, color: "#fff", border: "none", borderRadius: 14, fontWeight: 700, fontSize: 16, cursor: "pointer", boxShadow: "0 4px 12px rgba(52,199,89,0.3)" }}>
-              {submitting ? "Saving..." : hasQuestions ? "Submit Assessment" : "Complete & Unlock Next Module"}
-            </button>
+            <button onClick={handleSubmit} disabled={submitting} style={{ width: "100%", padding: 16, background: C.green, color: "#fff", border: "none", borderRadius: 14, fontWeight: 700, fontSize: 16, cursor: "pointer", boxShadow: "0 4px 12px rgba(52,199,89,0.3)" }}>{submitting ? "Saving..." : hasQuestions ? "Submit Assessment" : "Complete & Unlock Next Module"}</button>
           </div>
         )}
       </div>
