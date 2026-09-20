@@ -2,7 +2,6 @@
 import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "../auth/supabase";
-import { stopPeriodicPull } from "../database/sync";
 import type { BusinessSettings } from "../types";
 
 interface SupabaseUser {
@@ -38,7 +37,7 @@ export default function AppBar() {
     const [settings, setSettings] = useState<BusinessSettings | null>(null);
     const [currentUser, setCurrentUser] = useState<SupabaseUser | null>(null);
     const [menuOpen, setMenuOpen] = useState(false);
-    const [isLoggingOut, setIsLoggingOut] = useState(false);
+    const [isLoggingOut] = useState(false);
     const menuRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
@@ -133,27 +132,18 @@ export default function AppBar() {
         return () => document.removeEventListener("mousedown", handleClickOutside);
     }, []);
 
-    // ✅ FIX: Hard refresh prevents freezing on heavy components like AssignmentBuilder
+    // ✅ FIX: Borrowed EXACTLY from UserDashboard.tsx / TrainerDashboard.tsx
     const handleLogout = () => {
-        if (isLoggingOut) return;
-        setIsLoggingOut(true);
-        
-        // 1. Stop background sync just in case
-        stopPeriodicPull();
-        
-        // 2. Clear absolutely ALL local storage and session data
+        // Clear absolutely ALL local storage and session data to prevent infinite loops
         localStorage.removeItem("currentUser");
         localStorage.removeItem("authToken");
-        localStorage.removeItem("activeTenantId");
         localStorage.removeItem("adminDeviceId");
 
-        // 3. Fire and forget Supabase sign out
-        supabase.auth.signOut().catch(err => console.warn(err));
-
-        // 4. Hard refresh to login screen (Prevents React from freezing)
-        // We DO NOT dispatch the authStateChanged event here because 
-        // window.location.replace instantly destroys the React app anyway.
-        window.location.replace("/login");
+        // Notify the rest of the app
+        window.dispatchEvent(new Event("authStateChanged"));
+        
+        // Send them to the root "/" (Startup) on logout
+        navigate("/");
     };
 
     const handleSettingsClick = () => {
