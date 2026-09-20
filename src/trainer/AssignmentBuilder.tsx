@@ -194,73 +194,78 @@ export default function AssignmentBuilder() {
   const questionFields = activeFields.filter((f) => f.type !== "note" && f.type !== "header" && f.type !== "file");
 
   return (
-    <div style={{ display: "flex", height: "100vh", background: C.card, overflow: "hidden", fontFamily: FONT, WebkitFontSmoothing: "antialiased", MozOsxFontSmoothing: "grayscale" }}>
+    <div style={{ minHeight: "100vh", background: C.card, fontFamily: FONT, WebkitFontSmoothing: "antialiased", MozOsxFontSmoothing: "grayscale" }}>
       <style>{`@keyframes fadeSlideIn { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } } .field-card { animation: fadeSlideIn 0.25s ease-out; } input:focus, textarea:focus { border-color: ${C.medBlue} !important; box-shadow: 0 0 0 3px ${C.medBlueBg} !important; }`}</style>
 
-      {/* SIDEBAR */}
-      <div style={{ width: 240, background: C.sidebarBg, borderRight: `1px solid ${C.separator}`, display: "flex", flexDirection: "column", flexShrink: 0 }}>
-        <div style={{ padding: "20px 16px", borderBottom: `1px solid ${C.separator}`, display: "flex", alignItems: "center", gap: 10 }}>
-          <button onClick={() => navigate("/trainer")} style={{ background: C.card, border: `1px solid ${C.separator}`, borderRadius: 8, color: C.medBlue, cursor: "pointer", width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="15 18 9 12 15 6" /></svg>
+      {/* SINGLE APP BAR — borrowed from UploadMaterials */}
+      <div style={{ borderBottom: `1px solid ${C.separator}`, padding: "12px 24px", position: "sticky", top: 0, zIndex: 10, width: "100%", boxSizing: "border-box", background: C.card }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, width: "100%" }}>
+          <button onClick={() => navigate(`/trainer/assignments/${courseId}`)} style={{ background: C.bg, border: `1px solid ${C.separator}`, borderRadius: 10, color: C.medBlue, cursor: "pointer", width: 36, height: 36, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="15 18 9 12 15 6" /></svg>
           </button>
-          <h2 style={{ ...TS.h2, fontSize: 16, fontWeight: 700 }}>Slides</h2>
-        </div>
-        <div style={{ flex: 1, overflowY: "auto", padding: "12px 8px" }}>
-          {pages.map((page, index) => (
-            <div key={page.id} onClick={() => setActivePageId(page.id)} style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 14px", marginBottom: 6, borderRadius: 10, cursor: "pointer", background: activePageId === page.id ? C.medBlueBg : "transparent", border: activePageId === page.id ? `1px solid ${C.medBlue}33` : `1px solid transparent` }}>
-              <span style={{ ...TS.caption, fontSize: 12, color: activePageId === page.id ? C.medBlue : C.textTertiary }}>{index + 1}</span>
-              <span style={{ ...TS.label, fontSize: 14, fontWeight: 600, color: activePageId === page.id ? C.medBlue : C.textSecondary, flex: 1 }}>Slide {index + 1}</span>
-              {pages.length > 1 && (<button onClick={(e) => { e.stopPropagation(); deletePage(page.id); }} style={{ background: "transparent", border: "none", color: C.textTertiary, cursor: "pointer", opacity: 0.6 }}>✕</button>)}
-            </div>
-          ))}
-          <button onClick={addPage} style={{ ...TS.input, width: "100%", padding: "12px", marginTop: 8, background: C.card, border: `1px dashed ${C.separator}`, borderRadius: 10, color: C.textTertiary, fontWeight: 600, fontSize: 13, cursor: "pointer" }}>+ Add Slide</button>
-        </div>
-      </div>
 
-      {/* MAIN CONTENT */}
-      <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-        {/* APP BAR */}
-        <div style={{ borderBottom: `1px solid ${C.separator}`, padding: "16px 32px", display: "flex", flexDirection: "column", gap: 12, flexShrink: 0, background: C.card }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <input placeholder="Presentation Title" value={title} onChange={(e) => setTitle(e.target.value)} style={{ ...TS.h2, fontSize: 20, fontWeight: 700, border: "none", outline: "none", padding: 0, margin: 0, background: "transparent", width: "100%" }} />
-              <input placeholder="Add a subtitle or description..." value={description} onChange={(e) => setDescription(e.target.value)} style={{ ...TS.label, border: "none", outline: "none", padding: 0, margin: "4px 0 0", background: "transparent", width: "100%" }} />
-            </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
-              <select value={status} onChange={(e) => setStatus(e.target.value as any)} style={{ ...TS.input, padding: "8px 12px", border: `1px solid ${C.separator}`, borderRadius: 8, fontSize: 13, background: C.bg, cursor: "pointer", outline: "none" }}>
-                <option value="draft">Draft</option><option value="published">Published</option><option value="closed">Closed</option>
-              </select>
-              <button onClick={() => setShowDeleteConfirm(true)} style={{ ...TS.input, padding: "8px 14px", background: C.redBg, color: C.red, border: `1px solid ${C.red}22`, borderRadius: 8, fontWeight: 600, cursor: "pointer", fontSize: 13 }}>Delete</button>
-              <button onClick={handleSave} disabled={saving || !title.trim()} style={{ ...TS.input, padding: "10px 24px", background: saving || !title.trim() ? C.textTertiary : C.medBlue, color: "#fff", border: "none", borderRadius: 10, fontWeight: 700, cursor: saving || !title.trim() ? "default" : "pointer", fontSize: 13 }}>{saving ? "Saving..." : "Save Module"}</button>
-              <button onClick={handleLogout} title="Logout" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 40, height: 40, borderRadius: 9, background: C.redBg, border: "none", cursor: "pointer", color: C.red, flexShrink: 0 }}>
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></svg>
-              </button>
-            </div>
-          </div>
-
-          {/* BUSINESS DETAILS */}
-          <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 12px", background: C.bg, borderRadius: 10, border: `1px solid ${C.separator}` }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, flex: 1, minWidth: 0 }}>
             {business?.logo ? (
-              <img src={business.logo} alt={business.business_name || "Business"} style={{ width: 32, height: 32, borderRadius: 8, objectFit: "cover", flexShrink: 0 }} />
+              <img src={business.logo} alt={business.business_name || "Business"} style={{ width: 36, height: 36, borderRadius: 8, objectFit: "cover", flexShrink: 0 }} />
             ) : (
-              <div style={{ ...TS.h3, width: 32, height: 32, borderRadius: 8, background: C.medBlueBg, color: C.medBlue, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, flexShrink: 0 }}>
+              <div style={{ ...TS.h3, width: 36, height: 36, borderRadius: 8, background: C.medBlueBg, color: C.medBlue, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, flexShrink: 0 }}>
                 {(business?.business_name || "B").charAt(0).toUpperCase()}
               </div>
             )}
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ ...TS.h3, fontSize: 14, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{business?.business_name || "Business"}</div>
+              <div style={{ ...TS.h3, fontSize: 15, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{business?.business_name || "Business"}</div>
               {business?.phone && (
-                <a href={`tel:${business.phone}`} style={{ ...TS.label, fontSize: 12, color: C.medBlue, textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4, marginTop: 2 }}>
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z" /></svg>
+                <a href={`tel:${business.phone}`} style={{ ...TS.label, color: C.medBlue, textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4, marginTop: 2 }}>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z" /></svg>
                   {business.phone}
                 </a>
               )}
             </div>
           </div>
+
+          <button onClick={handleLogout} title="Logout" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 40, height: 40, borderRadius: 9, background: C.redBg, border: "none", cursor: "pointer", color: C.red, flexShrink: 0 }}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></svg>
+          </button>
+        </div>
+      </div>
+
+      {/* SIDEBAR + MAIN CONTENT */}
+      <div style={{ display: "flex", minHeight: "calc(100vh - 61px)" }}>
+        {/* SIDEBAR */}
+        <div style={{ width: 240, background: C.sidebarBg, borderRight: `1px solid ${C.separator}`, display: "flex", flexDirection: "column", flexShrink: 0 }}>
+          <div style={{ padding: "20px 16px", borderBottom: `1px solid ${C.separator}` }}>
+            <h2 style={{ ...TS.h2, fontSize: 16, fontWeight: 700 }}>Slides</h2>
+          </div>
+          <div style={{ flex: 1, overflowY: "auto", padding: "12px 8px" }}>
+            {pages.map((page, index) => (
+              <div key={page.id} onClick={() => setActivePageId(page.id)} style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 14px", marginBottom: 6, borderRadius: 10, cursor: "pointer", background: activePageId === page.id ? C.medBlueBg : "transparent", border: activePageId === page.id ? `1px solid ${C.medBlue}33` : `1px solid transparent` }}>
+                <span style={{ ...TS.caption, fontSize: 12, color: activePageId === page.id ? C.medBlue : C.textTertiary }}>{index + 1}</span>
+                <span style={{ ...TS.label, fontSize: 14, fontWeight: 600, color: activePageId === page.id ? C.medBlue : C.textSecondary, flex: 1 }}>Slide {index + 1}</span>
+                {pages.length > 1 && (<button onClick={(e) => { e.stopPropagation(); deletePage(page.id); }} style={{ background: "transparent", border: "none", color: C.textTertiary, cursor: "pointer", opacity: 0.6 }}>✕</button>)}
+              </div>
+            ))}
+            <button onClick={addPage} style={{ ...TS.input, width: "100%", padding: "12px", marginTop: 8, background: C.card, border: `1px dashed ${C.separator}`, borderRadius: 10, color: C.textTertiary, fontWeight: 600, fontSize: 13, cursor: "pointer" }}>+ Add Slide</button>
+          </div>
         </div>
 
-        {/* SLIDE CONTENT */}
+        {/* MAIN CONTENT */}
         <div style={{ flex: 1, overflowY: "auto", padding: "32px 48px" }}>
+          {/* Title + Controls row */}
+          <div style={{ marginBottom: 24 }}>
+            <input placeholder="Presentation Title" value={title} onChange={(e) => setTitle(e.target.value)} style={{ ...TS.h1, fontSize: 28, border: "none", outline: "none", padding: 0, margin: 0, background: "transparent", width: "100%" }} />
+            <input placeholder="Add a subtitle or description..." value={description} onChange={(e) => setDescription(e.target.value)} style={{ ...TS.bodySm, border: "none", outline: "none", padding: 0, margin: "4px 0 0", background: "transparent", width: "100%" }} />
+            <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 16 }}>
+              <select value={status} onChange={(e) => setStatus(e.target.value as any)} style={{ ...TS.input, padding: "8px 12px", border: `1px solid ${C.separator}`, borderRadius: 8, fontSize: 13, background: C.bg, cursor: "pointer", outline: "none" }}>
+                <option value="draft">Draft</option><option value="published">Published</option><option value="closed">Closed</option>
+              </select>
+              {isEditing && (
+                <button onClick={() => setShowDeleteConfirm(true)} style={{ ...TS.input, padding: "8px 14px", background: C.redBg, color: C.red, border: `1px solid ${C.red}22`, borderRadius: 8, fontWeight: 600, cursor: "pointer", fontSize: 13 }}>Delete</button>
+              )}
+              <button onClick={handleSave} disabled={saving || !title.trim()} style={{ ...TS.input, padding: "10px 24px", background: saving || !title.trim() ? C.textTertiary : C.medBlue, color: "#fff", border: "none", borderRadius: 10, fontWeight: 700, cursor: saving || !title.trim() ? "default" : "pointer", fontSize: 13 }}>{saving ? "Saving..." : "Save Module"}</button>
+            </div>
+          </div>
+
+          {/* Add Content Toolbar */}
           <div style={{ marginBottom: 24, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
             <span style={{ ...TS.caption, marginRight: 8 }}>Add to Slide:</span>
             <button onClick={() => addField("header")} style={{ ...TS.input, padding: "8px 14px", background: C.purpleBg, color: C.purple, border: "none", borderRadius: 10, fontSize: 12, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>📌 Title / Header</button>
@@ -272,6 +277,7 @@ export default function AssignmentBuilder() {
             <button onClick={() => addField("checkbox")} style={{ ...TS.input, padding: "8px 14px", background: C.greenBg, color: C.green, border: "none", borderRadius: 10, fontSize: 12, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>☑️ Multiple Choice</button>
           </div>
 
+          {/* Empty Slide */}
           {activeFields.length === 0 && (
             <div style={{ background: C.bg, borderRadius: 16, padding: "56px 40px", textAlign: "center", border: `2px dashed ${C.separator}`, marginTop: 20 }}>
               <div style={{ width: 76, height: 76, borderRadius: 22, background: C.medBlueBg, margin: "0 auto 18px", display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -282,6 +288,7 @@ export default function AssignmentBuilder() {
             </div>
           )}
 
+          {/* Slide Fields */}
           {activeFields.map((field, index) => {
             if (field.type === "header") {
               return (
