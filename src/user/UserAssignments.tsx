@@ -9,9 +9,22 @@ const C = {
   greenBg: "#EAF9EE", orange: "#FF9F0A", orangeBg: "#FFF6EB", red: "#FF3B30", redBg: "#FFEFEE", purple: "#AF52DE",
 };
 
+const FONT = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif";
+
+const TS = {
+  h1: { fontSize: 28, fontWeight: 800, letterSpacing: "-0.03em", lineHeight: 1.15, color: C.textPrimary, fontFamily: FONT },
+  h2: { fontSize: 22, fontWeight: 700, letterSpacing: "-0.02em", lineHeight: 1.25, color: C.textPrimary, fontFamily: FONT },
+  h3: { fontSize: 17, fontWeight: 600, letterSpacing: "-0.015em", lineHeight: 1.3, color: C.textPrimary, fontFamily: FONT },
+  body: { fontSize: 16, fontWeight: 400, letterSpacing: "-0.005em", lineHeight: 1.75, color: C.textPrimary, fontFamily: FONT },
+  bodySm: { fontSize: 14, fontWeight: 400, letterSpacing: "-0.005em", lineHeight: 1.5, color: C.textTertiary, fontFamily: FONT },
+  label: { fontSize: 13, fontWeight: 500, letterSpacing: "-0.005em", lineHeight: 1.4, fontFamily: FONT },
+  caption: { fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", lineHeight: 1.2, textTransform: "uppercase" as const, fontFamily: FONT },
+  input: { fontSize: 16, fontWeight: 400, letterSpacing: "-0.005em", lineHeight: 1.5, fontFamily: FONT, color: C.textPrimary },
+};
+
 interface AssignmentData { id: string; title: string; description: string; video_url?: string; }
 interface SubmissionData { id: string; assignment_id: string; graded_at: string | null; }
-interface ProfileData { username: string; phone: string | null; avatar_url: string | null; }
+interface BusinessData { business_name: string | null; phone: string | null; logo: string | null; }
 
 export default function UserAssignments() {
   const { courseId } = useParams();
@@ -20,7 +33,7 @@ export default function UserAssignments() {
   const [assignments, setAssignments] = useState<AssignmentData[]>([]);
   const [submissions, setSubmissions] = useState<Record<string, SubmissionData>>({});
   const [loading, setLoading] = useState(true);
-  const [profile, setProfile] = useState<ProfileData | null>(null);
+  const [business, setBusiness] = useState<BusinessData | null>(null);
 
   function handleLogout() {
     localStorage.removeItem("currentUser");
@@ -32,17 +45,17 @@ export default function UserAssignments() {
   }
 
   useEffect(() => {
-    if (!currentUser?.id) return;
+    if (!currentUser?.tenantId) return;
     let cancelled = false;
-    const fetchProfile = async () => {
+    const fetchBusiness = async () => {
       try {
-        const { data } = await supabase.from("profile_settings").select("username, phone, avatar_url").eq("user_id", currentUser.id).maybeSingle();
-        if (!cancelled && data) setProfile(data as ProfileData);
-      } catch (err: unknown) { console.error("Profile fetch failed:", err); }
+        const { data } = await supabase.from("business_settings").select("business_name, phone, logo").eq("tenant_id", currentUser.tenantId).maybeSingle();
+        if (!cancelled && data) setBusiness(data as BusinessData);
+      } catch (err: unknown) { console.error("Business fetch failed:", err); }
     };
-    fetchProfile();
+    fetchBusiness();
     return () => { cancelled = true; };
-  }, [currentUser?.id]);
+  }, [currentUser?.tenantId]);
 
   useEffect(() => {
     if (!courseId || !currentUser?.id) { setLoading(false); return; }
@@ -62,7 +75,11 @@ export default function UserAssignments() {
     load();
   }, [courseId, currentUser?.id]);
 
-  if (loading) return <div style={{ padding: 40, textAlign: "center", color: C.textTertiary }}>Loading Course Path...</div>;
+  if (loading) return (
+    <div style={{ minHeight: "100vh", background: C.bg, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: FONT, WebkitFontSmoothing: "antialiased" }}>
+      <span style={{ ...TS.body, fontWeight: 500 }}>Loading...</span>
+    </div>
+  );
 
   const isLocked = (index: number) => {
     if (index === 0) return false;
@@ -72,55 +89,52 @@ export default function UserAssignments() {
   };
 
   return (
-    <div style={{ minHeight: "100vh", background: C.bg, display: "flex", flexDirection: "column" }}>
-      <div style={{ background: "linear-gradient(180deg, #FFFFFF 0%, #F9FAFE 100%)", borderBottom: `1px solid ${C.separator}`, padding: "16px 20px 20px", boxShadow: "0 1px 6px rgba(0,0,0,0.04)", position: "sticky", top: 0, zIndex: 10 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+    <div style={{ minHeight: "100vh", background: C.bg, display: "flex", flexDirection: "column", fontFamily: FONT, WebkitFontSmoothing: "antialiased", MozOsxFontSmoothing: "grayscale" }}>
+      {/* APP BAR */}
+      <div style={{ background: "linear-gradient(180deg, #FFFFFF 0%, #F9FAFE 100%)", borderBottom: `1px solid ${C.separator}`, padding: "12px 24px", boxShadow: "0 1px 6px rgba(0,0,0,0.04)", position: "sticky", top: 0, zIndex: 10, width: "100%", boxSizing: "border-box" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, width: "100%" }}>
           <button onClick={() => navigate("/user")} style={{ background: C.card, border: `1px solid ${C.separator}`, borderRadius: 10, color: C.medBlue, cursor: "pointer", width: 36, height: 36, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="15 18 9 12 15 6" /></svg>
           </button>
-          <div style={{ minWidth: 0 }}>
-            <h1 style={{ margin: 0, fontSize: 24, fontWeight: 800, letterSpacing: "-0.5px" }}>Course Path</h1>
-            <p style={{ margin: 0, color: C.textTertiary, fontSize: 13 }}>Complete modules in order.</p>
-          </div>
-          <button onClick={handleLogout} title="Logout" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 40, height: 40, borderRadius: 9, background: C.redBg, border: "none", cursor: "pointer", color: C.red, flexShrink: 0, marginLeft: "auto" }}>
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></svg>
-          </button>
-        </div>
 
-        {profile && (
-          <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 12px", background: "rgba(255,255,255,0.7)", borderRadius: 12, border: `1px solid ${C.separator}` }}>
-            {profile.avatar_url ? (
-              <img src={profile.avatar_url} alt={profile.username || "Profile"} style={{ width: 40, height: 40, borderRadius: 8, objectFit: "cover", flexShrink: 0 }} />
+          <div style={{ display: "flex", alignItems: "center", gap: 12, flex: 1, minWidth: 0 }}>
+            {business?.logo ? (
+              <img src={business.logo} alt={business.business_name || "Business"} style={{ width: 36, height: 36, borderRadius: 8, objectFit: "cover", flexShrink: 0 }} />
             ) : (
-              <div style={{ width: 40, height: 40, borderRadius: 8, background: C.medBlueBg, color: C.medBlue, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 18, flexShrink: 0 }}>
-                {(profile.username || "B").charAt(0).toUpperCase()}
+              <div style={{ ...TS.h3, width: 36, height: 36, borderRadius: 8, background: C.medBlueBg, color: C.medBlue, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, flexShrink: 0 }}>
+                {(business?.business_name || "B").charAt(0).toUpperCase()}
               </div>
             )}
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 15, fontWeight: 700, color: C.textPrimary, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{profile.username || "Business"}</div>
-              {profile.phone && (
-                <a href={`tel:${profile.phone}`} style={{ fontSize: 13, color: C.medBlue, textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4, marginTop: 2 }}>
+              <div style={{ ...TS.h3, fontSize: 15, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{business?.business_name || "Business"}</div>
+              {business?.phone && (
+                <a href={`tel:${business.phone}`} style={{ ...TS.label, color: C.medBlue, textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4, marginTop: 2 }}>
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z" /></svg>
-                  {profile.phone}
+                  {business.phone}
                 </a>
               )}
             </div>
           </div>
-        )}
+
+          <button onClick={handleLogout} title="Logout" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 40, height: 40, borderRadius: 9, background: C.redBg, border: "none", cursor: "pointer", color: C.red, flexShrink: 0 }}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></svg>
+          </button>
+        </div>
       </div>
 
-      <div style={{ flex: 1, padding: "24px 16px", maxWidth: "800px", margin: "0 auto", width: "100%", boxSizing: "border-box" }}>
+      {/* BODY */}
+      <div style={{ flex: 1, padding: "32px 24px 40px", width: "100%", boxSizing: "border-box" }}>
         {assignments.length === 0 && (
-          <div style={{ background: C.card, borderRadius: 20, padding: "60px 40px", textAlign: "center", boxShadow: "0 1px 3px rgba(0,0,0,0.04)" }}>
-            <div style={{ width: 72, height: 72, borderRadius: "50%", background: C.medBlueBg, margin: "0 auto 16px", display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ background: C.card, borderRadius: 20, padding: "60px 40px", textAlign: "center", boxShadow: "0 1px 3px rgba(0,0,0,0.04)", width: "100%", boxSizing: "border-box" }}>
+            <div style={{ width: 72, height: 72, borderRadius: "50%", background: C.medBlueBg, margin: "0 auto 20px", display: "flex", alignItems: "center", justifyContent: "center" }}>
               <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke={C.medBlue} strokeWidth="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /></svg>
             </div>
-            <h3 style={{ margin: "0 0 8px", fontSize: 20, fontWeight: 700 }}>No Modules Yet</h3>
-            <p style={{ margin: 0, color: C.textTertiary }}>Your trainer hasn't added any content yet.</p>
+            <h3 style={{ ...TS.h3, fontSize: 20, fontWeight: 700, margin: "0 0 8px" }}>No Modules Yet</h3>
+            <p style={{ ...TS.bodySm, margin: 0 }}>Your trainer hasn't added any content yet.</p>
           </div>
         )}
 
-        <div style={{ display: "flex", flexDirection: "column", gap: 16, position: "relative" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 16, position: "relative", width: "100%" }}>
           {assignments.length > 1 && <div style={{ position: "absolute", left: "27px", top: "20px", bottom: "20px", width: "2px", background: C.separator, zIndex: 0 }} />}
           {assignments.map((a, index) => {
             const sub = submissions[a.id];
@@ -129,17 +143,17 @@ export default function UserAssignments() {
             const locked = isLocked(index);
             const hasVideo = !!a.video_url;
             return (
-              <div key={a.id} style={{ display: "flex", gap: 16, alignItems: "center", position: "relative", zIndex: 1 }}>
-                <div style={{ width: 56, height: 56, borderRadius: "50%", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24, fontWeight: 700, background: isComplete ? C.green : locked ? C.bg : C.medBlue, color: isComplete ? "#fff" : locked ? C.textTertiary : "#fff", border: `4px solid ${isComplete ? C.greenBg : locked ? C.bg : C.medBlueBg}`, boxShadow: "0 4px 12px rgba(0,0,0,0.05)" }}>
+              <div key={a.id} style={{ display: "flex", gap: 16, alignItems: "center", position: "relative", zIndex: 1, width: "100%" }}>
+                <div style={{ ...TS.h2, width: 56, height: 56, borderRadius: "50%", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", background: isComplete ? C.green : locked ? C.bg : C.medBlue, color: isComplete ? "#fff" : locked ? C.textTertiary : "#fff", border: `4px solid ${isComplete ? C.greenBg : locked ? C.bg : C.medBlueBg}`, boxShadow: "0 4px 12px rgba(0,0,0,0.05)" }}>
                   {isComplete ? <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12" /></svg> : locked ? <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></svg> : index + 1}
                 </div>
-                <div onClick={() => !locked && navigate(`/user/assignment-taker/${a.id}`)} style={{ flex: 1, background: C.card, borderRadius: 16, padding: "18px 20px", boxShadow: "0 2px 12px rgba(0,0,0,0.04)", cursor: locked ? "not-allowed" : "pointer", opacity: locked ? 0.6 : 1, transition: "all 0.2s", border: `1px solid ${isPending ? C.orange + "33" : isComplete ? C.green + "33" : C.separator}` }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-                    <span style={{ fontSize: 11, fontWeight: 700, color: isComplete ? C.green : locked ? C.textTertiary : C.medBlue, textTransform: "uppercase", letterSpacing: "0.5px" }}>{isComplete ? "Completed" : isPending ? "Pending Review" : locked ? "Locked" : hasVideo ? "Video Lesson" : "Exam Module"}</span>
+                <div onClick={() => !locked && navigate(`/user/assignment-taker/${a.id}`)} style={{ flex: 1, background: C.card, borderRadius: 16, padding: "18px 24px", boxShadow: "0 2px 12px rgba(0,0,0,0.04)", cursor: locked ? "not-allowed" : "pointer", opacity: locked ? 0.6 : 1, transition: "all 0.2s", border: `1px solid ${isPending ? C.orange + "33" : isComplete ? C.green + "33" : C.separator}`, minWidth: 0 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                    <span style={{ ...TS.caption, color: isComplete ? C.green : locked ? C.textTertiary : C.medBlue }}>{isComplete ? "Completed" : isPending ? "Pending Review" : locked ? "Locked" : hasVideo ? "Video Lesson" : "Exam Module"}</span>
                     {!locked && <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={C.textTertiary} strokeWidth="2"><polyline points="9 18 15 12 9 6" /></svg>}
                   </div>
-                  <h3 style={{ margin: 0, fontSize: 17, fontWeight: 600, color: C.textPrimary }}>{a.title}</h3>
-                  <p style={{ margin: "4px 0 0", fontSize: 13, color: C.textTertiary, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{a.description || "Click to start this module."}</p>
+                  <h3 style={{ ...TS.h3, margin: 0 }}>{a.title}</h3>
+                  <p style={{ ...TS.bodySm, margin: "4px 0 0", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{a.description || "Click to start this module."}</p>
                 </div>
               </div>
             );
