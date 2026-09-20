@@ -181,7 +181,8 @@ export default function AssignmentBuilder() {
   const questionFields = activeFields.filter((f) => f.type !== "note" && f.type !== "header" && f.type !== "file");
 
   return (
-    <div style={{ display: "flex", height: "100vh", background: C.bg, overflow: "hidden" }}>
+    // ✅ FIX: Changed height to 100% so it doesn't cover the global AppBar
+    <div style={{ display: "flex", height: "100%", background: C.bg, overflow: "hidden" }}>
       <style>{`
         @keyframes fadeSlideIn { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
         .field-card { animation: fadeSlideIn 0.25s ease-out; }
@@ -222,7 +223,7 @@ export default function AssignmentBuilder() {
       {/* MAIN CONTENT */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
         
-        {/* APP BAR */}
+        {/* SECONDARY HEADER */}
         <div style={{ padding: "16px 32px", background: C.card, borderBottom: `1px solid ${C.separator}`, display: "flex", alignItems: "center", gap: 16, flexShrink: 0 }}>
           <div style={{ flex: 1, minWidth: 0 }}>
             <input placeholder="Presentation Title" value={title} onChange={(e) => setTitle(e.target.value)} style={{ fontSize: 20, fontWeight: 700, border: "none", outline: "none", padding: 0, margin: 0, background: "transparent", width: "100%", color: C.textPrimary }} />
