@@ -150,10 +150,9 @@ export default function AppBar() {
         // 3. Fire and forget Supabase sign out
         supabase.auth.signOut().catch(err => console.warn(err));
 
-        // 4. Notify the rest of the app
-        window.dispatchEvent(new Event("authStateChanged"));
-        
-        // 5. Hard refresh to login screen (Prevents React from freezing)
+        // 4. Hard refresh to login screen (Prevents React from freezing)
+        // We DO NOT dispatch the authStateChanged event here because 
+        // window.location.replace instantly destroys the React app anyway.
         window.location.replace("/login");
     };
 
