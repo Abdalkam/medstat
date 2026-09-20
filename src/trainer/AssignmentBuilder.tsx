@@ -23,6 +23,7 @@ interface FormField {
 }
 
 interface SlidePage { id: string; title: string; }
+interface TenantData { name: string; phone: string | null; logo_url: string | null; }
 
 export default function AssignmentBuilder() {
   const { courseId, assignmentId } = useParams<{ courseId: string; assignmentId: string }>();
@@ -41,15 +42,31 @@ export default function AssignmentBuilder() {
   const [status, setStatus] = useState<"draft" | "published" | "closed">("draft");
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [uploadingFieldId, setUploadingFieldId] = useState<string | null>(null);
+  const [tenant, setTenant] = useState<TenantData | null>(null);
 
-  // ✅ BULLETPROOF LOGOUT: Destroys the React tree instantly
-  const handleLogout = () => {
+  // ✅ Bulletproof logout
+  function handleLogout() {
     localStorage.removeItem("currentUser");
     localStorage.removeItem("authToken");
-    localStorage.removeItem("activeTenantId");
     localStorage.removeItem("adminDeviceId");
-    window.location.replace("/login");
-  };
+    localStorage.removeItem("activeAttendanceCourseId");
+    window.dispatchEvent(new Event("authStateChanged"));
+    navigate("/");
+  }
+
+  // Fetch tenant business info
+  useEffect(() => {
+    if (!currentUser?.tenantId) return;
+    let cancelled = false;
+    const fetchTenant = async () => {
+      try {
+        const { data } = await supabase.from("tenants").select("name, phone, logo_url").eq("id", currentUser.tenantId).maybeSingle();
+        if (!cancelled && data) setTenant(data as TenantData);
+      } catch (err: unknown) { console.error("Tenant fetch failed:", err); }
+    };
+    fetchTenant();
+    return () => { cancelled = true; };
+  }, [currentUser?.tenantId]);
 
   useEffect(() => {
     if (!assignmentId) { setLoadingData(false); return; }
@@ -231,28 +248,57 @@ export default function AssignmentBuilder() {
       {/* MAIN CONTENT */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
         
-        {/* SECONDARY HEADER WITH LOGOUT */}
-        <div style={{ padding: "16px 32px", background: C.card, borderBottom: `1px solid ${C.separator}`, display: "flex", alignItems: "center", gap: 16, flexShrink: 0 }}>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <input placeholder="Presentation Title" value={title} onChange={(e) => setTitle(e.target.value)} style={{ fontSize: 20, fontWeight: 700, border: "none", outline: "none", padding: 0, margin: 0, background: "transparent", width: "100%", color: C.textPrimary }} />
-            <input placeholder="Add a subtitle or description..." value={description} onChange={(e) => setDescription(e.target.value)} style={{ fontSize: 13, border: "none", outline: "none", padding: 0, margin: "4px 0 0", background: "transparent", width: "100%", color: C.textTertiary }} />
+        {/* APP BAR WITH GRADIENT + BUSINESS DETAILS */}
+        <div style={{ 
+          padding: "16px 32px", 
+          background: "linear-gradient(180deg, #FFFFFF 0%, #F9FAFE 100%)", 
+          borderBottom: `1px solid ${C.separator}`, 
+          display: "flex", flexDirection: "column", gap: 12, flexShrink: 0 
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <input placeholder="Presentation Title" value={title} onChange={(e) => setTitle(e.target.value)} style={{ fontSize: 20, fontWeight: 700, border: "none", outline: "none", padding: 0, margin: 0, background: "transparent", width: "100%", color: C.textPrimary }} />
+              <input placeholder="Add a subtitle or description..." value={description} onChange={(e) => setDescription(e.target.value)} style={{ fontSize: 13, border: "none", outline: "none", padding: 0, margin: "4px 0 0", background: "transparent", width: "100%", color: C.textTertiary }} />
+            </div>
+            
+            <div style={{ display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
+              <select value={status} onChange={(e) => setStatus(e.target.value as any)} style={{ padding: "8px 12px", border: `1px solid ${C.separator}`, borderRadius: 8, fontSize: 13, background: C.bg, cursor: "pointer", outline: "none" }}>
+                <option value="draft">Draft</option>
+                <option value="published">Published</option>
+                <option value="closed">Closed</option>
+              </select>
+              <button onClick={() => setShowDeleteConfirm(true)} style={{ padding: "8px 14px", background: C.redBg, color: C.red, border: `1px solid ${C.red}22`, borderRadius: 8, fontWeight: 600, cursor: "pointer", fontSize: 13 }}>Delete</button>
+              <button onClick={handleSave} disabled={saving || !title.trim()} style={{ padding: "10px 24px", background: saving || !title.trim() ? C.textTertiary : `linear-gradient(135deg, ${C.medBlue}, #0055D4)`, color: "#fff", border: "none", borderRadius: 10, fontWeight: 700, cursor: saving || !title.trim() ? "default" : "pointer", fontSize: 13, boxShadow: saving || !title.trim() ? "none" : "0 2px 12px rgba(0,122,255,0.35)" }}>
+                {saving ? "Saving..." : "Save Module"}
+              </button>
+              {/* LOGOUT ICON */}
+              <button onClick={handleLogout} title="Logout" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 40, height: 40, borderRadius: 9, background: C.redBg, border: "none", cursor: "pointer", color: C.red }}>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></svg>
+              </button>
+            </div>
           </div>
-          
-          <div style={{ display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
-            <select value={status} onChange={(e) => setStatus(e.target.value as any)} style={{ padding: "8px 12px", border: `1px solid ${C.separator}`, borderRadius: 8, fontSize: 13, background: C.bg, cursor: "pointer", outline: "none" }}>
-              <option value="draft">Draft</option>
-              <option value="published">Published</option>
-              <option value="closed">Closed</option>
-            </select>
-            <button onClick={() => setShowDeleteConfirm(true)} style={{ padding: "8px 14px", background: C.redBg, color: C.red, border: `1px solid ${C.red}22`, borderRadius: 8, fontWeight: 600, cursor: "pointer", fontSize: 13 }}>Delete</button>
-            <button onClick={handleSave} disabled={saving || !title.trim()} style={{ padding: "10px 24px", background: saving || !title.trim() ? C.textTertiary : `linear-gradient(135deg, ${C.medBlue}, #0055D4)`, color: "#fff", border: "none", borderRadius: 10, fontWeight: 700, cursor: saving || !title.trim() ? "default" : "pointer", fontSize: 13, boxShadow: saving || !title.trim() ? "none" : "0 2px 12px rgba(0,122,255,0.35)" }}>
-              {saving ? "Saving..." : "Save Module"}
-            </button>
-            {/* BULLETPROOF LOGOUT ICON */}
-            <button onClick={handleLogout} title="Logout" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 40, height: 40, borderRadius: 9, background: C.bg, border: `1px solid ${C.separator}`, cursor: "pointer", color: C.red, transition: "background 0.2s" }}>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></svg>
-            </button>
-          </div>
+
+          {/* BUSINESS DETAILS */}
+          {tenant && (
+            <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 12px", background: "rgba(255,255,255,0.7)", borderRadius: 12, border: `1px solid ${C.separator}` }}>
+              {tenant.logo_url ? (
+                <img src={tenant.logo_url} alt={tenant.name || "Business"} style={{ width: 36, height: 36, borderRadius: 8, objectFit: "cover", flexShrink: 0 }} />
+              ) : (
+                <div style={{ width: 36, height: 36, borderRadius: 8, background: C.medBlueBg, color: C.medBlue, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 16, flexShrink: 0 }}>
+                  {(tenant.name || "B").charAt(0).toUpperCase()}
+                </div>
+              )}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: C.textPrimary, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{tenant.name || "Business"}</div>
+                {tenant.phone && (
+                  <a href={`tel:${tenant.phone}`} style={{ fontSize: 12, color: C.medBlue, textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4, marginTop: 2 }}>
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z" /></svg>
+                    {tenant.phone}
+                  </a>
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* SLIDE CONTENT AREA */}
@@ -300,8 +346,8 @@ export default function AssignmentBuilder() {
             }
             if (field.type === "note") {
               return (
-                <div key={field.id} className="field-card" style={{ background: C.card, borderRadius: 16, overflow: "hidden", borderLeft: `4px solid ${C.orange}`, marginBottom: 16, boxShadow: C.shadow }}>
-                  <div style={{ padding: "14px 18px 10px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div key={field.id} className="field-card" style={{ background: C.card, borderRadius: 16, overflow: "hidden", borderLeft: `6px solid ${C.orange}`, marginBottom: 16, boxShadow: C.shadow }}>
+                  <div style={{ padding: "14px 18px 10px", display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: `1px solid ${C.separatorLight}` }}>
                     <span style={{ fontSize: 11, fontWeight: 700, color: C.orange, textTransform: "uppercase", letterSpacing: "0.8px" }}>Teaching Note / Text</span>
                     <div style={{ display: "flex", gap: 4 }}>
                       <button onClick={() => moveField(index, "up")} disabled={index === 0} style={{ ...moveBtnStyle, opacity: index === 0 ? 0.3 : 1 }}>↑</button>
