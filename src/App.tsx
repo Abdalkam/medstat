@@ -9,7 +9,6 @@ import Startup from "./auth/startup";
 
 // LAYOUTS
 import AdminLayout from "./admin/AdminLayout";
-import AppLayout from "./components/AppLayout";
 
 // ADMIN
 import AdminDashboard from "./admin/AdminDashboard";
@@ -54,19 +53,16 @@ export default function App() {
         if (needRefresh) { updateServiceWorker(true); setNeedRefresh(false); }
     }, [needRefresh, updateServiceWorker, setNeedRefresh]);
 
-    // ✅ FIX: Centralized auth handler.
     useEffect(() => {
         const loadUser = () => {
             const saved = localStorage.getItem("currentUser");
             const parsedUser = saved ? JSON.parse(saved) : null;
-            
             setCurrentUser((prev: any) => {
                 if (prev?.id === parsedUser?.id) return prev;
                 return parsedUser;
             });
         };
         loadUser();
-        
         window.addEventListener("authStateChanged", loadUser);
         return () => window.removeEventListener("authStateChanged", loadUser);
     }, []);
@@ -111,29 +107,20 @@ export default function App() {
                         <Route path="settings" element={<Settings />} />
                     </Route>
 
-                    {/* TRAINER */}
+                    {/* TRAINER — no AppLayout wrapper, each file has its own app bar */}
                     <Route path="/trainer" element={<ProtectedTrainer><TrainerDashboard /></ProtectedTrainer>} />
                     <Route path="/trainer/settings" element={<ProtectedTrainer><ProfileSettings role="trainer" /></ProtectedTrainer>} />
                     <Route path="/trainer/upload/:courseId" element={<ProtectedTrainer><UploadMaterials /></ProtectedTrainer>} />
                     <Route path="/trainer/live/:courseId" element={<ProtectedTrainer><TrainerLiveClassroom /></ProtectedTrainer>} />
-
-                    <Route path="/trainer/assignments/:courseId" element={<ProtectedTrainer><AppLayout user={currentUser} /></ProtectedTrainer>}>
-                        <Route index element={<TrainerAssignments />} />
-                    </Route>
-                    <Route path="/trainer/assignment-builder/:courseId/:assignmentId?" element={<ProtectedTrainer><AppLayout user={currentUser} /></ProtectedTrainer>}>
-                        <Route index element={<AssignmentBuilder />} />
-                    </Route>
-                    <Route path="/trainer/submissions/:assignmentId" element={<ProtectedTrainer><AppLayout user={currentUser} /></ProtectedTrainer>}>
-                        <Route index element={<TrainerSubmissions />} />
-                    </Route>
+                    <Route path="/trainer/assignments/:courseId" element={<ProtectedTrainer><TrainerAssignments /></ProtectedTrainer>} />
+                    <Route path="/trainer/assignment-builder/:courseId/:assignmentId?" element={<ProtectedTrainer><AssignmentBuilder /></ProtectedTrainer>} />
+                    <Route path="/trainer/submissions/:assignmentId" element={<ProtectedTrainer><TrainerSubmissions /></ProtectedTrainer>} />
 
                     {/* USER */}
                     <Route path="/user" element={<ProtectedUser><UserDashboard /></ProtectedUser>} />
                     <Route path="/user/settings" element={<ProtectedUser><ProfileSettings role="trainee" /></ProtectedUser>} />
                     <Route path="/user/assignments/:courseId" element={<ProtectedUser><UserAssignments /></ProtectedUser>} />
                     <Route path="/user/assignment-taker/:assignmentId" element={<ProtectedUser><UserAssignmentTaker /></ProtectedUser>} />
-
-                    {/* USER STANDALONE */}
                     <Route path="/user/classroom/:courseId" element={<ProtectedUser><Classroom /></ProtectedUser>} />
 
                     <Route path="*" element={<Navigate to="/login" replace />} />
