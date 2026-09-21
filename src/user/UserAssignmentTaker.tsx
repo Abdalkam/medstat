@@ -86,8 +86,14 @@ export default function UserAssignmentTaker() {
     return Object.values(grouped);
   }, [fields]);
 
-  const isSubmitted = !!submission;
+  const isSubmitted = !!submission?.submitted_at;
   const isGraded = !!submission?.graded_at;
+
+  // Parse grading data
+  const gradeData: Record<string, "correct" | "incorrect"> = useMemo(() => {
+    if (!submission?.grade) return {};
+    try { return JSON.parse(submission.grade); } catch { return {}; }
+  }, [submission]);
 
   const questionFields = fields.filter(f => f.type !== "note" && f.type !== "header" && f.type !== "file");
   const answeredCount = questionFields.filter(f => {
@@ -101,6 +107,7 @@ export default function UserAssignmentTaker() {
     if (Array.isArray(ans)) return ans.length === 0;
     return !ans || ans === "";
   });
+  const correctCount = Object.values(gradeData).filter(v => v === "correct").length;
 
   function setAnswer(fieldId: string, value: any) { setAnswers((p) => ({ ...p, [fieldId]: value })); }
 
@@ -117,7 +124,6 @@ export default function UserAssignmentTaker() {
         submitted_at: null,
       }, { onConflict: "id" });
       if (error) throw error;
-      // Refresh submission state
       const { data: s } = await supabase.from("assignment_submissions").select("*").eq("assignment_id", assignmentId).eq("user_id", currentUser.id).maybeSingle();
       if (s) setSubmission(s);
       alert("Progress saved. You can return later to finish.");
@@ -201,8 +207,8 @@ export default function UserAssignmentTaker() {
       <div style={{ padding: "40px 48px 100px", width: "100%", boxSizing: "border-box" }}>
         <h1 style={{ ...TS.h1, margin: "0 0 12px" }}>{assignment?.title}</h1>
 
-        {/* PROGRESS BAR */}
-        {hasQuestions && !isGraded && (
+        {/* PROGRESS BAR (while answering) */}
+        {hasQuestions && !isSubmitted && (
           <div style={{ marginBottom: 32, display: "flex", alignItems: "center", gap: 12 }}>
             <div style={{ flex: 1, height: 6, borderRadius: 3, background: C.separator, overflow: "hidden" }}>
               <div style={{ height: "100%", width: `${progressPct}%`, borderRadius: 3, background: C.medBlue, transition: "width 0.3s ease" }} />
@@ -211,15 +217,26 @@ export default function UserAssignmentTaker() {
           </div>
         )}
 
-        {/* GRADED BANNER */}
+        {/* GRADED RESULTS BANNER */}
         {isGraded && (
           <div style={{ background: C.greenBg, borderRadius: 14, padding: "20px 24px", marginBottom: 32, border: `1px solid ${C.green}33`, display: "flex", alignItems: "center", gap: 16, width: "100%", boxSizing: "border-box" }}>
             <div style={{ width: 44, height: 44, borderRadius: "50%", background: C.green, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3"><polyline points="20 6 9 17 4 12" /></svg>
             </div>
             <div>
-              <div style={{ ...TS.h3, fontSize: 18, fontWeight: 700 }}>{submission?.grade || "Reviewed"}</div>
-              <div style={{ ...TS.bodySm, marginTop: 2 }}>You have completed this module.</div>
+              <div style={{ ...TS.h3, fontSize: 18, fontWeight: 700 }}>{correctCount} / {questionFields.length} Correct {correctCount === questionFields.length ? "🏆" : ""}</div>
+              <div style={{ ...TS.bodySm, marginTop: 2 }}>Your trainer has reviewed your answers.</div>
+            </div>
+          </div>
+        )}
+
+        {/* PENDING REVIEW BANNER */}
+        {isSubmitted && !isGraded && (
+          <div style={{ background: C.medBlueBg, borderRadius: 12, padding: "20px 24px", marginBottom: 32, border: `1px solid ${C.medBlue}33`, display: "flex", alignItems: "center", gap: 12, width: "100%", boxSizing: "border-box" }}>
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke={C.medBlue} strokeWidth="2.5"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            <div>
+              <div style={{ ...TS.h3, fontSize: 15, fontWeight: 700, color: C.medBlue }}>Submitted — Pending Review</div>
+              <div style={{ ...TS.bodySm, marginTop: 2 }}>Your trainer will review and grade your submission.</div>
             </div>
           </div>
         )}
@@ -273,6 +290,7 @@ export default function UserAssignmentTaker() {
               if (Array.isArray(ans)) return ans.length > 0;
               return ans !== undefined && ans !== null && ans !== "";
             })();
+            const mark = gradeData[field.id];
 
             const typeLabel: Record<string, string> = {
               text: "Short Answer", paragraph: "Essay", dropdown: "Single Choice", checkbox: "Multiple Choice",
@@ -282,17 +300,38 @@ export default function UserAssignmentTaker() {
             };
 
             return (
-              <div key={field.id} style={{ background: C.bg, borderRadius: 12, padding: "24px 28px", marginBottom: 8, width: "100%", boxSizing: "border-box", border: `1px solid ${isAnswered ? C.green + "44" : C.separator}`, transition: "border-color 0.2s" }}>
+              <div key={field.id} style={{
+                background: C.bg, borderRadius: 12, padding: "24px 28px", marginBottom: 8, width: "100%", boxSizing: "border-box",
+                border: `1px solid ${isGraded ? (mark === "correct" ? C.green + "44" : mark === "incorrect" ? C.red + "44" : C.separator) : (isAnswered ? C.green + "44" : C.separator)}`,
+                transition: "border-color 0.2s",
+              }}>
                 {/* Question header */}
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <span style={{ ...TS.caption, fontSize: 13, color: C.bg, background: isAnswered ? C.green : C.medBlue, padding: "4px 10px", borderRadius: 8 }}>Q{questionCounter}</span>
+                    <span style={{ ...TS.caption, fontSize: 13, color: "#fff", background: isGraded ? (mark === "correct" ? C.green : mark === "incorrect" ? C.red : C.medBlue) : (isAnswered ? C.green : C.medBlue), padding: "4px 10px", borderRadius: 8 }}>Q{questionCounter}</span>
                     <span style={{ ...TS.label, fontSize: 11, color: C.textTertiary, background: C.card, padding: "3px 8px", borderRadius: 6 }}>{typeIcon[field.type] || "❓"} {typeLabel[field.type] || field.type}</span>
                     {field.required && <span style={{ ...TS.caption, fontSize: 11, color: C.red }}>Required</span>}
                   </div>
-                  {isAnswered && !isSubmitted && (
+                  {/* Show ✓/✗ when graded, or ✓ when answered */}
+                  {isGraded ? (
+                    mark === "correct" ? (
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <div style={{ width: 32, height: 32, borderRadius: "50%", background: C.green, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3"><polyline points="20 6 9 17 4 12" /></svg>
+                        </div>
+                        <span style={{ ...TS.input, fontSize: 14, fontWeight: 700, color: C.green }}>Correct</span>
+                      </div>
+                    ) : mark === "incorrect" ? (
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <div style={{ width: 32, height: 32, borderRadius: "50%", background: C.red, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                        </div>
+                        <span style={{ ...TS.input, fontSize: 14, fontWeight: 700, color: C.red }}>Incorrect</span>
+                      </div>
+                    ) : null
+                  ) : isAnswered && !isSubmitted ? (
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={C.green} strokeWidth="3"><polyline points="20 6 9 17 4 12" /></svg>
-                  )}
+                  ) : null}
                 </div>
 
                 {/* Question text */}
@@ -374,17 +413,6 @@ export default function UserAssignmentTaker() {
               style={{ ...TS.input, flex: 2, padding: "16px 24px", background: C.green, color: "#fff", border: "none", borderRadius: 12, fontWeight: 700, fontSize: 16, cursor: "pointer" }}>
               {submitting ? "Submitting..." : hasQuestions ? "Submit Assessment" : "Complete & Unlock Next Module"}
             </button>
-          </div>
-        )}
-
-        {/* SUBMITTED STATE */}
-        {isSubmitted && !isGraded && (
-          <div style={{ marginTop: 40, width: "100%", background: C.medBlueBg, borderRadius: 12, padding: "20px 24px", border: `1px solid ${C.medBlue}33`, display: "flex", alignItems: "center", gap: 12 }}>
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke={C.medBlue} strokeWidth="2.5"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-            <div>
-              <div style={{ ...TS.h3, fontSize: 15, fontWeight: 700, color: C.medBlue }}>Submitted — Pending Review</div>
-              <div style={{ ...TS.bodySm, marginTop: 2 }}>Your trainer will review and grade your submission.</div>
-            </div>
           </div>
         )}
       </div>
