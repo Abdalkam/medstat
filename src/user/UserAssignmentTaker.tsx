@@ -7,7 +7,7 @@ const C = {
   textPrimary: "#1C1C1E", textTertiary: "#8E8E93", bg: "#F2F2F7", card: "#FFFFFF",
   separator: "#E5E5EA", medBlue: "#007AFF", medBlueBg: "#E8F2FF", red: "#FF3B30",
   green: "#34C759", greenBg: "#EAF9EE", orange: "#FF9F0A", orangeBg: "#FFF6EB", purple: "#AF52DE",
-  purpleBg: "#F5F0FF", redBg: "#FFEFEE", shadow: "0 4px 24px rgba(0,0,0,0.06)"
+  purpleBg: "#F5F0FF", redBg: "#FFEFEE",
 };
 
 const FONT = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif";
@@ -37,8 +37,10 @@ export default function UserAssignmentTaker() {
   const [answers, setAnswers] = useState<Record<string, any>>({});
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [savingDraft, setSavingDraft] = useState(false);
   const [activeSlide, setActiveSlide] = useState(0);
   const [business, setBusiness] = useState<BusinessData | null>(null);
+  const [showSubmitConfirm, setShowSubmitConfirm] = useState(false);
 
   function handleLogout() {
     localStorage.removeItem("currentUser");
@@ -87,24 +89,67 @@ export default function UserAssignmentTaker() {
   const isSubmitted = !!submission;
   const isGraded = !!submission?.graded_at;
 
+  const questionFields = fields.filter(f => f.type !== "note" && f.type !== "header" && f.type !== "file");
+  const answeredCount = questionFields.filter(f => {
+    const ans = answers[f.id];
+    if (Array.isArray(ans)) return ans.length > 0;
+    return ans !== undefined && ans !== null && ans !== "";
+  }).length;
+  const requiredUnanswered = questionFields.filter(f => {
+    if (!f.required) return false;
+    const ans = answers[f.id];
+    if (Array.isArray(ans)) return ans.length === 0;
+    return !ans || ans === "";
+  });
+
   function setAnswer(fieldId: string, value: any) { setAnswers((p) => ({ ...p, [fieldId]: value })); }
 
+  async function handleSaveDraft() {
+    setSavingDraft(true);
+    try {
+      const { error } = await supabase.from("assignment_submissions").upsert({
+        id: submission?.id || crypto.randomUUID(),
+        tenant_id: currentUser.tenantId,
+        assignment_id: assignment.id,
+        user_id: currentUser.id,
+        username: currentUser.username,
+        answers,
+        submitted_at: null,
+      }, { onConflict: "id" });
+      if (error) throw error;
+      // Refresh submission state
+      const { data: s } = await supabase.from("assignment_submissions").select("*").eq("assignment_id", assignmentId).eq("user_id", currentUser.id).maybeSingle();
+      if (s) setSubmission(s);
+      alert("Progress saved. You can return later to finish.");
+    } catch (err: any) { alert("Failed to save: " + err.message); }
+    finally { setSavingDraft(false); }
+  }
+
   async function handleSubmit() {
-    const allQuestions = fields.filter(f => f.type !== "note" && f.type !== "header" && f.type !== "file");
-    for (const f of allQuestions) {
-      if (f.required && !answers[f.id]) { alert("Please answer all required questions before finishing."); return; }
-    }
+    setShowSubmitConfirm(false);
     setSubmitting(true);
     try {
       const { error } = await supabase.from("assignment_submissions").upsert({
-        id: submission?.id || crypto.randomUUID(), tenant_id: currentUser.tenantId, assignment_id: assignment.id,
-        user_id: currentUser.id, username: currentUser.username, answers, submitted_at: new Date().toISOString(),
+        id: submission?.id || crypto.randomUUID(),
+        tenant_id: currentUser.tenantId,
+        assignment_id: assignment.id,
+        user_id: currentUser.id,
+        username: currentUser.username,
+        answers,
+        submitted_at: new Date().toISOString(),
       }, { onConflict: "id" });
       if (error) throw error;
-      alert("Module completed! Your progress has been saved.");
-      navigate("/user");
+      navigate("/user/assignments/" + assignment.course_id);
     } catch (err: any) { alert("Failed: " + err.message); }
     finally { setSubmitting(false); }
+  }
+
+  function attemptSubmit() {
+    if (requiredUnanswered.length > 0) {
+      alert(`Please answer all required questions (${requiredUnanswered.length} remaining).`);
+      return;
+    }
+    setShowSubmitConfirm(true);
   }
 
   if (loading) return (
@@ -114,14 +159,16 @@ export default function UserAssignmentTaker() {
   );
 
   const currentSlideFields = slides[activeSlide] || [];
-  const hasQuestions = fields.some(f => f.type !== "note" && f.type !== "header" && f.type !== "file");
+  const hasQuestions = questionFields.length > 0;
+  const progressPct = questionFields.length > 0 ? Math.round((answeredCount / questionFields.length) * 100) : 100;
+  let questionCounter = 0;
 
   return (
     <div style={{ minHeight: "100vh", background: C.card, fontFamily: FONT, WebkitFontSmoothing: "antialiased", MozOsxFontSmoothing: "grayscale" }}>
       {/* APP BAR */}
       <div style={{ borderBottom: `1px solid ${C.separator}`, padding: "12px 24px", position: "sticky", top: 0, zIndex: 10, width: "100%", boxSizing: "border-box", background: C.card }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, width: "100%" }}>
-          <button onClick={() => navigate("/user")} style={{ background: C.bg, border: `1px solid ${C.separator}`, borderRadius: 10, color: C.medBlue, cursor: "pointer", width: 36, height: 36, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+          <button onClick={() => navigate(`/user/assignments/${assignment?.course_id || ""}`)} style={{ background: C.bg, border: `1px solid ${C.separator}`, borderRadius: 10, color: C.medBlue, cursor: "pointer", width: 36, height: 36, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="15 18 9 12 15 6" /></svg>
           </button>
 
@@ -152,20 +199,32 @@ export default function UserAssignmentTaker() {
 
       {/* BODY */}
       <div style={{ padding: "40px 48px 100px", width: "100%", boxSizing: "border-box" }}>
-        <h1 style={{ ...TS.h1, margin: "0 0 32px" }}>{assignment?.title}</h1>
+        <h1 style={{ ...TS.h1, margin: "0 0 12px" }}>{assignment?.title}</h1>
 
+        {/* PROGRESS BAR */}
+        {hasQuestions && !isGraded && (
+          <div style={{ marginBottom: 32, display: "flex", alignItems: "center", gap: 12 }}>
+            <div style={{ flex: 1, height: 6, borderRadius: 3, background: C.separator, overflow: "hidden" }}>
+              <div style={{ height: "100%", width: `${progressPct}%`, borderRadius: 3, background: C.medBlue, transition: "width 0.3s ease" }} />
+            </div>
+            <span style={{ ...TS.label, fontSize: 12, fontWeight: 600, whiteSpace: "nowrap", color: C.textTertiary }}>{answeredCount}/{questionFields.length} answered</span>
+          </div>
+        )}
+
+        {/* GRADED BANNER */}
         {isGraded && (
           <div style={{ background: C.greenBg, borderRadius: 14, padding: "20px 24px", marginBottom: 32, border: `1px solid ${C.green}33`, display: "flex", alignItems: "center", gap: 16, width: "100%", boxSizing: "border-box" }}>
             <div style={{ width: 44, height: 44, borderRadius: "50%", background: C.green, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3"><polyline points="20 6 9 17 4 12" /></svg>
             </div>
-            <div style={{ minWidth: 0 }}>
+            <div>
               <div style={{ ...TS.h3, fontSize: 18, fontWeight: 700 }}>{submission?.grade || "Reviewed"}</div>
               <div style={{ ...TS.bodySm, marginTop: 2 }}>You have completed this module.</div>
             </div>
           </div>
         )}
 
+        {/* SLIDE CONTENT */}
         <div style={{ display: "flex", flexDirection: "column", gap: 16, width: "100%" }}>
           {currentSlideFields.map((field) => {
             if (field.type === "header") {
@@ -206,32 +265,66 @@ export default function UserAssignmentTaker() {
                 </div>
               );
             }
+
+            // QUESTION CARDS
+            questionCounter++;
+            const isAnswered = (() => {
+              const ans = answers[field.id];
+              if (Array.isArray(ans)) return ans.length > 0;
+              return ans !== undefined && ans !== null && ans !== "";
+            })();
+
+            const typeLabel: Record<string, string> = {
+              text: "Short Answer", paragraph: "Essay", dropdown: "Single Choice", checkbox: "Multiple Choice",
+            };
+            const typeIcon: Record<string, string> = {
+              text: "💬", paragraph: "📄", dropdown: "📋", checkbox: "☑️",
+            };
+
             return (
-              <div key={field.id} style={{ width: "100%", boxSizing: "border-box", marginBottom: 8 }}>
-                <div style={{ display: "flex", gap: 12, marginBottom: 12 }}>
-                  <span style={{ ...TS.caption, fontSize: 13, color: C.medBlue, background: C.medBlueBg, height: 28, minWidth: 28, borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, letterSpacing: "-0.01em", textTransform: "none" }}>Q</span>
-                  <h3 style={{ ...TS.h3, margin: 0, lineHeight: 1.4 }}>{field.label}</h3>
+              <div key={field.id} style={{ background: C.bg, borderRadius: 12, padding: "24px 28px", marginBottom: 8, width: "100%", boxSizing: "border-box", border: `1px solid ${isAnswered ? C.green + "44" : C.separator}`, transition: "border-color 0.2s" }}>
+                {/* Question header */}
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <span style={{ ...TS.caption, fontSize: 13, color: C.bg, background: isAnswered ? C.green : C.medBlue, padding: "4px 10px", borderRadius: 8 }}>Q{questionCounter}</span>
+                    <span style={{ ...TS.label, fontSize: 11, color: C.textTertiary, background: C.card, padding: "3px 8px", borderRadius: 6 }}>{typeIcon[field.type] || "❓"} {typeLabel[field.type] || field.type}</span>
+                    {field.required && <span style={{ ...TS.caption, fontSize: 11, color: C.red }}>Required</span>}
+                  </div>
+                  {isAnswered && !isSubmitted && (
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={C.green} strokeWidth="3"><polyline points="20 6 9 17 4 12" /></svg>
+                  )}
                 </div>
-                {field.type === "text" && <input type="text" value={answers[field.id] || ""} onChange={(e) => setAnswer(field.id, e.target.value)} disabled={isSubmitted} style={{ ...TS.input, width: "100%", padding: "12px 16px", border: `1px solid ${C.separator}`, borderRadius: 10, outline: "none", background: C.bg, boxSizing: "border-box" }} />}
-                {field.type === "paragraph" && <textarea rows={4} value={answers[field.id] || ""} onChange={(e) => setAnswer(field.id, e.target.value)} disabled={isSubmitted} style={{ ...TS.input, width: "100%", padding: "12px 16px", border: `1px solid ${C.separator}`, borderRadius: 10, outline: "none", background: C.bg, boxSizing: "border-box", resize: "vertical" }} />}
+
+                {/* Question text */}
+                <h3 style={{ ...TS.h3, margin: "0 0 16px", lineHeight: 1.5 }}>{field.label}</h3>
+
+                {/* Answer input */}
+                {field.type === "text" && (
+                  <input type="text" value={answers[field.id] || ""} onChange={(e) => setAnswer(field.id, e.target.value)} disabled={isSubmitted} placeholder="Type your answer..." style={{ ...TS.input, width: "100%", padding: "14px 16px", border: `1px solid ${C.separator}`, borderRadius: 10, outline: "none", background: C.card, boxSizing: "border-box" }} />
+                )}
+                {field.type === "paragraph" && (
+                  <textarea rows={5} value={answers[field.id] || ""} onChange={(e) => setAnswer(field.id, e.target.value)} disabled={isSubmitted} placeholder="Type your detailed answer..." style={{ ...TS.input, width: "100%", padding: "14px 16px", border: `1px solid ${C.separator}`, borderRadius: 10, outline: "none", background: C.card, boxSizing: "border-box", resize: "vertical", lineHeight: 1.6 }} />
+                )}
                 {field.type === "dropdown" && (
-                  <select value={answers[field.id] || ""} onChange={(e) => setAnswer(field.id, e.target.value)} disabled={isSubmitted} style={{ ...TS.input, width: "100%", padding: "12px 16px", border: `1px solid ${C.separator}`, borderRadius: 10, outline: "none", background: C.bg, boxSizing: "border-box", cursor: "pointer" }}>
-                    <option value="" disabled>Select...</option>
+                  <select value={answers[field.id] || ""} onChange={(e) => setAnswer(field.id, e.target.value)} disabled={isSubmitted} style={{ ...TS.input, width: "100%", padding: "14px 16px", border: `1px solid ${C.separator}`, borderRadius: 10, outline: "none", background: C.card, boxSizing: "border-box", cursor: "pointer" }}>
+                    <option value="" disabled>Select an answer...</option>
                     {field.options?.map((opt: string) => <option key={opt} value={opt}>{opt}</option>)}
                   </select>
                 )}
                 {field.type === "checkbox" && (
                   <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                    {field.options?.map((opt: string) => (
-                      <label key={opt} style={{ ...TS.input, display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
-                        <input type="checkbox" checked={answers[field.id]?.includes(opt) || false} onChange={(e) => {
-                          const current = answers[field.id] || [];
-                          if (e.target.checked) setAnswer(field.id, [...current, opt]);
-                          else setAnswer(field.id, current.filter((o: string) => o !== opt));
-                        }} disabled={isSubmitted} style={{ width: 20, height: 20, accentColor: C.medBlue, cursor: "pointer" }} />
-                        {opt}
-                      </label>
-                    ))}
+                    {field.options?.map((opt: string) => {
+                      const checked = answers[field.id]?.includes(opt) || false;
+                      return (
+                        <label key={opt} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", background: C.card, borderRadius: 10, border: `1px solid ${checked ? C.medBlue + "44" : C.separator}`, cursor: isSubmitted ? "default" : "pointer", transition: "border-color 0.2s" }}
+                          onClick={(e) => { if (isSubmitted) return; e.preventDefault(); const current = answers[field.id] || []; if (checked) setAnswer(field.id, current.filter((o: string) => o !== opt)); else setAnswer(field.id, [...current, opt]); }}>
+                          <div style={{ width: 22, height: 22, borderRadius: 6, border: `2px solid ${checked ? C.medBlue : C.separator}`, background: checked ? C.medBlue : C.card, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, transition: "all 0.2s" }}>
+                            {checked && <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3"><polyline points="20 6 9 17 4 12" /></svg>}
+                          </div>
+                          <span style={{ ...TS.input, userSelect: "none" }}>{opt}</span>
+                        </label>
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -239,35 +332,83 @@ export default function UserAssignmentTaker() {
           })}
         </div>
 
+        {/* SLIDE NAVIGATION */}
         {slides.length > 1 && (
           <div style={{ display: "flex", justifyContent: "space-between", marginTop: 40, width: "100%" }}>
             <button onClick={() => setActiveSlide(prev => Math.max(0, prev - 1))} disabled={activeSlide === 0}
               style={{ ...TS.input, padding: "12px 24px", background: C.bg, border: `1px solid ${C.separator}`, borderRadius: 10, fontWeight: 600, cursor: activeSlide === 0 ? "not-allowed" : "pointer", opacity: activeSlide === 0 ? 0.5 : 1, color: C.textPrimary, fontSize: 15 }}>
               Previous
             </button>
-            {activeSlide < slides.length - 1 ? (
-              <button onClick={() => setActiveSlide(prev => Math.min(slides.length - 1, prev + 1))}
-                style={{ ...TS.input, padding: "12px 24px", background: C.medBlue, color: "#fff", border: "none", borderRadius: 10, fontWeight: 600, cursor: "pointer", fontSize: 15 }}>
-                Next Slide
-              </button>
-            ) : (
-              !isSubmitted && (
-                <button onClick={handleSubmit} disabled={submitting}
-                  style={{ ...TS.input, padding: "12px 24px", background: C.green, color: "#fff", border: "none", borderRadius: 10, fontWeight: 700, cursor: "pointer", opacity: submitting ? 0.5 : 1, fontSize: 15 }}>
-                  {submitting ? "Saving..." : "Finish & Submit"}
+            <div style={{ display: "flex", gap: 10 }}>
+              {!isSubmitted && (
+                <button onClick={handleSaveDraft} disabled={savingDraft}
+                  style={{ ...TS.input, padding: "12px 20px", background: C.bg, border: `1px solid ${C.separator}`, borderRadius: 10, fontWeight: 600, cursor: savingDraft ? "wait" : "pointer", fontSize: 14, color: C.textTertiary }}>
+                  {savingDraft ? "Saving..." : "Save Draft"}
                 </button>
-              )
-            )}
+              )}
+              {activeSlide < slides.length - 1 ? (
+                <button onClick={() => setActiveSlide(prev => Math.min(slides.length - 1, prev + 1))}
+                  style={{ ...TS.input, padding: "12px 24px", background: C.medBlue, color: "#fff", border: "none", borderRadius: 10, fontWeight: 600, cursor: "pointer", fontSize: 15 }}>
+                  Next Slide
+                </button>
+              ) : (
+                !isSubmitted && (
+                  <button onClick={attemptSubmit} disabled={submitting}
+                    style={{ ...TS.input, padding: "12px 24px", background: C.green, color: "#fff", border: "none", borderRadius: 10, fontWeight: 700, cursor: "pointer", opacity: submitting ? 0.5 : 1, fontSize: 15 }}>
+                    {submitting ? "Submitting..." : "Finish & Submit"}
+                  </button>
+                )
+              )}
+            </div>
           </div>
         )}
+
+        {/* SINGLE SLIDE — submit + save draft */}
         {slides.length <= 1 && !isSubmitted && (
-          <div style={{ marginTop: 40, width: "100%" }}>
-            <button onClick={handleSubmit} disabled={submitting} style={{ ...TS.input, width: "100%", padding: "16px 24px", background: C.medBlue, color: "#fff", border: "none", borderRadius: 12, fontWeight: 700, fontSize: 17, cursor: "pointer" }}>
-              {submitting ? "Saving..." : hasQuestions ? "Submit Assessment" : "Complete & Unlock Next Module"}
+          <div style={{ marginTop: 40, display: "flex", gap: 12, width: "100%" }}>
+            <button onClick={handleSaveDraft} disabled={savingDraft}
+              style={{ ...TS.input, flex: 1, padding: "16px 24px", background: C.bg, border: `1px solid ${C.separator}`, borderRadius: 12, fontWeight: 600, cursor: savingDraft ? "wait" : "pointer", fontSize: 16, color: C.textTertiary }}>
+              {savingDraft ? "Saving..." : "Save Draft"}
+            </button>
+            <button onClick={attemptSubmit} disabled={submitting}
+              style={{ ...TS.input, flex: 2, padding: "16px 24px", background: C.green, color: "#fff", border: "none", borderRadius: 12, fontWeight: 700, fontSize: 16, cursor: "pointer" }}>
+              {submitting ? "Submitting..." : hasQuestions ? "Submit Assessment" : "Complete & Unlock Next Module"}
             </button>
           </div>
         )}
+
+        {/* SUBMITTED STATE */}
+        {isSubmitted && !isGraded && (
+          <div style={{ marginTop: 40, width: "100%", background: C.medBlueBg, borderRadius: 12, padding: "20px 24px", border: `1px solid ${C.medBlue}33`, display: "flex", alignItems: "center", gap: 12 }}>
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke={C.medBlue} strokeWidth="2.5"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            <div>
+              <div style={{ ...TS.h3, fontSize: 15, fontWeight: 700, color: C.medBlue }}>Submitted — Pending Review</div>
+              <div style={{ ...TS.bodySm, marginTop: 2 }}>Your trainer will review and grade your submission.</div>
+            </div>
+          </div>
+        )}
       </div>
+
+      {/* SUBMIT CONFIRMATION MODAL */}
+      {showSubmitConfirm && (
+        <div onClick={() => setShowSubmitConfirm(false)} style={{ position: "fixed", top: 0, left: 0, width: "100%", height: "100%", background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 16, boxSizing: "border-box" }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ background: C.card, borderRadius: 16, padding: 28, maxWidth: 420, width: "100%", textAlign: "center" }}>
+            <div style={{ width: 56, height: 56, borderRadius: 16, background: C.greenBg, margin: "0 auto 16px", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke={C.green} strokeWidth="2.5"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" /><polyline points="22 4 12 14.01 9 11.01" /></svg>
+            </div>
+            <h3 style={{ ...TS.h3, fontSize: 18, margin: "0 0 8px" }}>Submit Answers?</h3>
+            <p style={{ ...TS.bodySm, margin: "0 0 8px" }}>You've answered <strong>{answeredCount} of {questionFields.length}</strong> questions.</p>
+            {answeredCount < questionFields.length && (
+              <p style={{ ...TS.bodySm, margin: "0 0 20px", color: C.orange }}>⚠️ {questionFields.length - answeredCount} questions are unanswered and will be submitted blank.</p>
+            )}
+            {answeredCount === questionFields.length && <p style={{ ...TS.bodySm, margin: "0 0 20px" }}>All questions answered. Your trainer will review and grade your submission.</p>}
+            <div style={{ display: "flex", gap: 10 }}>
+              <button onClick={() => setShowSubmitConfirm(false)} style={{ ...TS.input, flex: 1, padding: "12px", background: C.bg, color: C.textPrimary, border: `1px solid ${C.separator}`, borderRadius: 12, fontWeight: 600, cursor: "pointer", fontSize: 14 }}>Cancel</button>
+              <button onClick={handleSubmit} style={{ ...TS.input, flex: 1, padding: "12px", background: C.green, color: "#fff", border: "none", borderRadius: 12, fontWeight: 700, cursor: "pointer", fontSize: 14 }}>Submit</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
