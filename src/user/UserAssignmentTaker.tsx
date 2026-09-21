@@ -89,7 +89,6 @@ export default function UserAssignmentTaker() {
   const isSubmitted = !!submission?.submitted_at;
   const isGraded = !!submission?.graded_at;
 
-  // Parse grading data
   const gradeData: Record<string, "correct" | "incorrect"> = useMemo(() => {
     if (!submission?.grade) return {};
     try { return JSON.parse(submission.grade); } catch { return {}; }
@@ -207,7 +206,7 @@ export default function UserAssignmentTaker() {
       <div style={{ padding: "40px 48px 100px", width: "100%", boxSizing: "border-box" }}>
         <h1 style={{ ...TS.h1, margin: "0 0 12px" }}>{assignment?.title}</h1>
 
-        {/* PROGRESS BAR (while answering) */}
+        {/* PROGRESS BAR */}
         {hasQuestions && !isSubmitted && (
           <div style={{ marginBottom: 32, display: "flex", alignItems: "center", gap: 12 }}>
             <div style={{ flex: 1, height: 6, borderRadius: 3, background: C.separator, overflow: "hidden" }}>
@@ -283,7 +282,7 @@ export default function UserAssignmentTaker() {
               );
             }
 
-            // QUESTION CARDS
+            // QUESTION CARDS — just "Question 1", "Question 2", etc.
             questionCounter++;
             const isAnswered = (() => {
               const ans = answers[field.id];
@@ -292,25 +291,17 @@ export default function UserAssignmentTaker() {
             })();
             const mark = gradeData[field.id];
 
-            const typeLabel: Record<string, string> = {
-              text: "Short Answer", paragraph: "Essay", dropdown: "Single Choice", checkbox: "Multiple Choice",
-            };
-            const typeIcon: Record<string, string> = {
-              text: "💬", paragraph: "📄", dropdown: "📋", checkbox: "☑️",
-            };
-
             return (
               <div key={field.id} style={{
                 background: C.bg, borderRadius: 12, padding: "24px 28px", marginBottom: 8, width: "100%", boxSizing: "border-box",
                 border: `1px solid ${isGraded ? (mark === "correct" ? C.green + "44" : mark === "incorrect" ? C.red + "44" : C.separator) : (isAnswered ? C.green + "44" : C.separator)}`,
                 transition: "border-color 0.2s",
               }}>
-                {/* Question header */}
+                {/* Question header — just "Question 1" + Required + ✓/✗ */}
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <span style={{ ...TS.caption, fontSize: 13, color: "#fff", background: isGraded ? (mark === "correct" ? C.green : mark === "incorrect" ? C.red : C.medBlue) : (isAnswered ? C.green : C.medBlue), padding: "4px 10px", borderRadius: 8 }}>Q{questionCounter}</span>
-                    <span style={{ ...TS.label, fontSize: 11, color: C.textTertiary, background: C.card, padding: "3px 8px", borderRadius: 6 }}>{typeIcon[field.type] || "❓"} {typeLabel[field.type] || field.type}</span>
-                    {field.required && <span style={{ ...TS.caption, fontSize: 11, color: C.red }}>Required</span>}
+                    <span style={{ ...TS.input, fontSize: 15, fontWeight: 700, color: isGraded ? (mark === "correct" ? C.green : mark === "incorrect" ? C.red : C.textPrimary) : C.textPrimary }}>Question {questionCounter}</span>
+                    {field.required && <span style={{ ...TS.caption, fontSize: 10, color: "#fff", background: C.red, padding: "2px 6px", borderRadius: 4 }}>Required</span>}
                   </div>
                   {/* Show ✓/✗ when graded, or ✓ when answered */}
                   {isGraded ? (
@@ -330,7 +321,9 @@ export default function UserAssignmentTaker() {
                       </div>
                     ) : null
                   ) : isAnswered && !isSubmitted ? (
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={C.green} strokeWidth="3"><polyline points="20 6 9 17 4 12" /></svg>
+                    <div style={{ width: 28, height: 28, borderRadius: "50%", background: C.green, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3"><polyline points="20 6 9 17 4 12" /></svg>
+                    </div>
                   ) : null}
                 </div>
 

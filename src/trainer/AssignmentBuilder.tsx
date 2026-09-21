@@ -162,7 +162,10 @@ export default function AssignmentBuilder() {
       }, { onConflict: "id" }).select("id").single();
       if (aErr) throw aErr;
       tid = aData.id;
-      if (isEditing) await supabase.from("assignment_submissions").delete().eq("assignment_id", tid);
+
+      // ✅ FIX: Delete old FIELDS (not submissions!) so removed fields don't show up for trainees
+      if (isEditing) await supabase.from("assignment_fields").delete().eq("assignment_id", tid);
+
       if (fields.length > 0) {
         const { error: fErr } = await supabase.from("assignment_fields").upsert(fields.map((f, i) => ({
           id: f.id, tenant_id: currentUser.tenantId, assignment_id: tid, type: f.type, label: f.label || "",
