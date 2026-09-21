@@ -5,16 +5,17 @@ import { VitePWA } from 'vite-plugin-pwa'
 export default defineConfig({
   plugins: [
     react(),
-    VitePWA({
+    // Only enable PWA for web builds, NOT Tauri builds
+    process.env.TAURI_ENV_PLATFORM ? null : VitePWA({
       registerType: 'autoUpdate',
-      // Prevents Service Worker from caching API requests and causing 405/Network errors
       workbox: {
         runtimeCaching: [
           {
             urlPattern: /\/api\/.*/i,
             handler: 'NetworkOnly',
           }
-        ]
+        ],
+        navigateFallback: null, // Prevents SW from hijacking navigation in Tauri
       },
       manifest: {
         name: 'MedStat',
@@ -26,17 +27,31 @@ export default defineConfig({
         orientation: 'portrait',
         start_url: '/',
         scope: '/',
-        icons: [] // Empty array prevents build errors from missing image files
+        // Provide at least one icon, otherwise PWA registration fails silently
+        icons: [
+          {
+            src: '/icon-192.png',
+            sizes: '192x192',
+            type: 'image/png',
+            purpose: 'any maskable'
+          },
+          {
+            src: '/icon-512.png',
+            sizes: '512x512',
+            type: 'image/png',
+            purpose: 'any maskable'
+          }
+        ]
       }
     })
-  ],
+  ].filter(Boolean),
   server: {
-    port: 1420,      
-    strictPort: true,  
+    port: 1420,
+    strictPort: true,
     watch: {
       ignored: ['**/src-tauri/**']
     },
-    // Bypasses ISP blocking by routing /api calls through Vite locally
+    // Dev-only proxy — doesn't affect Tauri production builds
     proxy: {
       '/api': {
         target: 'https://medstat-3rxl.onrender.com',
