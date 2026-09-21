@@ -205,11 +205,11 @@ export default function UserAssignmentTaker() {
         </div>
       </div>
 
-      {/* BODY — flat white page like MS Word */}
+      {/* BODY */}
       <div style={{ padding: "48px 48px 100px", width: "100%", boxSizing: "border-box" }}>
         <h1 style={{ ...TS.h1, margin: "0 0 12px" }}>{assignment?.title}</h1>
 
-        {/* SLIDE INDICATOR — shows which slide the trainee is on */}
+        {/* SLIDE INDICATOR */}
         {slides.length > 1 && (
           <div style={{ marginBottom: 24, display: "flex", alignItems: "center", gap: 8 }}>
             {slides.map((_, i) => (
@@ -253,10 +253,12 @@ export default function UserAssignmentTaker() {
           </div>
         )}
 
-        {/* SLIDE CONTENT — flat, no cards, just flowing text like Word */}
+        {/* SLIDE CONTENT — flat, skip headers that match assignment title */}
         <div style={{ display: "flex", flexDirection: "column", gap: 0, width: "100%" }}>
           {currentSlideFields.map((field) => {
             if (field.type === "header") {
+              // Skip if this header text matches the assignment title (already shown as h1 above)
+              if (field.label?.trim() === assignment?.title?.trim()) return null;
               return <h2 key={field.id} style={{ ...TS.h2, margin: "32px 0 16px" }}>{field.label}</h2>;
             }
             if (field.type === "note") {
@@ -296,7 +298,7 @@ export default function UserAssignmentTaker() {
               );
             }
 
-            // QUESTION — flat, no card, just text with spacing
+            // QUESTION — flat, no card
             questionCounter++;
             const isAnswered = (() => {
               const ans = answers[field.id];
@@ -304,6 +306,7 @@ export default function UserAssignmentTaker() {
               return ans !== undefined && ans !== null && ans !== "";
             })();
             const mark = gradeData[field.id];
+            const answerText = Array.isArray(answers[field.id]) ? (answers[field.id] as string[]).join(", ") : (answers[field.id] || "");
 
             return (
               <div key={field.id} style={{
@@ -311,12 +314,13 @@ export default function UserAssignmentTaker() {
                 margin: "0 0 32px 0", padding: 0,
                 background: "transparent", border: "none", borderRadius: 0,
               }}>
-                {/* Question header */}
+                {/* Question header — "Question 1" + ✓/✗ mark on the right */}
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                     <span style={{ ...TS.input, fontSize: 15, fontWeight: 700, color: isGraded ? (mark === "correct" ? C.green : mark === "incorrect" ? C.red : C.textPrimary) : C.textPrimary }}>Question {questionCounter}</span>
                     {field.required && <span style={{ ...TS.caption, fontSize: 10, color: "#fff", background: C.red, padding: "2px 6px", borderRadius: 4 }}>Required</span>}
                   </div>
+                  {/* ✓ or ✗ badge */}
                   {isGraded ? (
                     mark === "correct" ? (
                       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -343,34 +347,45 @@ export default function UserAssignmentTaker() {
                 {/* Question text */}
                 <p style={{ ...TS.body, margin: "0 0 16px" }}>{field.label}</p>
 
-                {/* Answer input — flat underline style */}
-                {field.type === "text" && (
-                  <input type="text" value={answers[field.id] || ""} onChange={(e) => setAnswer(field.id, e.target.value)} disabled={isSubmitted} placeholder="Type your answer..." style={{ ...TS.input, width: "100%", padding: "12px 0", border: "none", borderBottom: `1px solid ${isAnswered ? C.green : C.separator}`, borderRadius: 0, outline: "none", background: "transparent", boxSizing: "border-box" }} />
-                )}
-                {field.type === "paragraph" && (
-                  <textarea rows={5} value={answers[field.id] || ""} onChange={(e) => setAnswer(field.id, e.target.value)} disabled={isSubmitted} placeholder="Type your detailed answer..." style={{ ...TS.input, width: "100%", padding: "12px 0", border: "none", borderBottom: `1px solid ${isAnswered ? C.green : C.separator}`, borderRadius: 0, outline: "none", background: "transparent", boxSizing: "border-box", resize: "vertical", lineHeight: 1.6 }} />
-                )}
-                {field.type === "dropdown" && (
-                  <select value={answers[field.id] || ""} onChange={(e) => setAnswer(field.id, e.target.value)} disabled={isSubmitted} style={{ ...TS.input, width: "100%", padding: "12px 0", border: "none", borderBottom: `1px solid ${isAnswered ? C.green : C.separator}`, borderRadius: 0, outline: "none", background: "transparent", cursor: "pointer", boxSizing: "border-box" }}>
-                    <option value="" disabled>Select an answer...</option>
-                    {field.options?.map((opt: string) => <option key={opt} value={opt}>{opt}</option>)}
-                  </select>
-                )}
-                {field.type === "checkbox" && (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                    {field.options?.map((opt: string) => {
-                      const checked = answers[field.id]?.includes(opt) || false;
-                      return (
-                        <label key={opt} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", cursor: isSubmitted ? "default" : "pointer" }}
-                          onClick={(e) => { if (isSubmitted) return; e.preventDefault(); const current = answers[field.id] || []; if (checked) setAnswer(field.id, current.filter((o: string) => o !== opt)); else setAnswer(field.id, [...current, opt]); }}>
-                          <div style={{ width: 20, height: 20, borderRadius: 4, border: `2px solid ${checked ? C.medBlue : C.separator}`, background: checked ? C.medBlue : "transparent", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, transition: "all 0.2s" }}>
-                            {checked && <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3"><polyline points="20 6 9 17 4 12" /></svg>}
-                          </div>
-                          <span style={{ ...TS.input, userSelect: "none" }}>{opt}</span>
-                        </label>
-                      );
-                    })}
+                {/* When graded — show the trainee's answer as plain text (no input boxes) */}
+                {isGraded ? (
+                  <div style={{ padding: "12px 0", borderBottom: `1px solid ${mark === "correct" ? C.green : mark === "incorrect" ? C.red : C.separator}` }}>
+                    <div style={{ ...TS.body, fontSize: 15, color: C.textTertiary }}>
+                      {answerText || <span style={{ fontStyle: "italic" }}>(no answer submitted)</span>}
+                    </div>
                   </div>
+                ) : (
+                  <>
+                    {/* Answer input — flat underline style */}
+                    {field.type === "text" && (
+                      <input type="text" value={answers[field.id] || ""} onChange={(e) => setAnswer(field.id, e.target.value)} disabled={isSubmitted} placeholder="Type your answer..." style={{ ...TS.input, width: "100%", padding: "12px 0", border: "none", borderBottom: `1px solid ${isAnswered ? C.green : C.separator}`, borderRadius: 0, outline: "none", background: "transparent", boxSizing: "border-box" }} />
+                    )}
+                    {field.type === "paragraph" && (
+                      <textarea rows={5} value={answers[field.id] || ""} onChange={(e) => setAnswer(field.id, e.target.value)} disabled={isSubmitted} placeholder="Type your detailed answer..." style={{ ...TS.input, width: "100%", padding: "12px 0", border: "none", borderBottom: `1px solid ${isAnswered ? C.green : C.separator}`, borderRadius: 0, outline: "none", background: "transparent", boxSizing: "border-box", resize: "vertical", lineHeight: 1.6 }} />
+                    )}
+                    {field.type === "dropdown" && (
+                      <select value={answers[field.id] || ""} onChange={(e) => setAnswer(field.id, e.target.value)} disabled={isSubmitted} style={{ ...TS.input, width: "100%", padding: "12px 0", border: "none", borderBottom: `1px solid ${isAnswered ? C.green : C.separator}`, borderRadius: 0, outline: "none", background: "transparent", cursor: "pointer", boxSizing: "border-box" }}>
+                        <option value="" disabled>Select an answer...</option>
+                        {field.options?.map((opt: string) => <option key={opt} value={opt}>{opt}</option>)}
+                      </select>
+                    )}
+                    {field.type === "checkbox" && (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                        {field.options?.map((opt: string) => {
+                          const checked = answers[field.id]?.includes(opt) || false;
+                          return (
+                            <label key={opt} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", cursor: isSubmitted ? "default" : "pointer" }}
+                              onClick={(e) => { if (isSubmitted) return; e.preventDefault(); const current = answers[field.id] || []; if (checked) setAnswer(field.id, current.filter((o: string) => o !== opt)); else setAnswer(field.id, [...current, opt]); }}>
+                              <div style={{ width: 20, height: 20, borderRadius: 4, border: `2px solid ${checked ? C.medBlue : C.separator}`, background: checked ? C.medBlue : "transparent", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, transition: "all 0.2s" }}>
+                                {checked && <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3"><polyline points="20 6 9 17 4 12" /></svg>}
+                              </div>
+                              <span style={{ ...TS.input, userSelect: "none" }}>{opt}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             );
@@ -408,7 +423,7 @@ export default function UserAssignmentTaker() {
           </div>
         )}
 
-        {/* SINGLE SLIDE — submit + save draft */}
+        {/* SINGLE SLIDE */}
         {slides.length <= 1 && !isSubmitted && (
           <div style={{ marginTop: 48, display: "flex", gap: 12, width: "100%" }}>
             <button onClick={handleSaveDraft} disabled={savingDraft}
