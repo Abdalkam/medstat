@@ -41,7 +41,7 @@ export default function AssignmentBuilder() {
   const navigate = useNavigate();
   const currentUser = JSON.parse(localStorage.getItem("currentUser") || "{}");
 
-  const [title, setTitle] = useState("Untitled Module");
+  const [, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [fields, setFields] = useState<FormField[]>([]);
   const [pages, setPages] = useState<SlidePage[]>([{ id: "page-1", title: "Slide 1" }]);
@@ -82,7 +82,7 @@ export default function AssignmentBuilder() {
     const loadData = async () => {
       try {
         const { data: a } = await supabase.from("assignments").select("*").eq("id", assignmentId).maybeSingle();
-        if (a) { setTitle(a.title || "Untitled Module"); setDescription(a.description || ""); setStatus(a.status || "draft"); }
+        if (a) { setTitle(a.title || ""); setDescription(a.description || ""); setStatus(a.status || "draft"); }
         const { data: f } = await supabase.from("assignment_fields").select("*").eq("assignment_id", assignmentId).order("sort_order", { ascending: true });
         const loadedFields = (f || []).map((field: Record<string, unknown>): FormField => ({
           id: field.id as string, type: (field.type as string) as AssignmentFieldType | "note" | "header" | "file",
@@ -147,16 +147,22 @@ export default function AssignmentBuilder() {
     setSaving(true);
     try {
       const now = new Date().toISOString();
+
+      // Auto-generate title from first header field, or fallback to date
+      const firstHeader = fields.find(f => f.type === "header" && f.label?.trim());
+      const autoTitle = firstHeader
+        ? firstHeader.label.trim().slice(0, 80)
+        : `Module — ${new Date().toLocaleDateString()}`;
+
       let tid = assignmentId;
-      const finalTitle = title.trim() || "Untitled Module";
       const { data: aData, error: aErr } = await supabase.from("assignments").upsert({
         id: tid || crypto.randomUUID(), tenant_id: currentUser.tenantId, course_id: courseId, trainer_id: currentUser.id,
-        title: finalTitle, description: description.trim(), status: status,
+        title: autoTitle, description: description.trim(), status: status,
         created_at: isEditing ? undefined : now, updated_at: now,
       }, { onConflict: "id" }).select("id").single();
       if (aErr) throw aErr;
       tid = aData.id;
-      if (isEditing) await supabase.from("assignment_fields").delete().eq("assignment_id", tid);
+      if (isEditing) await supabase.from("assignment_submissions").delete().eq("assignment_id", tid);
       if (fields.length > 0) {
         const { error: fErr } = await supabase.from("assignment_fields").upsert(fields.map((f, i) => ({
           id: f.id, tenant_id: currentUser.tenantId, assignment_id: tid, type: f.type, label: f.label || "",
@@ -230,15 +236,15 @@ export default function AssignmentBuilder() {
         </div>
       </div>
 
-      {/* ACTION TOOLBAR — buttons at top most area */}
+      {/* ACTION TOOLBAR — buttons only, no title input */}
       <div style={{ borderBottom: `1px solid ${C.separator}`, padding: "12px 24px", display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 12, width: "100%", boxSizing: "border-box", background: C.card }}>
-        <select value={status} onChange={(e) => setStatus(e.target.value as any)} style={{ ...TS.input, padding: "8px 12px", border: `1px solid ${C.separator}`, borderRadius: 8, fontSize: 13, background: C.bg, cursor: "pointer", outline: "none" }}>
+        <select value={status} onChange={(e) => setStatus(e.target.value as any)} style={{ ...TS.input, padding: "8px 12px", border: `1px solid ${C.separator}`, borderRadius: 8, fontSize: 13, background: C.bg, cursor: "pointer", outline: "none", flexShrink: 0 }}>
           <option value="draft">Draft</option><option value="published">Published</option><option value="closed">Closed</option>
         </select>
         {isEditing && (
-          <button onClick={() => setShowDeleteConfirm(true)} style={{ ...TS.input, padding: "8px 14px", background: C.redBg, color: C.red, border: `1px solid ${C.red}22`, borderRadius: 8, fontWeight: 600, cursor: "pointer", fontSize: 13 }}>Delete</button>
+          <button onClick={() => setShowDeleteConfirm(true)} style={{ ...TS.input, padding: "8px 14px", background: C.redBg, color: C.red, border: `1px solid ${C.red}22`, borderRadius: 8, fontWeight: 600, cursor: "pointer", fontSize: 13, flexShrink: 0 }}>Delete</button>
         )}
-        <button onClick={handleSave} disabled={saving} style={{ ...TS.input, padding: "10px 24px", background: saving ? C.textTertiary : C.medBlue, color: "#fff", border: "none", borderRadius: 10, fontWeight: 700, cursor: saving ? "default" : "pointer", fontSize: 13 }}>{saving ? "Saving..." : "Save Module"}</button>
+        <button onClick={handleSave} disabled={saving} style={{ ...TS.input, padding: "10px 24px", background: saving ? C.textTertiary : C.medBlue, color: "#fff", border: "none", borderRadius: 10, fontWeight: 700, cursor: saving ? "default" : "pointer", fontSize: 13, flexShrink: 0 }}>{saving ? "Saving..." : "Save Module"}</button>
       </div>
 
       {/* SIDEBAR + MAIN CONTENT */}
