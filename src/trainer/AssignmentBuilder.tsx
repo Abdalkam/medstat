@@ -41,7 +41,7 @@ export default function AssignmentBuilder() {
   const navigate = useNavigate();
   const currentUser = JSON.parse(localStorage.getItem("currentUser") || "{}");
 
-  const [title, setTitle] = useState("");
+  const [title, setTitle] = useState("Untitled Module");
   const [description, setDescription] = useState("");
   const [fields, setFields] = useState<FormField[]>([]);
   const [pages, setPages] = useState<SlidePage[]>([{ id: "page-1", title: "Slide 1" }]);
@@ -82,7 +82,7 @@ export default function AssignmentBuilder() {
     const loadData = async () => {
       try {
         const { data: a } = await supabase.from("assignments").select("*").eq("id", assignmentId).maybeSingle();
-        if (a) { setTitle(a.title || ""); setDescription(a.description || ""); setStatus(a.status || "draft"); }
+        if (a) { setTitle(a.title || "Untitled Module"); setDescription(a.description || ""); setStatus(a.status || "draft"); }
         const { data: f } = await supabase.from("assignment_fields").select("*").eq("assignment_id", assignmentId).order("sort_order", { ascending: true });
         const loadedFields = (f || []).map((field: Record<string, unknown>): FormField => ({
           id: field.id as string, type: (field.type as string) as AssignmentFieldType | "note" | "header" | "file",
@@ -143,14 +143,15 @@ export default function AssignmentBuilder() {
   };
 
   async function handleSave() {
-    if (!courseId || !title.trim()) return alert("Please enter a module title.");
+    if (!courseId) return alert("Course ID missing.");
     setSaving(true);
     try {
       const now = new Date().toISOString();
       let tid = assignmentId;
+      const finalTitle = title.trim() || "Untitled Module";
       const { data: aData, error: aErr } = await supabase.from("assignments").upsert({
         id: tid || crypto.randomUUID(), tenant_id: currentUser.tenantId, course_id: courseId, trainer_id: currentUser.id,
-        title: title.trim(), description: description.trim(), status: status,
+        title: finalTitle, description: description.trim(), status: status,
         created_at: isEditing ? undefined : now, updated_at: now,
       }, { onConflict: "id" }).select("id").single();
       if (aErr) throw aErr;
@@ -197,7 +198,7 @@ export default function AssignmentBuilder() {
     <div style={{ minHeight: "100vh", background: C.card, fontFamily: FONT, WebkitFontSmoothing: "antialiased", MozOsxFontSmoothing: "grayscale" }}>
       <style>{`@keyframes fadeSlideIn { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } } .field-card { animation: fadeSlideIn 0.25s ease-out; } input:focus, textarea:focus { border-color: ${C.medBlue} !important; box-shadow: 0 0 0 3px ${C.medBlueBg} !important; }`}</style>
 
-      {/* SINGLE APP BAR — borrowed from UploadMaterials */}
+      {/* SINGLE APP BAR */}
       <div style={{ borderBottom: `1px solid ${C.separator}`, padding: "12px 24px", position: "sticky", top: 0, zIndex: 10, width: "100%", boxSizing: "border-box", background: C.card }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, width: "100%" }}>
           <button onClick={() => navigate(`/trainer/assignments/${courseId}`)} style={{ background: C.bg, border: `1px solid ${C.separator}`, borderRadius: 10, color: C.medBlue, cursor: "pointer", width: 36, height: 36, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
@@ -229,8 +230,19 @@ export default function AssignmentBuilder() {
         </div>
       </div>
 
+      {/* ACTION TOOLBAR — buttons at top most area */}
+      <div style={{ borderBottom: `1px solid ${C.separator}`, padding: "12px 24px", display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 12, width: "100%", boxSizing: "border-box", background: C.card }}>
+        <select value={status} onChange={(e) => setStatus(e.target.value as any)} style={{ ...TS.input, padding: "8px 12px", border: `1px solid ${C.separator}`, borderRadius: 8, fontSize: 13, background: C.bg, cursor: "pointer", outline: "none" }}>
+          <option value="draft">Draft</option><option value="published">Published</option><option value="closed">Closed</option>
+        </select>
+        {isEditing && (
+          <button onClick={() => setShowDeleteConfirm(true)} style={{ ...TS.input, padding: "8px 14px", background: C.redBg, color: C.red, border: `1px solid ${C.red}22`, borderRadius: 8, fontWeight: 600, cursor: "pointer", fontSize: 13 }}>Delete</button>
+        )}
+        <button onClick={handleSave} disabled={saving} style={{ ...TS.input, padding: "10px 24px", background: saving ? C.textTertiary : C.medBlue, color: "#fff", border: "none", borderRadius: 10, fontWeight: 700, cursor: saving ? "default" : "pointer", fontSize: 13 }}>{saving ? "Saving..." : "Save Module"}</button>
+      </div>
+
       {/* SIDEBAR + MAIN CONTENT */}
-      <div style={{ display: "flex", minHeight: "calc(100vh - 61px)" }}>
+      <div style={{ display: "flex", minHeight: "calc(100vh - 122px)" }}>
         {/* SIDEBAR */}
         <div style={{ width: 240, background: C.sidebarBg, borderRight: `1px solid ${C.separator}`, display: "flex", flexDirection: "column", flexShrink: 0 }}>
           <div style={{ padding: "20px 16px", borderBottom: `1px solid ${C.separator}` }}>
@@ -250,21 +262,6 @@ export default function AssignmentBuilder() {
 
         {/* MAIN CONTENT */}
         <div style={{ flex: 1, overflowY: "auto", padding: "32px 48px" }}>
-          {/* Title + Controls row */}
-          <div style={{ marginBottom: 24 }}>
-            <input placeholder="Presentation Title" value={title} onChange={(e) => setTitle(e.target.value)} style={{ ...TS.h1, fontSize: 28, border: "none", outline: "none", padding: 0, margin: 0, background: "transparent", width: "100%" }} />
-            <input placeholder="Add a subtitle or description..." value={description} onChange={(e) => setDescription(e.target.value)} style={{ ...TS.bodySm, border: "none", outline: "none", padding: 0, margin: "4px 0 0", background: "transparent", width: "100%" }} />
-            <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 16 }}>
-              <select value={status} onChange={(e) => setStatus(e.target.value as any)} style={{ ...TS.input, padding: "8px 12px", border: `1px solid ${C.separator}`, borderRadius: 8, fontSize: 13, background: C.bg, cursor: "pointer", outline: "none" }}>
-                <option value="draft">Draft</option><option value="published">Published</option><option value="closed">Closed</option>
-              </select>
-              {isEditing && (
-                <button onClick={() => setShowDeleteConfirm(true)} style={{ ...TS.input, padding: "8px 14px", background: C.redBg, color: C.red, border: `1px solid ${C.red}22`, borderRadius: 8, fontWeight: 600, cursor: "pointer", fontSize: 13 }}>Delete</button>
-              )}
-              <button onClick={handleSave} disabled={saving || !title.trim()} style={{ ...TS.input, padding: "10px 24px", background: saving || !title.trim() ? C.textTertiary : C.medBlue, color: "#fff", border: "none", borderRadius: 10, fontWeight: 700, cursor: saving || !title.trim() ? "default" : "pointer", fontSize: 13 }}>{saving ? "Saving..." : "Save Module"}</button>
-            </div>
-          </div>
-
           {/* Add Content Toolbar */}
           <div style={{ marginBottom: 24, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
             <span style={{ ...TS.caption, marginRight: 8 }}>Add to Slide:</span>

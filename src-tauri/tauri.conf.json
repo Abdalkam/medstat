@@ -1,6 +1,6 @@
 {
     "productName": "medstat",
-    "version": "1.0.37",
+    "version": "1.0.38",
     "identifier": "com.medstat.app",
     "build": {
         "frontendDist": "../dist",
@@ -42,6 +42,7 @@
         }
     }
 }
+
 
 
 
