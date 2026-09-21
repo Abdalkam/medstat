@@ -113,18 +113,20 @@ export default function UserAssignmentTaker() {
   async function handleSaveDraft() {
     setSavingDraft(true);
     try {
+      const subId = submission?.id || crypto.randomUUID();
       const { error } = await supabase.from("assignment_submissions").upsert({
-        id: submission?.id || crypto.randomUUID(),
+        id: subId,
         tenant_id: currentUser.tenantId,
         assignment_id: assignment.id,
         user_id: currentUser.id,
         username: currentUser.username,
         answers,
         submitted_at: null,
+        grade: null,
+        graded_at: null,
       }, { onConflict: "id" });
       if (error) throw error;
-      const { data: s } = await supabase.from("assignment_submissions").select("*").eq("assignment_id", assignmentId).eq("user_id", currentUser.id).maybeSingle();
-      if (s) setSubmission(s);
+      setSubmission({ id: subId, answers, submitted_at: null, grade: null, graded_at: null, user_id: currentUser.id, assignment_id: assignment.id, tenant_id: currentUser.tenantId, username: currentUser.username });
       alert("Progress saved. You can return later to finish.");
     } catch (err: any) { alert("Failed to save: " + err.message); }
     finally { setSavingDraft(false); }
@@ -134,8 +136,9 @@ export default function UserAssignmentTaker() {
     setShowSubmitConfirm(false);
     setSubmitting(true);
     try {
+      const subId = submission?.id || crypto.randomUUID();
       const { error } = await supabase.from("assignment_submissions").upsert({
-        id: submission?.id || crypto.randomUUID(),
+        id: subId,
         tenant_id: currentUser.tenantId,
         assignment_id: assignment.id,
         user_id: currentUser.id,
@@ -202,13 +205,23 @@ export default function UserAssignmentTaker() {
         </div>
       </div>
 
-      {/* BODY */}
-      <div style={{ padding: "40px 48px 100px", width: "100%", boxSizing: "border-box" }}>
+      {/* BODY — flat white page like MS Word */}
+      <div style={{ padding: "48px 48px 100px", width: "100%", boxSizing: "border-box" }}>
         <h1 style={{ ...TS.h1, margin: "0 0 12px" }}>{assignment?.title}</h1>
+
+        {/* SLIDE INDICATOR — shows which slide the trainee is on */}
+        {slides.length > 1 && (
+          <div style={{ marginBottom: 24, display: "flex", alignItems: "center", gap: 8 }}>
+            {slides.map((_, i) => (
+              <div key={i} style={{ height: 8, flex: 1, borderRadius: 4, background: i === activeSlide ? C.medBlue : (i < activeSlide ? C.green : C.separator), transition: "background 0.2s" }} />
+            ))}
+            <span style={{ ...TS.label, fontSize: 12, fontWeight: 600, color: C.textTertiary, whiteSpace: "nowrap" }}>Slide {activeSlide + 1} of {slides.length}</span>
+          </div>
+        )}
 
         {/* PROGRESS BAR */}
         {hasQuestions && !isSubmitted && (
-          <div style={{ marginBottom: 32, display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={{ marginBottom: 40, display: "flex", alignItems: "center", gap: 12 }}>
             <div style={{ flex: 1, height: 6, borderRadius: 3, background: C.separator, overflow: "hidden" }}>
               <div style={{ height: "100%", width: `${progressPct}%`, borderRadius: 3, background: C.medBlue, transition: "width 0.3s ease" }} />
             </div>
@@ -218,7 +231,7 @@ export default function UserAssignmentTaker() {
 
         {/* GRADED RESULTS BANNER */}
         {isGraded && (
-          <div style={{ background: C.greenBg, borderRadius: 14, padding: "20px 24px", marginBottom: 32, border: `1px solid ${C.green}33`, display: "flex", alignItems: "center", gap: 16, width: "100%", boxSizing: "border-box" }}>
+          <div style={{ background: C.greenBg, borderRadius: 14, padding: "20px 24px", marginBottom: 40, border: `1px solid ${C.green}33`, display: "flex", alignItems: "center", gap: 16, width: "100%", boxSizing: "border-box" }}>
             <div style={{ width: 44, height: 44, borderRadius: "50%", background: C.green, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3"><polyline points="20 6 9 17 4 12" /></svg>
             </div>
@@ -231,7 +244,7 @@ export default function UserAssignmentTaker() {
 
         {/* PENDING REVIEW BANNER */}
         {isSubmitted && !isGraded && (
-          <div style={{ background: C.medBlueBg, borderRadius: 12, padding: "20px 24px", marginBottom: 32, border: `1px solid ${C.medBlue}33`, display: "flex", alignItems: "center", gap: 12, width: "100%", boxSizing: "border-box" }}>
+          <div style={{ background: C.medBlueBg, borderRadius: 12, padding: "20px 24px", marginBottom: 40, border: `1px solid ${C.medBlue}33`, display: "flex", alignItems: "center", gap: 12, width: "100%", boxSizing: "border-box" }}>
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke={C.medBlue} strokeWidth="2.5"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
             <div>
               <div style={{ ...TS.h3, fontSize: 15, fontWeight: 700, color: C.medBlue }}>Submitted — Pending Review</div>
@@ -240,49 +253,50 @@ export default function UserAssignmentTaker() {
           </div>
         )}
 
-        {/* SLIDE CONTENT */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 16, width: "100%" }}>
+        {/* SLIDE CONTENT — flat, no cards, just flowing text like Word */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 0, width: "100%" }}>
           {currentSlideFields.map((field) => {
             if (field.type === "header") {
-              return <h2 key={field.id} style={{ ...TS.h2, margin: "16px 0 8px" }}>{field.label}</h2>;
+              return <h2 key={field.id} style={{ ...TS.h2, margin: "32px 0 16px" }}>{field.label}</h2>;
             }
             if (field.type === "note") {
               return (
-                <div key={field.id} style={{
+                <p key={field.id} style={{
                   ...TS.body,
                   width: "100%",
                   boxSizing: "border-box",
-                  background: C.orangeBg,
-                  borderLeft: `4px solid ${C.orange}`,
-                  padding: "20px 24px",
-                  marginBottom: 8,
+                  background: "transparent",
+                  border: "none",
+                  borderRadius: 0,
+                  padding: 0,
+                  margin: "0 0 24px 0",
                   whiteSpace: "pre-wrap",
                   wordBreak: "break-word",
-                  borderRadius: 8,
                 }}>
                   {field.label}
-                </div>
+                </p>
               );
             }
             if (field.type === "file" && field.file_url) {
               const isImage = field.file_url.match(/\.(jpeg|jpg|gif|png|webp)$/i);
               const isVideo = field.file_url.match(/\.(mp4|webm|mov)$/i);
               return (
-                <div key={field.id} style={{ background: C.bg, borderRadius: 12, overflow: "hidden", marginBottom: 8, width: "100%", border: `1px solid ${C.separator}` }}>
-                  {isImage ? <img src={field.file_url} alt={field.label} style={{ width: "100%", maxHeight: "400px", objectFit: "cover" }} /> : isVideo ? <video controls style={{ width: "100%", maxHeight: "400px" }} src={field.file_url} /> : (
-                    <a href={field.file_url} target="_blank" rel="noreferrer" style={{ display: "flex", alignItems: "center", gap: 12, padding: "16px 20px", color: C.medBlue, textDecoration: "none" }}>
-                      <span style={{ fontSize: 28 }}>📄</span>
-                      <div>
-                        <div style={{ ...TS.h3, fontSize: 15, fontWeight: 600 }}>{field.label || "View File"}</div>
-                        <div style={{ ...TS.bodySm, fontSize: 13, marginTop: 2 }}>Click to download/view</div>
-                      </div>
+                <div key={field.id} style={{ marginBottom: 24, width: "100%" }}>
+                  {isImage ? (
+                    <img src={field.file_url} alt={field.label} style={{ width: "100%", maxHeight: "500px", objectFit: "contain", borderRadius: 4 }} />
+                  ) : isVideo ? (
+                    <video controls style={{ width: "100%", maxHeight: "500px", borderRadius: 4 }} src={field.file_url} />
+                  ) : (
+                    <a href={field.file_url} target="_blank" rel="noreferrer" style={{ ...TS.body, display: "inline-flex", alignItems: "center", gap: 10, padding: "8px 0", color: C.medBlue, textDecoration: "none" }}>
+                      <span style={{ fontSize: 20 }}>📄</span>
+                      <span>{field.label || "View File"}</span>
                     </a>
                   )}
                 </div>
               );
             }
 
-            // QUESTION CARDS — just "Question 1", "Question 2", etc.
+            // QUESTION — flat, no card, just text with spacing
             questionCounter++;
             const isAnswered = (() => {
               const ans = answers[field.id];
@@ -293,65 +307,64 @@ export default function UserAssignmentTaker() {
 
             return (
               <div key={field.id} style={{
-                background: C.bg, borderRadius: 12, padding: "24px 28px", marginBottom: 8, width: "100%", boxSizing: "border-box",
-                border: `1px solid ${isGraded ? (mark === "correct" ? C.green + "44" : mark === "incorrect" ? C.red + "44" : C.separator) : (isAnswered ? C.green + "44" : C.separator)}`,
-                transition: "border-color 0.2s",
+                width: "100%", boxSizing: "border-box",
+                margin: "0 0 32px 0", padding: 0,
+                background: "transparent", border: "none", borderRadius: 0,
               }}>
-                {/* Question header — just "Question 1" + Required + ✓/✗ */}
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+                {/* Question header */}
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                     <span style={{ ...TS.input, fontSize: 15, fontWeight: 700, color: isGraded ? (mark === "correct" ? C.green : mark === "incorrect" ? C.red : C.textPrimary) : C.textPrimary }}>Question {questionCounter}</span>
                     {field.required && <span style={{ ...TS.caption, fontSize: 10, color: "#fff", background: C.red, padding: "2px 6px", borderRadius: 4 }}>Required</span>}
                   </div>
-                  {/* Show ✓/✗ when graded, or ✓ when answered */}
                   {isGraded ? (
                     mark === "correct" ? (
                       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                        <div style={{ width: 32, height: 32, borderRadius: "50%", background: C.green, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3"><polyline points="20 6 9 17 4 12" /></svg>
+                        <div style={{ width: 28, height: 28, borderRadius: "50%", background: C.green, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3"><polyline points="20 6 9 17 4 12" /></svg>
                         </div>
                         <span style={{ ...TS.input, fontSize: 14, fontWeight: 700, color: C.green }}>Correct</span>
                       </div>
                     ) : mark === "incorrect" ? (
                       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                        <div style={{ width: 32, height: 32, borderRadius: "50%", background: C.red, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                        <div style={{ width: 28, height: 28, borderRadius: "50%", background: C.red, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
                         </div>
                         <span style={{ ...TS.input, fontSize: 14, fontWeight: 700, color: C.red }}>Incorrect</span>
                       </div>
                     ) : null
                   ) : isAnswered && !isSubmitted ? (
-                    <div style={{ width: 28, height: 28, borderRadius: "50%", background: C.green, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3"><polyline points="20 6 9 17 4 12" /></svg>
+                    <div style={{ width: 24, height: 24, borderRadius: "50%", background: C.green, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3"><polyline points="20 6 9 17 4 12" /></svg>
                     </div>
                   ) : null}
                 </div>
 
                 {/* Question text */}
-                <h3 style={{ ...TS.h3, margin: "0 0 16px", lineHeight: 1.5 }}>{field.label}</h3>
+                <p style={{ ...TS.body, margin: "0 0 16px" }}>{field.label}</p>
 
-                {/* Answer input */}
+                {/* Answer input — flat underline style */}
                 {field.type === "text" && (
-                  <input type="text" value={answers[field.id] || ""} onChange={(e) => setAnswer(field.id, e.target.value)} disabled={isSubmitted} placeholder="Type your answer..." style={{ ...TS.input, width: "100%", padding: "14px 16px", border: `1px solid ${C.separator}`, borderRadius: 10, outline: "none", background: C.card, boxSizing: "border-box" }} />
+                  <input type="text" value={answers[field.id] || ""} onChange={(e) => setAnswer(field.id, e.target.value)} disabled={isSubmitted} placeholder="Type your answer..." style={{ ...TS.input, width: "100%", padding: "12px 0", border: "none", borderBottom: `1px solid ${isAnswered ? C.green : C.separator}`, borderRadius: 0, outline: "none", background: "transparent", boxSizing: "border-box" }} />
                 )}
                 {field.type === "paragraph" && (
-                  <textarea rows={5} value={answers[field.id] || ""} onChange={(e) => setAnswer(field.id, e.target.value)} disabled={isSubmitted} placeholder="Type your detailed answer..." style={{ ...TS.input, width: "100%", padding: "14px 16px", border: `1px solid ${C.separator}`, borderRadius: 10, outline: "none", background: C.card, boxSizing: "border-box", resize: "vertical", lineHeight: 1.6 }} />
+                  <textarea rows={5} value={answers[field.id] || ""} onChange={(e) => setAnswer(field.id, e.target.value)} disabled={isSubmitted} placeholder="Type your detailed answer..." style={{ ...TS.input, width: "100%", padding: "12px 0", border: "none", borderBottom: `1px solid ${isAnswered ? C.green : C.separator}`, borderRadius: 0, outline: "none", background: "transparent", boxSizing: "border-box", resize: "vertical", lineHeight: 1.6 }} />
                 )}
                 {field.type === "dropdown" && (
-                  <select value={answers[field.id] || ""} onChange={(e) => setAnswer(field.id, e.target.value)} disabled={isSubmitted} style={{ ...TS.input, width: "100%", padding: "14px 16px", border: `1px solid ${C.separator}`, borderRadius: 10, outline: "none", background: C.card, boxSizing: "border-box", cursor: "pointer" }}>
+                  <select value={answers[field.id] || ""} onChange={(e) => setAnswer(field.id, e.target.value)} disabled={isSubmitted} style={{ ...TS.input, width: "100%", padding: "12px 0", border: "none", borderBottom: `1px solid ${isAnswered ? C.green : C.separator}`, borderRadius: 0, outline: "none", background: "transparent", cursor: "pointer", boxSizing: "border-box" }}>
                     <option value="" disabled>Select an answer...</option>
                     {field.options?.map((opt: string) => <option key={opt} value={opt}>{opt}</option>)}
                   </select>
                 )}
                 {field.type === "checkbox" && (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                     {field.options?.map((opt: string) => {
                       const checked = answers[field.id]?.includes(opt) || false;
                       return (
-                        <label key={opt} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", background: C.card, borderRadius: 10, border: `1px solid ${checked ? C.medBlue + "44" : C.separator}`, cursor: isSubmitted ? "default" : "pointer", transition: "border-color 0.2s" }}
+                        <label key={opt} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", cursor: isSubmitted ? "default" : "pointer" }}
                           onClick={(e) => { if (isSubmitted) return; e.preventDefault(); const current = answers[field.id] || []; if (checked) setAnswer(field.id, current.filter((o: string) => o !== opt)); else setAnswer(field.id, [...current, opt]); }}>
-                          <div style={{ width: 22, height: 22, borderRadius: 6, border: `2px solid ${checked ? C.medBlue : C.separator}`, background: checked ? C.medBlue : C.card, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, transition: "all 0.2s" }}>
-                            {checked && <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3"><polyline points="20 6 9 17 4 12" /></svg>}
+                          <div style={{ width: 20, height: 20, borderRadius: 4, border: `2px solid ${checked ? C.medBlue : C.separator}`, background: checked ? C.medBlue : "transparent", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, transition: "all 0.2s" }}>
+                            {checked && <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3"><polyline points="20 6 9 17 4 12" /></svg>}
                           </div>
                           <span style={{ ...TS.input, userSelect: "none" }}>{opt}</span>
                         </label>
@@ -366,40 +379,40 @@ export default function UserAssignmentTaker() {
 
         {/* SLIDE NAVIGATION */}
         {slides.length > 1 && (
-          <div style={{ display: "flex", justifyContent: "space-between", marginTop: 40, width: "100%" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 48, width: "100%" }}>
             <button onClick={() => setActiveSlide(prev => Math.max(0, prev - 1))} disabled={activeSlide === 0}
-              style={{ ...TS.input, padding: "12px 24px", background: C.bg, border: `1px solid ${C.separator}`, borderRadius: 10, fontWeight: 600, cursor: activeSlide === 0 ? "not-allowed" : "pointer", opacity: activeSlide === 0 ? 0.5 : 1, color: C.textPrimary, fontSize: 15 }}>
-              Previous
+              style={{ ...TS.input, padding: "12px 24px", background: activeSlide === 0 ? "transparent" : C.bg, border: activeSlide === 0 ? "1px solid transparent" : `1px solid ${C.separator}`, borderRadius: 10, fontWeight: 600, cursor: activeSlide === 0 ? "default" : "pointer", opacity: activeSlide === 0 ? 0.3 : 1, color: C.textPrimary, fontSize: 15 }}>
+              ← Previous
             </button>
+
             <div style={{ display: "flex", gap: 10 }}>
               {!isSubmitted && (
                 <button onClick={handleSaveDraft} disabled={savingDraft}
-                  style={{ ...TS.input, padding: "12px 20px", background: C.bg, border: `1px solid ${C.separator}`, borderRadius: 10, fontWeight: 600, cursor: savingDraft ? "wait" : "pointer", fontSize: 14, color: C.textTertiary }}>
+                  style={{ ...TS.input, padding: "12px 20px", background: "transparent", border: `1px solid ${C.separator}`, borderRadius: 10, fontWeight: 600, cursor: savingDraft ? "wait" : "pointer", fontSize: 14, color: C.textTertiary }}>
                   {savingDraft ? "Saving..." : "Save Draft"}
                 </button>
               )}
+
               {activeSlide < slides.length - 1 ? (
                 <button onClick={() => setActiveSlide(prev => Math.min(slides.length - 1, prev + 1))}
-                  style={{ ...TS.input, padding: "12px 24px", background: C.medBlue, color: "#fff", border: "none", borderRadius: 10, fontWeight: 600, cursor: "pointer", fontSize: 15 }}>
-                  Next Slide
+                  style={{ ...TS.input, padding: "12px 24px", background: C.medBlue, color: "#fff", border: "none", borderRadius: 10, fontWeight: 600, cursor: "pointer", fontSize: 15, display: "flex", alignItems: "center", gap: 6 }}>
+                  Next →
                 </button>
-              ) : (
-                !isSubmitted && (
-                  <button onClick={attemptSubmit} disabled={submitting}
-                    style={{ ...TS.input, padding: "12px 24px", background: C.green, color: "#fff", border: "none", borderRadius: 10, fontWeight: 700, cursor: "pointer", opacity: submitting ? 0.5 : 1, fontSize: 15 }}>
-                    {submitting ? "Submitting..." : "Finish & Submit"}
-                  </button>
-                )
-              )}
+              ) : !isSubmitted ? (
+                <button onClick={attemptSubmit} disabled={submitting}
+                  style={{ ...TS.input, padding: "12px 24px", background: C.green, color: "#fff", border: "none", borderRadius: 10, fontWeight: 700, cursor: "pointer", opacity: submitting ? 0.5 : 1, fontSize: 15, display: "flex", alignItems: "center", gap: 6 }}>
+                  {submitting ? "Submitting..." : "Finish & Submit ✓"}
+                </button>
+              ) : null}
             </div>
           </div>
         )}
 
         {/* SINGLE SLIDE — submit + save draft */}
         {slides.length <= 1 && !isSubmitted && (
-          <div style={{ marginTop: 40, display: "flex", gap: 12, width: "100%" }}>
+          <div style={{ marginTop: 48, display: "flex", gap: 12, width: "100%" }}>
             <button onClick={handleSaveDraft} disabled={savingDraft}
-              style={{ ...TS.input, flex: 1, padding: "16px 24px", background: C.bg, border: `1px solid ${C.separator}`, borderRadius: 12, fontWeight: 600, cursor: savingDraft ? "wait" : "pointer", fontSize: 16, color: C.textTertiary }}>
+              style={{ ...TS.input, flex: 1, padding: "16px 24px", background: "transparent", border: `1px solid ${C.separator}`, borderRadius: 12, fontWeight: 600, cursor: savingDraft ? "wait" : "pointer", fontSize: 16, color: C.textTertiary }}>
               {savingDraft ? "Saving..." : "Save Draft"}
             </button>
             <button onClick={attemptSubmit} disabled={submitting}
