@@ -99,7 +99,8 @@ if (Test-Path $bundlePath) {
     Remove-Item $bundlePath -Recurse -Force
 }
 
- $env:TAURI_SIGNING_PRIVATE_KEY = "C:\Users\HP\.tauri\medstat_new.key"
+# UPDATED: Using the medstat_final.key
+ $env:TAURI_SIGNING_PRIVATE_KEY = "C:\Users\HP\.tauri\medstat_final.key"
  $securePassword = Read-Host "Enter your Tauri private key password (press Enter if blank)" -AsSecureString
  $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($securePassword)
  $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
