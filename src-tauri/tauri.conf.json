@@ -1,6 +1,6 @@
 {
     "productName": "medstat",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "identifier": "com.medstat.app",
     "build": {
         "frontendDist": "../dist",
@@ -37,10 +37,8 @@
             "active": true,
             "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU5OTRCMDgxM0QwRjhFQjIKUldTeWpnODlnYkNVNmJqbGw3VGVXWDhXYmErRVJNb2puaXJ1dTc1NnRzZC9uTTY2azJ0cmV0K2EK",
             "endpoints": [
-                "https://abdalkam.github.io/medstat/latest.json"
+                "https://raw.githubusercontent.com/Abdalkam/medstat-updates/main/latest.json"
             ]
         }
     }
 }
-
-
