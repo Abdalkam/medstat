@@ -4,6 +4,7 @@ import { Navigate } from "react-router-dom";
 import AppBar from "../components/AppBar";
 import { loginTenant } from "../api/authApi";
 import { supabase } from "../auth/supabase";
+import { getVersion } from "@tauri-apps/api/app"; // ✅ ADDED: Tauri version API
 
 const MEDICAL_BLUE = "#007AFF";
 const iosFont = "-apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif";
@@ -18,11 +19,20 @@ export default function Login() {
   const [publicSettings, setPublicSettings] = useState<any>(null);
   const [showCreateAccount, setShowCreateAccount] = useState(false);
   
+  // ✅ ADDED: State to hold the app version
+  const [appVersion, setAppVersion] = useState("");
+
   const isLoggingIn = useRef(false);
 
   useEffect(() => {
     const initLogin = async () => {
       try {
+        // ✅ ADDED: Fetch the app version from Tauri
+        if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
+          const version = await getVersion();
+          setAppVersion(version);
+        }
+
         const { data } = await supabase
           .from("business_settings")
           .select("*")
@@ -31,7 +41,7 @@ export default function Login() {
           
         if (data) setPublicSettings(data);
       } catch (err) {
-        console.warn("Could not load business settings:", err);
+        console.warn("Initialization error:", err);
       }
     };
 
@@ -110,7 +120,6 @@ export default function Login() {
     opacity: loading ? 0.4 : 1, marginBottom: "12px",
   };
 
-  // ✅ Use custom background if available, otherwise default to a soft gray
   const bgStyle: React.CSSProperties = {
     width: "100%", height: "100vh", display: "flex", flexDirection: "column",
     fontFamily: iosFont, overflow: "hidden", position: "relative",
@@ -125,7 +134,6 @@ export default function Login() {
       <div style={{ flex: 1, display: "flex", justifyContent: "center", alignItems: "center", padding: "24px" }}>
         <div style={cardStyle}>
           
-          {/* ✅ Use custom logo if available, otherwise default to loadlogo.png */}
           <img 
             src={publicSettings?.logo || "/loadlogo.png"} 
             alt="App Logo" 
@@ -196,6 +204,22 @@ export default function Login() {
           )}
         </div>
       </div>
+
+      {/* ✅ ADDED: Version display at the bottom center */}
+      {appVersion && (
+        <div style={{ 
+          position: "absolute", 
+          bottom: "16px", 
+          width: "100%", 
+          textAlign: "center", 
+          color: "#8E8E93", 
+          fontSize: "12px", 
+          fontFamily: iosFont,
+          pointerEvents: "none" // Allows clicks to pass through
+        }}>
+          Version {appVersion}
+        </div>
+      )}
 
       <button 
         onClick={() => setShowCreateAccount(true)} 
