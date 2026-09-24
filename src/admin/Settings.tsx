@@ -91,7 +91,8 @@ export default function Settings() {
     loadSettings();
   }, []);
 
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>, setter: (val: string) => void) => {
+  // ✅ UPDATED: Added maxSize parameter so backgrounds can be larger (1280px) instead of tiny (200px)
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>, setter: (val: string) => void, maxSize: number = 200) => {
     const file = e.target.files?.[0];
     if (file) {
       const reader = new FileReader();
@@ -101,9 +102,10 @@ export default function Settings() {
         img.onload = () => {
           const canvas = document.createElement("canvas");
           const ctx = canvas.getContext("2d");
-          const maxSize = 200;
           let width = img.width;
           let height = img.height;
+
+          // Maintain aspect ratio while scaling down
           if (width > height) {
             if (width > maxSize) { height *= maxSize / width; width = maxSize; }
           } else {
@@ -112,7 +114,7 @@ export default function Settings() {
           canvas.width = width;
           canvas.height = height;
           ctx?.drawImage(img, 0, 0, width, height);
-          setter(canvas.toDataURL("image/jpeg", 0.6));
+          setter(canvas.toDataURL("image/jpeg", 0.7)); // Slightly higher quality for backgrounds
         };
       };
       reader.readAsDataURL(file);
@@ -199,7 +201,6 @@ export default function Settings() {
     setPasswordMessage("");
     if (!currentPassword) return setPasswordMessage("Current password is required.");
     if (!newPassword) return setPasswordMessage("New password is required.");
-    // ✅ FIXED: Removed the 6-character length check. Accepts anything.
     if (newPassword !== confirmPassword) return setPasswordMessage("Passwords do not match.");
 
     setChangingPassword(true);
@@ -342,7 +343,8 @@ export default function Settings() {
             </div>
           </div>
           <button onClick={() => logoInputRef.current?.click()} style={{ padding: "10px 16px", background: "#F2F2F7", border: "none", borderRadius: "10px", color: C.blue, fontSize: "14px", fontWeight: "600", cursor: "pointer" }}>Upload</button>
-          <input type="file" accept="image/*" ref={logoInputRef} style={{ display: "none" }} onChange={(e) => handleImageUpload(e, setLogo)} />
+          {/* ✅ Passes 200 as max size for Logo */}
+          <input type="file" accept="image/*" ref={logoInputRef} style={{ display: "none" }} onChange={(e) => handleImageUpload(e, setLogo, 200)} />
         </div>
       </div>
 
@@ -363,7 +365,8 @@ export default function Settings() {
             </div>
           </div>
           <button onClick={() => bgInputRef.current?.click()} style={{ padding: "10px 16px", background: "#F2F2F7", border: "none", borderRadius: "10px", color: C.blue, fontSize: "14px", fontWeight: "600", cursor: "pointer" }}>Upload</button>
-          <input type="file" accept="image/*" ref={bgInputRef} style={{ display: "none" }} onChange={(e) => handleImageUpload(e, setLoginBackground)} />
+          {/* ✅ Passes 1280 as max size for Background so it isn't blurry */}
+          <input type="file" accept="image/*" ref={bgInputRef} style={{ display: "none" }} onChange={(e) => handleImageUpload(e, setLoginBackground, 1280)} />
         </div>
       </div>
 

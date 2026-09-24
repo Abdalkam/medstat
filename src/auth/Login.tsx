@@ -4,12 +4,13 @@ import { Navigate } from "react-router-dom";
 import AppBar from "../components/AppBar";
 import { loginTenant } from "../api/authApi";
 import { supabase } from "../auth/supabase";
-import { getVersion } from "@tauri-apps/api/app"; // ✅ ADDED: Tauri version API
+import { getVersion } from "@tauri-apps/api/app";
 
 const MEDICAL_BLUE = "#007AFF";
 const iosFont = "-apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif";
 
 export default function Login() {
+  const [loginStep, setLoginStep] = useState(1); // ✅ 1 = Institution, 2 = Username/Password
   const [businessName, setBusinessName] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -18,8 +19,6 @@ export default function Login() {
   const [redirectRoute, setRedirectRoute] = useState<string | null>(null);
   const [publicSettings, setPublicSettings] = useState<any>(null);
   const [showCreateAccount, setShowCreateAccount] = useState(false);
-  
-  // ✅ ADDED: State to hold the app version
   const [appVersion, setAppVersion] = useState("");
 
   const isLoggingIn = useRef(false);
@@ -27,19 +26,10 @@ export default function Login() {
   useEffect(() => {
     const initLogin = async () => {
       try {
-        // ✅ ADDED: Fetch the app version from Tauri
         if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
           const version = await getVersion();
           setAppVersion(version);
         }
-
-        const { data } = await supabase
-          .from("business_settings")
-          .select("*")
-          .limit(1)
-          .maybeSingle();
-          
-        if (data) setPublicSettings(data);
       } catch (err) {
         console.warn("Initialization error:", err);
       }
@@ -50,10 +40,42 @@ export default function Login() {
 
   if (redirectRoute) return <Navigate to={redirectRoute} replace />;
 
+  // ✅ Step 1: Fetch institution details from Supabase
+  async function handleContinue() {
+    setMessage("");
+    if (!businessName.trim()) {
+      return setMessage("Institution Name is required");
+    }
+
+    setLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from("business_settings")
+        .select("*")
+        .ilike("business_name", businessName.trim()) // Case-insensitive match
+        .maybeSingle();
+
+      if (error) throw error;
+
+      if (data) {
+        setPublicSettings(data);
+        setLoginStep(2); // Move to step 2
+      } else {
+        setMessage("Institution not found. Please check the name.");
+      }
+    } catch (error: unknown) {
+      const errMsg = error instanceof Error ? error.message : "Error finding institution.";
+      setMessage(errMsg);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // ✅ Step 2: Handle Login
   async function handleLogin() {
     setMessage("");
-    if (!businessName.trim() || !username.trim() || !password.trim()) {
-      return setMessage("Institution, Username, and Password are required");
+    if (!username.trim() || !password.trim()) {
+      return setMessage("Username and Password are required");
     }
 
     try {
@@ -120,12 +142,15 @@ export default function Login() {
     opacity: loading ? 0.4 : 1, marginBottom: "12px",
   };
 
+  // ✅ Step 1 uses default bg. Step 2 uses Supabase bg (or default if empty).
+  const currentBg = loginStep === 2 && publicSettings?.login_background
+    ? `url(${publicSettings.login_background}) center/cover no-repeat`
+    : "#F2F2F7";
+
   const bgStyle: React.CSSProperties = {
     width: "100%", height: "100vh", display: "flex", flexDirection: "column",
     fontFamily: iosFont, overflow: "hidden", position: "relative",
-    background: publicSettings?.login_background
-      ? `url(${publicSettings.login_background}) center/cover no-repeat`
-      : "#F2F2F7",
+    background: currentBg,
   };
 
   return (
@@ -134,8 +159,9 @@ export default function Login() {
       <div style={{ flex: 1, display: "flex", justifyContent: "center", alignItems: "center", padding: "24px" }}>
         <div style={cardStyle}>
           
+          {/* ✅ Step 1 always shows loadlogo.png. Step 2 shows supabase logo or loadlogo.png */}
           <img 
-            src={publicSettings?.logo || "/loadlogo.png"} 
+            src={loginStep === 1 ? "/loadlogo.png" : (publicSettings?.logo || "/loadlogo.png")} 
             alt="App Logo" 
             style={{ 
               width: "100px", 
@@ -150,44 +176,69 @@ export default function Login() {
           />
           
           <h1 style={{ textAlign: "center", fontSize: "24px", color: "#1C1C1E", fontWeight: "700", marginBottom: "24px" }}>
-            {showCreateAccount ? "Create Account" : (publicSettings?.business_name || "Sign In")}
+            {showCreateAccount ? "Create Account" : (loginStep === 2 ? (publicSettings?.business_name || "Sign In") : "Sign In")}
           </h1>
 
           {!showCreateAccount ? (
             <>
               <div style={{ background: "rgba(255,255,255,0.9)", borderRadius: "14px", overflow: "hidden", border: "1px solid rgba(0,0,0,0.04)", marginBottom: "16px" }}>
-                <input 
-                  type="text" 
-                  placeholder="Institution Name" 
-                  value={businessName} 
-                  onChange={(e) => setBusinessName(e.target.value)} 
-                  style={inputStyle} 
-                  autoFocus 
-                />
-                <div style={{ height: "1px", background: "rgba(0,0,0,0.06)", marginLeft: "16px" }} />
-                <input 
-                  name="username" 
-                  placeholder="Username" 
-                  value={username} 
-                  onChange={(e) => setUsername(e.target.value)} 
-                  style={inputStyle} 
-                />
-                <div style={{ height: "1px", background: "rgba(0,0,0,0.06)", marginLeft: "16px" }} />
-                <input 
-                  type="password" 
-                  placeholder="Password" 
-                  value={password} 
-                  onChange={(e) => setPassword(e.target.value)} 
-                  onKeyDown={(e) => e.key === "Enter" && handleLogin()} 
-                  style={inputStyle} 
-                />
+                
+                {loginStep === 1 && (
+                  <>
+                    <input 
+                      type="text" 
+                      placeholder="Institution Name" 
+                      value={businessName} 
+                      onChange={(e) => setBusinessName(e.target.value)} 
+                      onKeyDown={(e) => e.key === "Enter" && handleContinue()} 
+                      style={inputStyle} 
+                      autoFocus 
+                    />
+                  </>
+                )}
+
+                {loginStep === 2 && (
+                  <>
+                    <input 
+                      name="username" 
+                      placeholder="Username" 
+                      value={username} 
+                      onChange={(e) => setUsername(e.target.value)} 
+                      style={inputStyle} 
+                      autoFocus
+                    />
+                    <div style={{ height: "1px", background: "rgba(0,0,0,0.06)", marginLeft: "16px" }} />
+                    <input 
+                      type="password" 
+                      placeholder="Password" 
+                      value={password} 
+                      onChange={(e) => setPassword(e.target.value)} 
+                      onKeyDown={(e) => e.key === "Enter" && handleLogin()} 
+                      style={inputStyle} 
+                    />
+                  </>
+                )}
               </div>
 
               {message && <p style={{ textAlign: "center", color: "#FF3B30", fontSize: "14px", marginBottom: "16px" }}>{message}</p>}
               
-              <button onClick={handleLogin} disabled={loading} style={primaryBtn}>
-                {loading ? "Signing in..." : "Login"}
-              </button>
+              {loginStep === 1 ? (
+                <button onClick={handleContinue} disabled={loading} style={primaryBtn}>
+                  {loading ? "Checking..." : "Continue"}
+                </button>
+              ) : (
+                <>
+                  <button onClick={handleLogin} disabled={loading} style={primaryBtn}>
+                    {loading ? "Signing in..." : "Login"}
+                  </button>
+                  <button 
+                    onClick={() => { setLoginStep(1); setMessage(""); setPublicSettings(null); }} 
+                    style={{ ...primaryBtn, background: "#E5E5EA", color: "#1C1C1E", marginBottom: 0 }}
+                  >
+                    Back
+                  </button>
+                </>
+              )}
             </>
           ) : (
             <div style={{ textAlign: "center" }}>
@@ -205,7 +256,6 @@ export default function Login() {
         </div>
       </div>
 
-      {/* ✅ ADDED: Version display at the bottom center */}
       {appVersion && (
         <div style={{ 
           position: "absolute", 
@@ -215,7 +265,7 @@ export default function Login() {
           color: "#8E8E93", 
           fontSize: "12px", 
           fontFamily: iosFont,
-          pointerEvents: "none" // Allows clicks to pass through
+          pointerEvents: "none"
         }}>
           Version {appVersion}
         </div>
