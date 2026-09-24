@@ -12,6 +12,7 @@ export default function Updater() {
     const checkForUpdates = async () => {
       try {
         const update = await check();
+        // update.available is the correct boolean in Tauri v2
         if (update?.available) {
           setUpdateAvailable(true);
         }
@@ -20,7 +21,6 @@ export default function Updater() {
       }
     };
 
-    // ✅ FIX: Cast window to any to check for Tauri internals without TS errors
     if ((window as any).__TAURI_INTERNALS__) {
       checkForUpdates();
     }
@@ -36,15 +36,21 @@ export default function Updater() {
         
         // Download and install
         await update.downloadAndInstall((event) => {
-          // ✅ FIX: Cast event.data to any to safely access length properties
-          if (event.event === "Progress") {
-            const data = event.data as any;
-            if (data.contentLength) total = data.contentLength;
-            if (data.chunkLength) downloaded += data.chunkLength;
-            
-            if (total > 0) {
-              setDownloadProgress(Math.round((downloaded / total) * 100));
-            }
+          switch (event.event) {
+            case 'Started':
+              // total size is provided here!
+              total = event.data.contentLength ?? 0;
+              break;
+            case 'Progress':
+              // chunk size is provided here
+              downloaded += event.data.chunkLength;
+              if (total > 0) {
+                setDownloadProgress(Math.round((downloaded / total) * 100));
+              }
+              break;
+            case 'Finished':
+              setDownloadProgress(100);
+              break;
           }
         });
         
@@ -58,6 +64,7 @@ export default function Updater() {
     }
   };
 
+  // If no update is available, don't render anything
   if (!updateAvailable) return null;
 
   return (
@@ -68,7 +75,15 @@ export default function Updater() {
     }}>
       <div>
         <div style={{ fontWeight: 700, fontSize: 15 }}>A new version is available!</div>
-        {isUpdating && <div style={{ fontSize: 13, opacity: 0.9 }}>Downloading... {downloadProgress}%</div>}
+        {isUpdating && (
+          <div style={{ fontSize: 13, opacity: 0.9, marginTop: 4 }}>
+            Downloading... {downloadProgress}%
+            {/* Visual loading bar */}
+            <div style={{ width: '100%', height: 4, background: 'rgba(255,255,255,0.3)', borderRadius: 2, marginTop: 4 }}>
+              <div style={{ width: `${downloadProgress}%`, height: '100%', background: 'white', borderRadius: 2 }} />
+            </div>
+          </div>
+        )}
       </div>
       {!isUpdating && (
         <button 
