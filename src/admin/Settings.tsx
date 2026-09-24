@@ -142,9 +142,7 @@ export default function Settings() {
         app_bar_items: settings?.appBarItems || [],
       };
 
-      // ✅ FIXED: Check if record exists, then INSERT or UPDATE (no onConflict)
       if (settings?.id && settings.id !== "main") {
-        // Existing record loaded: update by primary key ID
         const { error } = await supabase
           .from("business_settings")
           .update(payload)
@@ -152,7 +150,6 @@ export default function Settings() {
 
         if (error) throw error;
       } else {
-        // No record loaded: check if one exists in DB
         const { data: existing, error: checkError } = await supabase
           .from("business_settings")
           .select("id")
@@ -162,7 +159,6 @@ export default function Settings() {
         if (checkError) throw checkError;
 
         if (existing) {
-          // Record exists but wasn't loaded (edge case): update it
           const { error } = await supabase
             .from("business_settings")
             .update(payload)
@@ -170,7 +166,6 @@ export default function Settings() {
 
           if (error) throw error;
         } else {
-          // No record exists: insert new one
           const { error } = await supabase
             .from("business_settings")
             .insert(payload);
@@ -204,7 +199,7 @@ export default function Settings() {
     setPasswordMessage("");
     if (!currentPassword) return setPasswordMessage("Current password is required.");
     if (!newPassword) return setPasswordMessage("New password is required.");
-    if (newPassword.length < 6) return setPasswordMessage("New password must be at least 6 characters.");
+    // ✅ FIXED: Removed the 6-character length check. Accepts anything.
     if (newPassword !== confirmPassword) return setPasswordMessage("Passwords do not match.");
 
     setChangingPassword(true);
@@ -420,7 +415,7 @@ export default function Settings() {
                   type="password"
                   value={newPassword}
                   onChange={(e) => setNewPassword(e.target.value)}
-                  placeholder="Min 6 characters"
+                  placeholder="Enter new password"
                   style={{ width: "100%", padding: "14px 16px", borderRadius: "12px", border: `1px solid ${C.separator}`, background: C.card, fontSize: "16px", color: C.textPrimary, outline: "none", boxSizing: "border-box" }}
                 />
               </div>

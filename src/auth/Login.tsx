@@ -18,7 +18,6 @@ export default function Login() {
   const [publicSettings, setPublicSettings] = useState<any>(null);
   const [showCreateAccount, setShowCreateAccount] = useState(false);
   
-  // ✅ FIX: Prevent background auth events from interrupting the login process
   const isLoggingIn = useRef(false);
 
   useEffect(() => {
@@ -49,7 +48,7 @@ export default function Login() {
 
     try {
       setLoading(true);
-      isLoggingIn.current = true; // ✅ Lock the screen so background events can't interrupt
+      isLoggingIn.current = true; 
       const result = await loginTenant({ 
         username, 
         password, 
@@ -57,7 +56,7 @@ export default function Login() {
       });
       processLoginResult(result);
     } catch (error: unknown) {
-      isLoggingIn.current = false; // Unlock if it failed
+      isLoggingIn.current = false; 
       const errMsg = error instanceof Error ? error.message : "Login failed.";
       setMessage(errMsg);
     } finally {
@@ -89,8 +88,6 @@ export default function Login() {
 
     window.dispatchEvent(new Event("authStateChanged"));
 
-    // ✅ FIX: Removed syncUserAssignedData. UserDashboard.tsx already fetches this data safely.
-
     if (userRole === "admin") setRedirectRoute("/admin");
     else if (userRole === "trainer") setRedirectRoute("/trainer");
     else setRedirectRoute("/user");
@@ -113,6 +110,7 @@ export default function Login() {
     opacity: loading ? 0.4 : 1, marginBottom: "12px",
   };
 
+  // ✅ Use custom background if available, otherwise default to a soft gray
   const bgStyle: React.CSSProperties = {
     width: "100%", height: "100vh", display: "flex", flexDirection: "column",
     fontFamily: iosFont, overflow: "hidden", position: "relative",
@@ -127,8 +125,9 @@ export default function Login() {
       <div style={{ flex: 1, display: "flex", justifyContent: "center", alignItems: "center", padding: "24px" }}>
         <div style={cardStyle}>
           
+          {/* ✅ Use custom logo if available, otherwise default to loadlogo.png */}
           <img 
-            src={publicSettings?.logo || "/app-logo.png"} 
+            src={publicSettings?.logo || "/loadlogo.png"} 
             alt="App Logo" 
             style={{ 
               width: "100px", 
