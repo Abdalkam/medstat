@@ -1,5 +1,5 @@
 {
-    "productName": "medstat",
+    "productName": "SmartPages",
     "version": "1.0.3",
     "identifier": "com.medstat.app",
     "build": {
@@ -11,7 +11,7 @@
     "app": {
         "windows": [
             {
-                "title": "medstat",
+                "title": "SmartPages",
                 "width": 800,
                 "height": 600
             }
@@ -42,6 +42,3 @@
         }
     }
 }
-
-
-
