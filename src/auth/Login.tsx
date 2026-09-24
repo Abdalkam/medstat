@@ -26,12 +26,11 @@ export default function Login() {
   useEffect(() => {
     const initLogin = async () => {
       try {
-        if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
-          const version = await getVersion();
-          setAppVersion(version);
-        }
+        // ✅ Simplified: Just try to get the version. If it fails (e.g. in browser), it ignores it.
+        const version = await getVersion();
+        setAppVersion(version);
       } catch (err) {
-        console.warn("Initialization error:", err);
+        console.warn("Initialization error or not in Tauri environment:", err);
       }
     };
 
