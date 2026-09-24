@@ -7,9 +7,10 @@ if (-not (Test-Path .git)) {
 # 1. Get current version from the latest Git tag
  $latestTag = git describe --tags --abbrev=0 2>$null
 if (-not $latestTag) {
-    $currentVersion = "1.0.0"
+    $currentVersion = "0.0.0"
     Write-Host "WARN: No existing tags found. Starting at v1.0.0" -ForegroundColor Yellow
 } else {
+    # Remove 'v' prefix
     $currentVersion = $latestTag.TrimStart('v')
     Write-Host "Current Version: v$currentVersion" -ForegroundColor Green
 }
@@ -24,8 +25,12 @@ if ($latestTag) {
     }
 }
 
-# 3. Calculate the new version number
+# 3. Calculate the new version number safely
  $parts = $currentVersion.Split('.')
+if ($parts.Count -lt 3) {
+    # Fallback if a tag was just "1.0"
+    $parts = @("0","0","0")
+}
  $major = [int]$parts[0]
  $minor = [int]$parts[1]
  $patch = [int]$parts[2]
@@ -112,9 +117,12 @@ if (!$?) {
 # 7. Auto-Upload to GitHub Releases
 Write-Host "Uploading artifacts to GitHub Release $newVersion..." -ForegroundColor Cyan
 
+# Dynamically find the generated files
  $exePath = Get-ChildItem "src-tauri\target\release\bundle\nsis\*.exe" | Select-Object -First 1 -ExpandProperty FullName
  $sigPath = Get-ChildItem "src-tauri\target\release\bundle\nsis\*.sig" | Select-Object -First 1 -ExpandProperty FullName
- $jsonPath = Get-ChildItem "src-tauri\target\release\bundle" -Filter "*.json" -Recurse | Where-Object { $_.Name -notlike "*build_hashes*" -and $_.Name -notlike "*.v1.json" } | Select-Object -First 1 -ExpandProperty FullName
+
+# Try to find Tauri's auto-generated latest.json
+ $jsonPath = Get-ChildItem "src-tauri\target\release\bundle" -Filter "latest.json" -Recurse | Select-Object -First 1 -ExpandProperty FullName
 
 if (!$jsonPath -and $exePath -and $sigPath) {
     Write-Host "WARN: latest.json not found. Generating it manually..." -ForegroundColor Yellow
@@ -127,23 +135,30 @@ if (!$jsonPath -and $exePath -and $sigPath) {
 }
 
 if ($exePath -and $jsonPath) {
-    # Attempt to create the release
-    gh release create $newVersion --title "$newVersion" --notes "Release $newVersion" $exePath $jsonPath 2>$null
-    
-    # FALLBACK: If it already exists, upload to the existing release instead
-    if (!$?) {
-        Write-Host "Release already exists. Uploading files to existing release..." -ForegroundColor Yellow
-        gh release upload $newVersion $exePath $jsonPath --clobber
-    }
-        
-    if ($?) {
-        Write-Host "Release $newVersion published successfully!" -ForegroundColor Green
+    # Check if GitHub CLI is available and authenticated
+    $ghStatus = gh auth status 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "ERROR: You are not logged into GitHub CLI. Run 'gh auth login' first." -ForegroundColor Red
     } else {
-        Write-Host "ERROR: GitHub release creation failed." -ForegroundColor Red
+        # Attempt to create the release
+        gh release create $newVersion --repo Abdalkam/medstat --title "$newVersion" --notes "Release $newVersion" $exePath $jsonPath 2>$null
+        
+        # FALLBACK: If it already exists, upload to the existing release instead
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "Release already exists. Uploading files to existing release..." -ForegroundColor Yellow
+            gh release upload $newVersion --repo Abdalkam/medstat $exePath $jsonPath --clobber
+        }
+            
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "Release $newVersion published successfully!" -ForegroundColor Green
+        } else {
+            Write-Host "ERROR: GitHub release creation failed." -ForegroundColor Red
+        }
     }
 } else {
     Write-Host "ERROR: Could not find the .exe or .json files." -ForegroundColor Red
 }
 
+# Cleanup environment variables
 Remove-Item Env:\TAURI_SIGNING_PRIVATE_KEY_PASSWORD -ErrorAction SilentlyContinue
 Remove-Item Env:\TAURI_SIGNING_PRIVATE_KEY -ErrorAction SilentlyContinue
