@@ -1,19 +1,11 @@
-// src/auth/RegisterAdmin.tsx
 import { useState, useEffect } from "react";
-import AppBar from "../components/AppBar";
 import { registerTenant } from "../api/authApi";
 import { addUser } from "../database/userDB";
 import { supabase } from "../auth/supabase";
 
-export default function RegisterAdmin({
-  phone,
-  tempToken,
-  onComplete
-}: {
-  phone: string;
-  tempToken: string;
-  onComplete: (user: any) => void
-}) {
+const MEDICAL_BLUE = "#007AFF";
+
+export default function RegisterAdmin({ phone, tempToken, onComplete, onBack }: { phone: string; tempToken: string; onComplete: (user: any) => void; onBack: () => void }) {
   const [businessName, setBusinessName] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -22,148 +14,138 @@ export default function RegisterAdmin({
   const [loading, setLoading] = useState(false);
   const [checking, setChecking] = useState(true);
 
-  const MEDICAL_BLUE = "#007AFF";
-
-  useEffect(() => {
-    checkExistingAccount();
-  }, []);
+  useEffect(() => { checkExistingAccount(); }, []);
 
   async function checkExistingAccount() {
     try {
-      const { data: existingTenant } = await supabase
-        .from("tenants")
-        .select("id, business_name")
-        .eq("phone", phone)
-        .maybeSingle();
-
+      const { data: existingTenant } = await supabase.from("tenants").select("id, business_name").eq("phone", phone).maybeSingle();
       if (existingTenant) {
-        setMessage(`This phone is already registered${existingTenant.business_name ? ` for "${existingTenant.business_name}"` : ""}. Please login instead.`);
+        setMessage(`This phone is already registered. Please login instead.`);
         setTimeout(() => onComplete(null), 3000);
         setChecking(false);
         return;
       }
-    } catch (err) {
-      // If check fails, allow registration to proceed
-    }
+    } catch (err) { console.error(err); }
     setChecking(false);
   }
 
   async function createAdmin() {
     setMessage("");
-
-    if (!businessName.trim() || !username.trim() || !password.trim() || !confirmPassword.trim()) {
-      setMessage("Please fill all fields");
+    if (!businessName.trim() || !username.trim() || !password.trim() || !confirmPassword.trim()) { 
+      setMessage("Please fill all fields"); 
+      return; 
+    }
+    if (password.length < 6) {
+      setMessage("Password must be at least 6 characters");
       return;
     }
-
-    if (password !== confirmPassword) {
-      setMessage("Passwords do not match");
-      return;
-    }
+    if (password !== confirmPassword) { setMessage("Passwords do not match"); return; }
 
     try {
       setLoading(true);
-
-      const { data: existingTenant } = await supabase
-        .from("tenants")
-        .select("id, business_name")
-        .eq("phone", phone)
-        .maybeSingle();
-
-      if (existingTenant) {
-        setMessage(`This phone is already registered. Please login instead.`);
-        setTimeout(() => onComplete(null), 3000);
-        return;
-      }
-
-      const result = await registerTenant({
-        phone,
-        tempToken,
-        businessName: businessName.trim(),
-        username: username.trim(),
-        password: password
-      });
-
-      // FIX: Removed crypto.randomUUID() and used the authToken returned from your API
-      const authToken = result.authToken;
-
-      const localUser = {
-        id: result.userId,
-        username: username.trim(),
-        phone,
-        email: "",
-        profilePic: "",
-        role: "admin" as const,
-        tenantId: result.tenantId,
-        assignedCourses: [] as string[],
-        createdAt: new Date().toISOString(),
-        password: password,
-        synced: true,
+      const result = await registerTenant({ phone, tempToken, businessName: businessName.trim(), username: username.trim(), password });
+      const localUser = { 
+        id: result.userId, 
+        username: username.trim(), 
+        phone, 
+        email: "", 
+        profilePic: "", 
+        role: "admin" as const, 
+        tenantId: result.tenantId, 
+        assignedCourses: [] as string[], 
+        createdAt: new Date().toISOString(), 
+        password, 
+        synced: true 
       };
-
       await addUser(localUser);
       localStorage.setItem("currentUser", JSON.stringify(localUser));
-      localStorage.setItem("authToken", authToken);
-
-      // FIX: Standardized event name
+      localStorage.setItem("authToken", result.authToken);
       window.dispatchEvent(new Event("authStateChanged"));
       onComplete(localUser);
-
     } catch (error: any) {
-      if (error.message.includes("already registered") || error.message.includes("duplicate") || error.message.includes("unique")) {
-        setMessage("This phone number is already registered. Please login instead.");
-        setTimeout(() => onComplete(null), 2000);
-      } else {
-        setMessage(error.message || "Failed to create admin");
-      }
+      setMessage(error.message || "Failed to create admin");
     } finally {
       setLoading(false);
     }
   }
 
   const inputStyle: React.CSSProperties = {
-    width: "100%", height: "50px", padding: "0 16px", border: "none", outline: "none",
-    background: "transparent", fontSize: "16px", color: "#1C1C1E", boxSizing: "border-box", cursor: "text"
+    width: "100%", height: "56px", padding: "0 16px", border: "none", outline: "none",
+    background: "#F2F2F7", fontSize: "17px", color: "#1C1C1E", boxSizing: "border-box",
+    borderRadius: "12px", marginBottom: "12px"
   };
 
   if (checking) {
     return (
-      <div style={{ width: "100%", height: "100vh", background: "#F2F2F7", display: "flex", flexDirection: "column", boxSizing: "border-box", fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif", overflow: "hidden" }}>
-        <AppBar />
-        <div style={{ flex: 1, display: "flex", justifyContent: "center", alignItems: "center", padding: "24px" }}>
-          <p style={{ color: "#8E8E93", fontSize: "15px" }}>Verifying...</p>
-        </div>
+      <div style={{ width: "100%", height: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#FFFFFF", fontFamily: "-apple-system, sans-serif", overflow: "hidden", position: "relative" }}>
+        <div style={{ width: "40px", height: "40px", border: "3px solid #E5E5EA", borderTopColor: MEDICAL_BLUE, borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
+        <style>{`@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }`}</style>
       </div>
     );
   }
 
   return (
-    <div style={{ width: "100%", height: "100vh", background: "#F2F2F7", display: "flex", flexDirection: "column", boxSizing: "border-box", fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif", overflow: "hidden" }}>
-      <AppBar />
+    <div style={{ width: "100%", height: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#FFFFFF", fontFamily: "-apple-system, sans-serif", overflow: "auto", position: "relative", padding: "80px 24px 40px" }}>
+      <style>{`
+        @keyframes fadeUp {
+          from { opacity: 0; transform: translateY(10px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+      `}</style>
+      <button onClick={onBack} style={{ position: "absolute", top: "24px", left: "24px", width: "44px", height: "44px", borderRadius: "50%", background: "transparent", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: MEDICAL_BLUE, zIndex: 10 }}>
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
+      </button>
+      <div style={{ width: "100%", maxWidth: "400px", display: "flex", flexDirection: "column", alignItems: "center", animation: "fadeUp 0.6s ease-out" }}>
+        <img src="/applogo.png" alt="App Logo" style={{ width: "96px", height: "96px", borderRadius: "20px", marginBottom: "32px", objectFit: "contain" }} />
+        <h1 style={{ fontSize: "24px", color: "#1C1C1E", fontWeight: "700", marginBottom: "32px" }}>Set Up Institution</h1>
+        
+        <form onSubmit={(e) => { e.preventDefault(); createAdmin(); }} style={{ width: "100%" }}>
+          <input 
+            placeholder="Institution Name" 
+            value={businessName} 
+            onChange={e => setBusinessName(e.target.value)} 
+            style={inputStyle} 
+            autoFocus 
+            autoComplete="organization"
+          />
+          <input 
+            placeholder="Verified Phone" 
+            value={phone} 
+            disabled 
+            style={{ ...inputStyle, background: "#E5E5EA", color: "#8E8E93", cursor: "not-allowed" }} 
+          />
+          <input 
+            placeholder="Admin Username" 
+            value={username} 
+            onChange={e => setUsername(e.target.value)} 
+            style={inputStyle} 
+            autoComplete="username"
+            autoCapitalize="none"
+            autoCorrect="off"
+          />
+          <input 
+            type="password" 
+            placeholder="Password (min 6 chars)" 
+            value={password} 
+            onChange={e => setPassword(e.target.value)} 
+            style={inputStyle} 
+            autoComplete="new-password"
+          />
+          <input 
+            type="password" 
+            placeholder="Re-enter Password" 
+            value={confirmPassword} 
+            onChange={e => setConfirmPassword(e.target.value)} 
+            style={inputStyle} 
+            autoComplete="new-password"
+          />
 
-      <div style={{ flex: 1, display: "flex", justifyContent: "center", alignItems: "center", padding: "24px" }}>
-        <div style={{ width: "100%", maxWidth: "400px", background: "rgba(255, 255, 255, 0.85)", backdropFilter: "blur(30px)", borderRadius: "24px", padding: "36px 28px", boxShadow: "0 15px 50px rgba(0,0,0,0.1)", border: "1px solid rgba(255,255,255,0.8)" }}>
-
-          <h1 style={{ textAlign: "center", fontSize: "24px", color: "#1C1C1E", fontWeight: "700", marginBottom: "24px" }}>Set Up Institution</h1>
-
-          <div style={{ background: "rgba(255,255,255,0.9)", borderRadius: "14px", overflow: "hidden", border: "1px solid rgba(0,0,0,0.04)", marginBottom: "16px" }}>
-            <input placeholder="Institution Name" value={businessName} onChange={e => setBusinessName(e.target.value)} style={inputStyle} />
-            <div style={{ height: "1px", background: "rgba(0,0,0,0.06)", marginLeft: "16px" }}></div>
-            <input placeholder="Verified Phone" value={phone} disabled style={{ ...inputStyle, background: "rgba(0,0,0,0.03)", color: "#8E8E93", cursor: "not-allowed" }} />
-            <div style={{ height: "1px", background: "rgba(0,0,0,0.06)", marginLeft: "16px" }}></div>
-            <input placeholder="Admin Username" value={username} onChange={e => setUsername(e.target.value)} style={inputStyle} />
-            <div style={{ height: "1px", background: "rgba(0,0,0,0.06)", marginLeft: "16px" }}></div>
-            <input type="password" placeholder="Password" value={password} onChange={e => setPassword(e.target.value)} style={inputStyle} />
-            <div style={{ height: "1px", background: "rgba(0,0,0,0.06)", marginLeft: "16px" }}></div>
-            <input type="password" placeholder="Re-enter Password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} style={inputStyle} />
-          </div>
-
-          {message && <p style={{ textAlign: "center", color: "#FF3B30", fontSize: "14px", marginBottom: "16px" }}>{message}</p>}
-
-          <button onClick={createAdmin} disabled={loading} style={{ width: "100%", padding: "14px", borderRadius: "14px", border: "none", background: MEDICAL_BLUE, color: "white", fontSize: "17px", fontWeight: "600", cursor: loading ? "not-allowed" : "pointer", opacity: loading ? 0.4 : 1 }}>
+          {message && <p style={{ textAlign: "center", color: "#FF3B30", fontSize: "14px", marginBottom: "12px" }}>{message}</p>}
+          
+          <button type="submit" disabled={loading} style={{ width: "100%", height: "56px", borderRadius: "12px", border: "none", background: MEDICAL_BLUE, color: "white", fontSize: "16px", fontWeight: "600", cursor: loading ? "not-allowed" : "pointer", opacity: loading ? 0.4 : 1, transition: "opacity 0.2s" }}>
             {loading ? "Creating..." : "Create Account"}
           </button>
-        </div>
+        </form>
       </div>
     </div>
   );

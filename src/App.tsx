@@ -1,10 +1,10 @@
-// src/App.tsx
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { useEffect, useState, useCallback } from "react";
 import { DailyProvider } from "@daily-co/daily-react";
 import { useRegisterSW } from "virtual:pwa-register/react";
 
-// AUTH
+// AUTH & LOADING
+import SyncLoadingScreen from "./components/SyncLoadingScreen"; // Make sure this path is correct
 import Startup from "./auth/startup";
 
 // LAYOUTS
@@ -33,13 +33,32 @@ import UserAssignmentTaker from "./user/UserAssignmentTaker";
 
 // COMPONENTS
 import ProfileSettings from "./components/ProfileSettings";
-import Updater from "./components/Updater";
+
+// 🛑 BLOCK NATIVE BROWSER DIALOGS (Fixes "tauri.localhost says..." popups)
+if (typeof window !== "undefined") {
+  window.alert = (message) => {
+    console.warn("🚨 ALERT SUPPRESSED:", message);
+  };
+  window.confirm = (message) => {
+    console.warn("🚨 CONFIRM SUPPRESSED (auto-false):", message);
+    return false; 
+  };
+  window.prompt = (message, _default) => {
+    console.warn("🚨 PROMPT SUPPRESSED (auto-null):", message);
+    return null;
+  };
+}
 
 export default function App() {
+    const [isSynced, setIsSynced] = useState(false); // ✅ ADDED: Sync state
+
     const [currentUser, setCurrentUser] = useState<any>(() => {
         const saved = localStorage.getItem("currentUser");
         return saved ? JSON.parse(saved) : null;
     });
+
+    const [updateProgress, setUpdateProgress] = useState<number | null>(null);
+    const [updateStatus, setUpdateStatus] = useState<string>("");
 
     const {
         needRefresh: [needRefresh, setNeedRefresh],
@@ -52,6 +71,85 @@ export default function App() {
     useEffect(() => {
         if (needRefresh) { updateServiceWorker(true); setNeedRefresh(false); }
     }, [needRefresh, updateServiceWorker, setNeedRefresh]);
+
+    // ✅ CLEAR PWA CACHE IN TAURI — prevents stale UI after auto-update
+    useEffect(() => {
+        if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) return;
+
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.getRegistrations().then(registrations => {
+                registrations.forEach(reg => reg.unregister());
+                console.log('Service workers unregistered (Tauri mode)');
+            });
+        }
+
+        if ('caches' in window) {
+            caches.keys().then(names => {
+                names.forEach(name => caches.delete(name));
+                console.log('Caches cleared (Tauri mode)');
+            });
+        }
+    }, []);
+
+    // ✅ TAURI AUTO-UPDATE — silent, no dialog, with progress tracking
+    useEffect(() => {
+        const checkTauriUpdate = async () => {
+            if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) return;
+
+            try {
+                const { check } = await import('@tauri-apps/plugin-updater');
+                const { relaunch } = await import('@tauri-apps/plugin-process');
+
+                const update = await check();
+                if (update?.available) {
+                    // Clear cache before updating
+                    if ('caches' in window) {
+                        const names = await caches.keys();
+                        await Promise.all(names.map(name => caches.delete(name)));
+                    }
+                    if ('serviceWorker' in navigator) {
+                        const regs = await navigator.serviceWorker.getRegistrations();
+                        await Promise.all(regs.map(reg => reg.unregister()));
+                    }
+
+                    let contentLength = 0;
+                    let downloaded = 0;
+
+                    // Silent download and install with progress tracking
+                    await update.downloadAndInstall((event) => {
+                        switch (event.event) {
+                            case 'Started':
+                                contentLength = event.data.contentLength as number;
+                                setUpdateStatus("Preparing update...");
+                                setUpdateProgress(0);
+                                break;
+                            case 'Progress':
+                                downloaded += event.data.chunkLength;
+                                if (contentLength > 0) {
+                                    const percent = Math.round((downloaded / contentLength) * 100);
+                                    setUpdateProgress(percent);
+                                    setUpdateStatus(`Downloading ${percent}%`);
+                                }
+                                break;
+                            case 'Finished':
+                                setUpdateStatus("Installing update...");
+                                setUpdateProgress(100);
+                                break;
+                        }
+                    });
+                    
+                    setUpdateStatus("Restarting...");
+                    await relaunch();
+                }
+            } catch (err) {
+                console.error('Tauri update check failed:', err);
+                setUpdateProgress(null); // Hide progress bar on error
+            }
+        };
+
+        const timer = setTimeout(checkTauriUpdate, 5000);
+        return () => clearTimeout(timer);
+    }, []);
 
     useEffect(() => {
         const loadUser = () => {
@@ -91,9 +189,87 @@ export default function App() {
         return <>{children}</>;
     }, [currentUser]);
 
+    // ✅ SHOW SYNC LOADING SCREEN FIRST
+    if (!isSynced) {
+        return <SyncLoadingScreen onSyncComplete={() => setIsSynced(true)} />;
+    }
+
     return (
         <DailyProvider>
             <BrowserRouter>
+                {/* UPDATE PROGRESS OVERLAY */}
+                {updateProgress !== null && (
+                    <div style={{
+                        position: "fixed",
+                        top: 0,
+                        left: 0,
+                        width: "100%",
+                        height: "100%",
+                        background: "rgba(0,0,0,0.85)",
+                        display: "flex",
+                        flexDirection: "column",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        zIndex: 9999,
+                        color: "#fff",
+                        fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+                    }}>
+                        <div style={{
+                            width: "90%",
+                            maxWidth: "380px",
+                            textAlign: "center",
+                        }}>
+                            {/* Medical Blue Spinner */}
+                            <div style={{ 
+                                width: "48px", 
+                                height: "48px", 
+                                border: "3px solid rgba(255,255,255,0.2)", 
+                                borderTopColor: "#007AFF", 
+                                borderRadius: "50%", 
+                                animation: "spin 0.8s linear infinite", 
+                                margin: "0 auto 24px" 
+                            }} />
+                            
+                            <h3 style={{ 
+                                margin: "0 0 8px", 
+                                fontSize: "18px", 
+                                fontWeight: 700, 
+                                color: "#fff",
+                                letterSpacing: "-0.2px"
+                            }}>
+                                System Update
+                            </h3>
+                            
+                            <p style={{ 
+                                margin: "0 0 24px", 
+                                fontSize: "14px", 
+                                color: "rgba(255,255,255,0.6)",
+                                fontWeight: 500
+                            }}>
+                                {updateStatus}
+                            </p>
+
+                            {/* Thin Medical Blue Progress Bar */}
+                            <div style={{ 
+                                width: "100%", 
+                                height: "4px", 
+                                background: "rgba(255,255,255,0.15)", 
+                                borderRadius: "2px", 
+                                overflow: "hidden" 
+                            }}>
+                                <div style={{ 
+                                    width: `${updateProgress}%`, 
+                                    height: "100%", 
+                                    background: "#007AFF", 
+                                    borderRadius: "2px", 
+                                    transition: "width 0.2s ease",
+                                }} />
+                            </div>
+                        </div>
+                    </div>
+                )}
+                <style>{`@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }`}</style>
+
                 <Routes>
                     <Route path="/login" element={currentUser ? <Navigate to={getDashboardPath(currentUser.role)} replace /> : <Startup />} />
                     <Route path="/" element={currentUser ? <Navigate to={getDashboardPath(currentUser.role)} replace /> : <Startup />} />
@@ -107,7 +283,7 @@ export default function App() {
                         <Route path="settings" element={<Settings />} />
                     </Route>
 
-                    {/* TRAINER — no AppLayout wrapper, each file has its own app bar */}
+                    {/* TRAINER */}
                     <Route path="/trainer" element={<ProtectedTrainer><TrainerDashboard /></ProtectedTrainer>} />
                     <Route path="/trainer/settings" element={<ProtectedTrainer><ProfileSettings role="trainer" /></ProtectedTrainer>} />
                     <Route path="/trainer/upload/:courseId" element={<ProtectedTrainer><UploadMaterials /></ProtectedTrainer>} />
@@ -125,7 +301,6 @@ export default function App() {
 
                     <Route path="*" element={<Navigate to="/login" replace />} />
                 </Routes>
-                <Updater />
             </BrowserRouter>
         </DailyProvider>
     );
