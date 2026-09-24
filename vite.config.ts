@@ -6,6 +6,7 @@ export default defineConfig({
   plugins: [
     react(),
     VitePWA({
+      disable: true, // <--- ADDED THIS: Stops service worker crashes in Tauri
       registerType: 'autoUpdate',
       workbox: {
         runtimeCaching: [

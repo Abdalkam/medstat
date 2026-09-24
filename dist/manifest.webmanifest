@@ -1,1 +1,9 @@
-{"name":"MedStat","short_name":"MedStat","description":"MedStat Healthcare Training App","start_url":"/","display":"standalone","background_color":"#F2F2F7","theme_color":"#007AFF","lang":"en","scope":"/"}
+{
+  "short_name": "MedStat",
+  "name": "MedStat App",
+  "description": "Medical Training Management",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#007AFF"
+}

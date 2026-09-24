@@ -7,17 +7,25 @@ export default function Updater() {
   const [updateAvailable, setUpdateAvailable] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [isUpdating, setIsUpdating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [noUpdate, setNoUpdate] = useState(false);
 
   useEffect(() => {
     const checkForUpdates = async () => {
       try {
+        console.log("Checking for updates...");
         const update = await check();
-        // update.available is the correct boolean in Tauri v2
-        if (update?.available) {
+        
+        if (update) {
+          console.log("Update found:", update.version);
           setUpdateAvailable(true);
+        } else {
+          console.log("No update found. App is up to date.");
+          setNoUpdate(true);
         }
-      } catch (error) {
-        console.error("Failed to check for updates:", error);
+      } catch (err) {
+        console.error("Failed to check for updates:", err);
+        setError(err instanceof Error ? err.message : String(err));
       }
     };
 
@@ -34,15 +42,12 @@ export default function Updater() {
         let downloaded = 0;
         let total = 0;
         
-        // Download and install
         await update.downloadAndInstall((event) => {
           switch (event.event) {
             case 'Started':
-              // total size is provided here!
               total = event.data.contentLength ?? 0;
               break;
             case 'Progress':
-              // chunk size is provided here
               downloaded += event.data.chunkLength;
               if (total > 0) {
                 setDownloadProgress(Math.round((downloaded / total) * 100));
@@ -54,17 +59,34 @@ export default function Updater() {
           }
         });
         
-        // Restart the app after installation
         await relaunch();
       }
-    } catch (error) {
-      console.error("Failed to install update:", error);
-      alert("Update failed. Please try again later.");
+    } catch (err) {
+      console.error("Failed to install update:", err);
+      setError(err instanceof Error ? err.message : String(err));
       setIsUpdating(false);
     }
   };
 
-  // If no update is available, don't render anything
+  // ERROR BOX (Red)
+  if (error) {
+    return (
+      <div style={{ position: "fixed", bottom: 20, right: 20, background: "red", color: "white", padding: 16, borderRadius: 8, zIndex: 9999, maxWidth: 300 }}>
+        <b>Update Error:</b><br /> {error}
+      </div>
+    );
+  }
+
+  // NO UPDATE BOX (Yellow)
+  if (noUpdate) {
+    return (
+      <div style={{ position: "fixed", bottom: 20, right: 20, background: "orange", color: "black", padding: 16, borderRadius: 8, zIndex: 9999 }}>
+        App is up to date!
+      </div>
+    );
+  }
+
+  // UPDATE AVAILABLE BOX (Blue)
   if (!updateAvailable) return null;
 
   return (
@@ -78,7 +100,6 @@ export default function Updater() {
         {isUpdating && (
           <div style={{ fontSize: 13, opacity: 0.9, marginTop: 4 }}>
             Downloading... {downloadProgress}%
-            {/* Visual loading bar */}
             <div style={{ width: '100%', height: 4, background: 'rgba(255,255,255,0.3)', borderRadius: 2, marginTop: 4 }}>
               <div style={{ width: `${downloadProgress}%`, height: '100%', background: 'white', borderRadius: 2 }} />
             </div>

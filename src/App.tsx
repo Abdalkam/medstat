@@ -1,10 +1,9 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { useEffect, useState, useCallback } from "react";
 import { DailyProvider } from "@daily-co/daily-react";
-import { useRegisterSW } from "virtual:pwa-register/react";
 
 // AUTH & LOADING
-import SyncLoadingScreen from "./components/SyncLoadingScreen"; // Make sure this path is correct
+import SyncLoadingScreen from "./components/SyncLoadingScreen";
 import Startup from "./auth/startup";
 
 // LAYOUTS
@@ -34,23 +33,15 @@ import UserAssignmentTaker from "./user/UserAssignmentTaker";
 // COMPONENTS
 import ProfileSettings from "./components/ProfileSettings";
 
-// 🛑 BLOCK NATIVE BROWSER DIALOGS (Fixes "tauri.localhost says..." popups)
+// 🛑 BLOCK NATIVE BROWSER DIALOGS
 if (typeof window !== "undefined") {
-  window.alert = (message) => {
-    console.warn("🚨 ALERT SUPPRESSED:", message);
-  };
-  window.confirm = (message) => {
-    console.warn("🚨 CONFIRM SUPPRESSED (auto-false):", message);
-    return false; 
-  };
-  window.prompt = (message, _default) => {
-    console.warn("🚨 PROMPT SUPPRESSED (auto-null):", message);
-    return null;
-  };
+  window.alert = (message) => { console.warn("🚨 ALERT SUPPRESSED:", message); };
+  window.confirm = (message) => { console.warn("🚨 CONFIRM SUPPRESSED (auto-false):", message); return false; };
+  window.prompt = (message, _default) => { console.warn("🚨 PROMPT SUPPRESSED (auto-null):", message); return null; };
 }
 
 export default function App() {
-    const [isSynced, setIsSynced] = useState(false); // ✅ ADDED: Sync state
+    const [isSynced, setIsSynced] = useState(false);
 
     const [currentUser, setCurrentUser] = useState<any>(() => {
         const saved = localStorage.getItem("currentUser");
@@ -60,38 +51,7 @@ export default function App() {
     const [updateProgress, setUpdateProgress] = useState<number | null>(null);
     const [updateStatus, setUpdateStatus] = useState<string>("");
 
-    const {
-        needRefresh: [needRefresh, setNeedRefresh],
-        updateServiceWorker,
-    } = useRegisterSW({
-        onRegisteredSW(url) { console.log("SW registered:", url); },
-        onRegisterError(error) { console.log("SW error:", error); },
-    });
-
-    useEffect(() => {
-        if (needRefresh) { updateServiceWorker(true); setNeedRefresh(false); }
-    }, [needRefresh, updateServiceWorker, setNeedRefresh]);
-
-    // ✅ CLEAR PWA CACHE IN TAURI — prevents stale UI after auto-update
-    useEffect(() => {
-        if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) return;
-
-        if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.getRegistrations().then(registrations => {
-                registrations.forEach(reg => reg.unregister());
-                console.log('Service workers unregistered (Tauri mode)');
-            });
-        }
-
-        if ('caches' in window) {
-            caches.keys().then(names => {
-                names.forEach(name => caches.delete(name));
-                console.log('Caches cleared (Tauri mode)');
-            });
-        }
-    }, []);
-
-    // ✅ TAURI AUTO-UPDATE — silent, no dialog, with progress tracking
+    // ✅ TAURI AUTO-UPDATE
     useEffect(() => {
         const checkTauriUpdate = async () => {
             if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) return;
@@ -102,20 +62,10 @@ export default function App() {
 
                 const update = await check();
                 if (update?.available) {
-                    // Clear cache before updating
-                    if ('caches' in window) {
-                        const names = await caches.keys();
-                        await Promise.all(names.map(name => caches.delete(name)));
-                    }
-                    if ('serviceWorker' in navigator) {
-                        const regs = await navigator.serviceWorker.getRegistrations();
-                        await Promise.all(regs.map(reg => reg.unregister()));
-                    }
-
                     let contentLength = 0;
                     let downloaded = 0;
 
-                    // Silent download and install with progress tracking
+                    // Download and install
                     await update.downloadAndInstall((event) => {
                         switch (event.event) {
                             case 'Started':
@@ -141,9 +91,10 @@ export default function App() {
                     setUpdateStatus("Restarting...");
                     await relaunch();
                 }
+                // If no update is available, it skips all of this and shows nothing.
             } catch (err) {
                 console.error('Tauri update check failed:', err);
-                setUpdateProgress(null); // Hide progress bar on error
+                setUpdateProgress(null); 
             }
         };
 
@@ -189,15 +140,10 @@ export default function App() {
         return <>{children}</>;
     }, [currentUser]);
 
-    // ✅ SHOW SYNC LOADING SCREEN FIRST
-    if (!isSynced) {
-        return <SyncLoadingScreen onSyncComplete={() => setIsSynced(true)} />;
-    }
-
     return (
         <DailyProvider>
             <BrowserRouter>
-                {/* UPDATE PROGRESS OVERLAY */}
+                {/* UPDATE PROGRESS OVERLAY (Only shows if updateProgress is not null) */}
                 {updateProgress !== null && (
                     <div style={{
                         position: "fixed",
@@ -210,7 +156,7 @@ export default function App() {
                         flexDirection: "column",
                         alignItems: "center",
                         justifyContent: "center",
-                        zIndex: 9999,
+                        zIndex: 99999,
                         color: "#fff",
                         fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
                     }}>
@@ -219,7 +165,6 @@ export default function App() {
                             maxWidth: "380px",
                             textAlign: "center",
                         }}>
-                            {/* Medical Blue Spinner */}
                             <div style={{ 
                                 width: "48px", 
                                 height: "48px", 
@@ -249,7 +194,6 @@ export default function App() {
                                 {updateStatus}
                             </p>
 
-                            {/* Thin Medical Blue Progress Bar */}
                             <div style={{ 
                                 width: "100%", 
                                 height: "4px", 
@@ -270,37 +214,42 @@ export default function App() {
                 )}
                 <style>{`@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }`}</style>
 
-                <Routes>
-                    <Route path="/login" element={currentUser ? <Navigate to={getDashboardPath(currentUser.role)} replace /> : <Startup />} />
-                    <Route path="/" element={currentUser ? <Navigate to={getDashboardPath(currentUser.role)} replace /> : <Startup />} />
+                {/* ✅ SHOW SYNC LOADING SCREEN FIRST */}
+                {!isSynced ? (
+                    <SyncLoadingScreen onSyncComplete={() => setIsSynced(true)} />
+                ) : (
+                    <Routes>
+                        <Route path="/login" element={currentUser ? <Navigate to={getDashboardPath(currentUser.role)} replace /> : <Startup />} />
+                        <Route path="/" element={currentUser ? <Navigate to={getDashboardPath(currentUser.role)} replace /> : <Startup />} />
 
-                    {/* ADMIN */}
-                    <Route path="/admin" element={<ProtectedAdmin><AdminLayout user={currentUser} /></ProtectedAdmin>}>
-                        <Route index element={<AdminDashboard />} />
-                        <Route path="users" element={<UserManagement />} />
-                        <Route path="courses" element={<CourseManagement />} />
-                        <Route path="sms" element={<SMSManagement />} />
-                        <Route path="settings" element={<Settings />} />
-                    </Route>
+                        {/* ADMIN */}
+                        <Route path="/admin" element={<ProtectedAdmin><AdminLayout user={currentUser} /></ProtectedAdmin>}>
+                            <Route index element={<AdminDashboard />} />
+                            <Route path="users" element={<UserManagement />} />
+                            <Route path="courses" element={<CourseManagement />} />
+                            <Route path="sms" element={<SMSManagement />} />
+                            <Route path="settings" element={<Settings />} />
+                        </Route>
 
-                    {/* TRAINER */}
-                    <Route path="/trainer" element={<ProtectedTrainer><TrainerDashboard /></ProtectedTrainer>} />
-                    <Route path="/trainer/settings" element={<ProtectedTrainer><ProfileSettings role="trainer" /></ProtectedTrainer>} />
-                    <Route path="/trainer/upload/:courseId" element={<ProtectedTrainer><UploadMaterials /></ProtectedTrainer>} />
-                    <Route path="/trainer/live/:courseId" element={<ProtectedTrainer><TrainerLiveClassroom /></ProtectedTrainer>} />
-                    <Route path="/trainer/assignments/:courseId" element={<ProtectedTrainer><TrainerAssignments /></ProtectedTrainer>} />
-                    <Route path="/trainer/assignment-builder/:courseId/:assignmentId?" element={<ProtectedTrainer><AssignmentBuilder /></ProtectedTrainer>} />
-                    <Route path="/trainer/submissions/:assignmentId" element={<ProtectedTrainer><TrainerSubmissions /></ProtectedTrainer>} />
+                        {/* TRAINER */}
+                        <Route path="/trainer" element={<ProtectedTrainer><TrainerDashboard /></ProtectedTrainer>} />
+                        <Route path="/trainer/settings" element={<ProtectedTrainer><ProfileSettings role="trainer" /></ProtectedTrainer>} />
+                        <Route path="/trainer/upload/:courseId" element={<ProtectedTrainer><UploadMaterials /></ProtectedTrainer>} />
+                        <Route path="/trainer/live/:courseId" element={<ProtectedTrainer><TrainerLiveClassroom /></ProtectedTrainer>} />
+                        <Route path="/trainer/assignments/:courseId" element={<ProtectedTrainer><TrainerAssignments /></ProtectedTrainer>} />
+                        <Route path="/trainer/assignment-builder/:courseId/:assignmentId?" element={<ProtectedTrainer><AssignmentBuilder /></ProtectedTrainer>} />
+                        <Route path="/trainer/submissions/:assignmentId" element={<ProtectedTrainer><TrainerSubmissions /></ProtectedTrainer>} />
 
-                    {/* USER */}
-                    <Route path="/user" element={<ProtectedUser><UserDashboard /></ProtectedUser>} />
-                    <Route path="/user/settings" element={<ProtectedUser><ProfileSettings role="trainee" /></ProtectedUser>} />
-                    <Route path="/user/assignments/:courseId" element={<ProtectedUser><UserAssignments /></ProtectedUser>} />
-                    <Route path="/user/assignment-taker/:assignmentId" element={<ProtectedUser><UserAssignmentTaker /></ProtectedUser>} />
-                    <Route path="/user/classroom/:courseId" element={<ProtectedUser><Classroom /></ProtectedUser>} />
+                        {/* USER */}
+                        <Route path="/user" element={<ProtectedUser><UserDashboard /></ProtectedUser>} />
+                        <Route path="/user/settings" element={<ProtectedUser><ProfileSettings role="trainee" /></ProtectedUser>} />
+                        <Route path="/user/assignments/:courseId" element={<ProtectedUser><UserAssignments /></ProtectedUser>} />
+                        <Route path="/user/assignment-taker/:assignmentId" element={<ProtectedUser><UserAssignmentTaker /></ProtectedUser>} />
+                        <Route path="/user/classroom/:courseId" element={<ProtectedUser><Classroom /></ProtectedUser>} />
 
-                    <Route path="*" element={<Navigate to="/login" replace />} />
-                </Routes>
+                        <Route path="*" element={<Navigate to="/login" replace />} />
+                    </Routes>
+                )}
             </BrowserRouter>
         </DailyProvider>
     );
