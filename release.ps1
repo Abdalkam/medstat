@@ -10,7 +10,6 @@ if (-not $latestTag) {
     $currentVersion = "0.0.0"
     Write-Host "WARN: No existing tags found. Starting at v1.0.0" -ForegroundColor Yellow
 } else {
-    # Remove 'v' prefix
     $currentVersion = $latestTag.TrimStart('v')
     Write-Host "Current Version: v$currentVersion" -ForegroundColor Green
 }
@@ -27,10 +26,7 @@ if ($latestTag) {
 
 # 3. Calculate the new version number safely
  $parts = $currentVersion.Split('.')
-if ($parts.Count -lt 3) {
-    # Fallback if a tag was just "1.0"
-    $parts = @("0","0","0")
-}
+if ($parts.Count -lt 3) { $parts = @("0","0","0") }
  $major = [int]$parts[0]
  $minor = [int]$parts[1]
  $patch = [int]$parts[2]
@@ -73,7 +69,6 @@ if (Test-Path $cargoPath) {
 git add .
 git commit -m "$commitMessage" --quiet
 
-# SAFETY: Delete tag if it already exists locally and remotely
 git tag -d $newVersion 2>$null
 git push origin :refs/tags/$newVersion 2>$null
 
@@ -99,7 +94,6 @@ if (Test-Path $bundlePath) {
     Remove-Item $bundlePath -Recurse -Force
 }
 
-# ✅ FIXED: Using the correct smartpages.key!
  $env:TAURI_SIGNING_PRIVATE_KEY = "C:\Users\HP\.tauri\smartpages.key"
  $securePassword = Read-Host "Enter your Tauri private key password (press Enter if blank)" -AsSecureString
  $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($securePassword)
@@ -118,11 +112,8 @@ if (!$?) {
 # 7. Auto-Upload to GitHub Releases
 Write-Host "Uploading artifacts to GitHub Release $newVersion..." -ForegroundColor Cyan
 
-# Dynamically find the generated files
  $exePath = Get-ChildItem "src-tauri\target\release\bundle\nsis\*.exe" | Select-Object -First 1 -ExpandProperty FullName
  $sigPath = Get-ChildItem "src-tauri\target\release\bundle\nsis\*.sig" | Select-Object -First 1 -ExpandProperty FullName
-
-# Try to find Tauri's auto-generated latest.json
  $jsonPath = Get-ChildItem "src-tauri\target\release\bundle" -Filter "latest.json" -Recurse | Select-Object -First 1 -ExpandProperty FullName
 
 if (!$jsonPath -and $exePath -and $sigPath) {
@@ -136,15 +127,12 @@ if (!$jsonPath -and $exePath -and $sigPath) {
 }
 
 if ($exePath -and $jsonPath) {
-    # Check if GitHub CLI is available and authenticated
     $ghStatus = gh auth status 2>&1
     if ($LASTEXITCODE -ne 0) {
         Write-Host "ERROR: You are not logged into GitHub CLI. Run 'gh auth login' first." -ForegroundColor Red
     } else {
-        # Attempt to create the release
         gh release create $newVersion --repo Abdalkam/medstat --title "$newVersion" --notes "Release $newVersion" $exePath $jsonPath 2>$null
         
-        # FALLBACK: If it already exists, upload to the existing release instead
         if ($LASTEXITCODE -ne 0) {
             Write-Host "Release already exists. Uploading files to existing release..." -ForegroundColor Yellow
             gh release upload $newVersion --repo Abdalkam/medstat $exePath $jsonPath --clobber
@@ -152,6 +140,32 @@ if ($exePath -and $jsonPath) {
             
         if ($LASTEXITCODE -eq 0) {
             Write-Host "Release $newVersion published successfully!" -ForegroundColor Green
+
+            # ✅ AUTOMAGICALLY UPDATE medstat-updates REPO
+            Write-Host "Pushing latest.json to medstat-updates repository..." -ForegroundColor Cyan
+            $jsonRawContent = Get-Content $jsonPath -Raw
+            $base64Content = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($jsonRawContent))
+            
+            # Get the SHA of the existing file (required by GitHub API to overwrite)
+            $sha = (gh api repos/Abdalkam/medstat-updates/contents/latest.json --jq .sha 2>$null)
+            
+            $apiPayload = @{
+                message = "chore: update latest.json to $newVersion"
+                content = $base64Content
+            }
+            if ($sha) {
+                $apiPayload.sha = $sha
+            }
+            
+            $apiPayloadJson = $apiPayload | ConvertTo-Json -Compress
+            $apiPayloadJson | gh api repos/Abdalkam/medstat-updates/contents/latest.json -X PUT --input - 2>&1 | Out-Null
+            
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "medstat-updates/latest.json updated successfully!" -ForegroundColor Green
+            } else {
+                Write-Host "ERROR: Failed to update medstat-updates repository." -ForegroundColor Red
+            }
+            # ----------------------------------------------------
         } else {
             Write-Host "ERROR: GitHub release creation failed." -ForegroundColor Red
         }
