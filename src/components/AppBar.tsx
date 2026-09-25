@@ -51,37 +51,48 @@ export default function AppBar() {
                 const parsedUser = JSON.parse(localStorage.getItem("currentUser") || "{}");
                 let tenantId = parsedUser?.tenantId || parsedUser?.tenant_id || localStorage.getItem("activeTenantId");
 
+                // 1. Load from Local Storage INSTANTLY
+                const localSettings = localStorage.getItem("localBusinessSettings");
+                if (localSettings) {
+                    setSettings(JSON.parse(localSettings));
+                }
+
+                // 2. Try fetching from Supabase to update in background
                 if (tenantId) {
-                    const { data: settingsData } = await supabase
-                        .from("business_settings")
-                        .select("*")
-                        .eq("tenant_id", tenantId)
-                        .maybeSingle();
+                    try {
+                        const { data: settingsData } = await supabase
+                            .from("business_settings")
+                            .select("*")
+                            .eq("tenant_id", tenantId)
+                            .maybeSingle();
 
-                    if (settingsData) {
-                        setSettings(mapSettingsFromSupabase(settingsData));
-                        return;
-                    }
+                        if (settingsData) {
+                            const mapped = mapSettingsFromSupabase(settingsData);
+                            setSettings(mapped);
+                            localStorage.setItem("localBusinessSettings", JSON.stringify(mapped));
+                            return;
+                        }
 
-                    const { data: tenantData } = await supabase
-                        .from("tenants")
-                        .select("id, business_name, phone")
-                        .eq("id", tenantId)
-                        .maybeSingle();
+                        const { data: tenantData } = await supabase
+                            .from("tenants")
+                            .select("id, business_name, phone")
+                            .eq("id", tenantId)
+                            .maybeSingle();
 
-                    if (tenantData) {
-                        setSettings({
-                            id: "main", tenantId: tenantData.id, businessName: tenantData.business_name || "",
-                            phone: tenantData.phone || "", email: "", address: "", logo: "", loginBackground: "",
-                            website: "", header: undefined, adminProfile: undefined, themeColor: undefined,
-                            appBarItems: [], createdAt: new Date().toISOString(),
-                        });
-                        return;
+                        if (tenantData) {
+                            const fallbackSettings = {
+                                id: "main", tenantId: tenantData.id, businessName: tenantData.business_name || "",
+                                phone: tenantData.phone || "", email: "", address: "", logo: "", loginBackground: "",
+                                website: "", header: undefined, adminProfile: undefined, themeColor: undefined,
+                                appBarItems: [], createdAt: new Date().toISOString(),
+                            };
+                            setSettings(fallbackSettings);
+                            localStorage.setItem("localBusinessSettings", JSON.stringify(fallbackSettings));
+                        }
+                    } catch (e) {
+                        console.warn("Offline: AppBar using local settings");
                     }
                 }
-                
-                const localSettings = localStorage.getItem("localBusinessSettings");
-                if (localSettings) setSettings(JSON.parse(localSettings));
             } catch (error) {
                 console.error("Failed to load settings", error);
             }
@@ -115,7 +126,7 @@ export default function AppBar() {
                     });
                 }
             } catch (err) {
-                console.warn("Profile fetch error:", err);
+                console.warn("Profile fetch error (Offline):", err);
             }
         };
 
@@ -131,16 +142,11 @@ export default function AppBar() {
         return () => document.removeEventListener("mousedown", handleClickOutside);
     }, []);
 
-    // ✅ DIRECT LINK TO LOGIN PAGE
     const handleLogout = () => {
-        // 1. Clear all local storage instantly
         localStorage.removeItem("currentUser");
         localStorage.removeItem("authToken");
         localStorage.removeItem("activeTenantId");
         localStorage.removeItem("adminDeviceId");
-
-        // 2. Hard link directly to the login page. This acts like typing the URL 
-        // and hitting enter, completely bypassing React Router's unmount phase.
         window.location.replace("/login");
     };
 
