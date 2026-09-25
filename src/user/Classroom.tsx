@@ -33,6 +33,7 @@ export default function Classroom() {
   const [isMicOn, setIsMicOn] = useState(false);
   const [isVoiceJoined, setIsVoiceJoined] = useState(false);
   const [hasMicPermission, setHasMicPermission] = useState(false);
+  const [audioError, setAudioError] = useState(false);
   
   const [trainerVideoTrack, setTrainerVideoTrack] = useState<MediaStreamTrack | null>(null);
   const [isVideoExpanded, setIsVideoExpanded] = useState(false);
@@ -49,12 +50,8 @@ export default function Classroom() {
     }
   });
 
-  useDailyEvent("local-audio-level", () => {});
-
   useEffect(() => {
     const localUser = JSON.parse(localStorage.getItem("currentUser") || "{}");
-    
-    // ✅ FIX: Do NOT call navigate("/") here. App.tsx handles redirects.
     if (!localUser.id || localUser.role !== 'trainee') { return; }
     setDbUser(localUser);
 
@@ -92,22 +89,38 @@ export default function Classroom() {
     }
   }
 
+  async function joinAudio() {
+    if (!daily) return;
+    const roomUrl = await getDailyRoomUrl();
+    if (!roomUrl) return;
+    try {
+      await daily.join({ url: roomUrl, startVideoOff: true });
+      await daily.setLocalAudio(false); 
+      setIsVoiceJoined(true);
+      setAudioError(false);
+    } catch (e) {
+      console.error("Manual join error:", e);
+      alert("Could not connect to audio. Please check microphone permissions.");
+    }
+  }
+
   useEffect(() => {
-    if (isLive && daily && !isVoiceJoined) {
+    if (isLive && daily && !isVoiceJoined && !audioError) {
       const autoJoinRoom = async () => {
         const roomUrl = await getDailyRoomUrl();
         if (!roomUrl) return;
         try {
-          await daily.join({ url: roomUrl, audioSource: true, videoSource: false });
+          await daily.join({ url: roomUrl, startVideoOff: true });
           await daily.setLocalAudio(false); 
           setIsVoiceJoined(true);
         } catch (e) {
-          console.error("Auto-join error:", e);
+          console.error("Auto-join blocked by browser. Showing manual join button.", e);
+          setAudioError(true); 
         }
       };
       autoJoinRoom();
     }
-  }, [isLive, daily, isVoiceJoined]);
+  }, [isLive, daily, isVoiceJoined, audioError]);
 
   useEffect(() => {
     if (!courseId) return;
@@ -197,7 +210,10 @@ export default function Classroom() {
   }, [courseId, dbUser?.id]);
 
   async function toggleMic() {
-    if (!daily || !isVoiceJoined) return;
+    if (!daily || !isVoiceJoined) {
+      await joinAudio();
+      return;
+    }
     
     if (!hasMicPermission && !isMicOn) {
       alert("Please raise your hand 🖐️ and wait for the trainer to allow you to speak.");
@@ -294,6 +310,13 @@ export default function Classroom() {
             {courseId && <ClassChat courseId={courseId} />}
           </div>
           
+          {audioError && (
+            <div style={{ padding: "16px", background: C.redBg, borderTop: `1px solid ${C.separator}`, textAlign: "center" }}>
+              <p style={{ margin: "0 0 8px", fontSize: "13px", color: C.red, fontWeight: "600" }}>Audio disconnected</p>
+              <button onClick={joinAudio} style={{ width: "100%", padding: "10px", background: C.red, color: "#fff", border: "none", borderRadius: "8px", fontWeight: "600", cursor: "pointer" }}>Connect Audio</button>
+            </div>
+          )}
+
           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "12px", padding: "16px", borderTop: `1px solid ${C.separator}`, background: C.card, flexDirection: isChatOpen ? "row" : "column", flexShrink: 0 }}>
             <button onClick={exitClassroom} style={{ width: "48px", height: "48px", borderRadius: "50%", border: "none", cursor: "pointer", background: C.bg, color: C.textPrimary, boxShadow: "0 2px 8px rgba(0,0,0,0.05)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }} title="Exit Classroom">
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
