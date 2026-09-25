@@ -1,122 +1,33 @@
 // src/components/Updater.tsx
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 
 export default function Updater() {
-  const [updateAvailable, setUpdateAvailable] = useState(false);
-  const [downloadProgress, setDownloadProgress] = useState(0);
-  const [isUpdating, setIsUpdating] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [noUpdate, setNoUpdate] = useState(false);
-
   useEffect(() => {
     const checkForUpdates = async () => {
       try {
-        console.log("Checking for updates...");
         const update = await check();
         
+        // If an update is available, download and install it SILENTLY
         if (update) {
-          console.log("Update found:", update.version);
-          setUpdateAvailable(true);
-        } else {
-          console.log("No update found. App is up to date.");
-          setNoUpdate(true);
+          await update.downloadAndInstall();
+          await relaunch();
         }
       } catch (err) {
-        console.error("Failed to check for updates:", err);
-        setError(err instanceof Error ? err.message : String(err));
+        // Silently fail in the background without bothering the user
+        console.error("Auto-update failed:", err);
       }
     };
 
+    // Only run if inside the Tauri desktop app
     if ((window as any).__TAURI_INTERNALS__) {
-      checkForUpdates();
+      // Wait 5 seconds after app opens before checking
+      const timer = setTimeout(checkForUpdates, 5000);
+      return () => clearTimeout(timer);
     }
   }, []);
 
-  const handleUpdate = async () => {
-    setIsUpdating(true);
-    try {
-      const update = await check();
-      if (update) {
-        let downloaded = 0;
-        let total = 0;
-        
-        await update.downloadAndInstall((event) => {
-          switch (event.event) {
-            case 'Started':
-              total = event.data.contentLength ?? 0;
-              break;
-            case 'Progress':
-              downloaded += event.data.chunkLength;
-              if (total > 0) {
-                setDownloadProgress(Math.round((downloaded / total) * 100));
-              }
-              break;
-            case 'Finished':
-              setDownloadProgress(100);
-              break;
-          }
-        });
-        
-        await relaunch();
-      }
-    } catch (err) {
-      console.error("Failed to install update:", err);
-      setError(err instanceof Error ? err.message : String(err));
-      setIsUpdating(false);
-    }
-  };
-
-  // ERROR BOX (Red)
-  if (error) {
-    return (
-      <div style={{ position: "fixed", bottom: 20, right: 20, background: "red", color: "white", padding: 16, borderRadius: 8, zIndex: 9999, maxWidth: 300 }}>
-        <b>Update Error:</b><br /> {error}
-      </div>
-    );
-  }
-
-  // NO UPDATE BOX (Yellow)
-  if (noUpdate) {
-    return (
-      <div style={{ position: "fixed", bottom: 20, right: 20, background: "orange", color: "black", padding: 16, borderRadius: 8, zIndex: 9999 }}>
-        App is up to date!
-      </div>
-    );
-  }
-
-  // UPDATE AVAILABLE BOX (Blue)
-  if (!updateAvailable) return null;
-
-  return (
-    <div style={{
-      position: "fixed", bottom: 20, right: 20, background: "#0A84FF", color: "white",
-      padding: "16px 24px", borderRadius: 14, boxShadow: "0 8px 24px rgba(0,0,0,0.2)",
-      zIndex: 9999, display: "flex", alignItems: "center", gap: 16
-    }}>
-      <div>
-        <div style={{ fontWeight: 700, fontSize: 15 }}>A new version is available!</div>
-        {isUpdating && (
-          <div style={{ fontSize: 13, opacity: 0.9, marginTop: 4 }}>
-            Downloading... {downloadProgress}%
-            <div style={{ width: '100%', height: 4, background: 'rgba(255,255,255,0.3)', borderRadius: 2, marginTop: 4 }}>
-              <div style={{ width: `${downloadProgress}%`, height: '100%', background: 'white', borderRadius: 2 }} />
-            </div>
-          </div>
-        )}
-      </div>
-      {!isUpdating && (
-        <button 
-          onClick={handleUpdate} 
-          style={{
-            background: "white", color: "#0A84FF", border: "none", borderRadius: 8,
-            padding: "8px 16px", fontWeight: 700, cursor: "pointer"
-          }}
-        >
-          Update Now
-        </button>
-      )}
-    </div>
-  );
+  // This component returns nothing, so it will never show a progress bar or text!
+  return null;
 }

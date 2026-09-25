@@ -48,9 +48,7 @@ export default function App() {
         return saved ? JSON.parse(saved) : null;
     });
 
-    const [updateProgress, setUpdateProgress] = useState<number | null>(null);
-
-    // ✅ MINIMAL TAURI AUTO-UPDATE
+    // ✅ SILENT TAURI AUTO-UPDATE (No UI)
     useEffect(() => {
         const checkTauriUpdate = async () => {
             if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) return;
@@ -61,33 +59,12 @@ export default function App() {
 
                 const update = await check();
                 if (update) {
-                    let contentLength = 0;
-                    let downloaded = 0;
-
-                    await update.downloadAndInstall((event) => {
-                        switch (event.event) {
-                            case 'Started':
-                                contentLength = event.data.contentLength as number;
-                                setUpdateProgress(0);
-                                break;
-                            case 'Progress':
-                                downloaded += event.data.chunkLength;
-                                if (contentLength > 0) {
-                                    const percent = Math.round((downloaded / contentLength) * 100);
-                                    setUpdateProgress(percent);
-                                }
-                                break;
-                            case 'Finished':
-                                setUpdateProgress(100);
-                                break;
-                        }
-                    });
-                    
+                    // Download and install completely silently
+                    await update.downloadAndInstall();
                     await relaunch();
                 }
             } catch (err) {
                 console.error('Tauri update check failed:', err);
-                setUpdateProgress(null);
             }
         };
 
@@ -136,26 +113,6 @@ export default function App() {
     return (
         <DailyProvider>
             <BrowserRouter>
-                {/* ✅ MINIMAL UPDATE PROGRESS BAR (Bottom of screen, non-blocking) */}
-                {updateProgress !== null && (
-                    <div style={{ 
-                        position: "fixed", 
-                        bottom: 0, 
-                        left: 0, 
-                        width: "100%", 
-                        height: "3px", 
-                        background: "rgba(0,0,0,0.1)", 
-                        zIndex: 999999 
-                    }}>
-                        <div style={{ 
-                            width: `${updateProgress}%`, 
-                            height: "100%", 
-                            background: "#007AFF", 
-                            transition: "width 0.2s ease" 
-                        }} />
-                    </div>
-                )}
-
                 {/* ✅ SHOW SYNC LOADING SCREEN FIRST */}
                 {!isSynced ? (
                     <SyncLoadingScreen onSyncComplete={() => setIsSynced(true)} />
