@@ -225,7 +225,17 @@ export default function UserManagement() {
       let usersData: User[] = [];
       let coursesData: Course[] = [];
 
-      // STEP 1: Try Supabase first
+      // STEP 1: Load from Local DB INSTANTLY (Offline support)
+      try {
+        usersData = await getUsers();
+        coursesData = await getCourses();
+      } catch (e) { /* ignore */ }
+
+      setUsers(usersData.filter((user) => user.role !== "admin"));
+      setCourses(coursesData);
+      setIsLoading(false);
+
+      // STEP 2: Try Supabase to update in background
       if (tenantId) {
         try {
           const [usersRes, coursesRes] = await Promise.all([
@@ -233,36 +243,34 @@ export default function UserManagement() {
             supabase.from("courses").select("*").eq("tenant_id", tenantId),
           ]);
 
+          let remoteUsers: User[] = [];
+          let remoteCourses: Course[] = [];
+
           if (usersRes.data) {
-            usersData = usersRes.data.map(mapUserFromSupabase);
+            remoteUsers = usersRes.data.map(mapUserFromSupabase);
           }
           if (coursesRes.data) {
-            coursesData = coursesRes.data.map(mapCourseFromSupabase);
+            remoteCourses = coursesRes.data.map(mapCourseFromSupabase);
           }
+
+          // Cache Supabase users to local DB for offline support
+          for (const user of remoteUsers) {
+            if (user.role !== "admin") {
+              await db.users.put(user);
+            }
+          }
+
+          // Use remote data if available, otherwise keep local
+          const finalUsers = remoteUsers.length > 0 ? remoteUsers : usersData;
+          const finalCourses = remoteCourses.length > 0 ? remoteCourses : coursesData;
+
+          setUsers(finalUsers.filter((user) => user.role !== "admin"));
+          setCourses(finalCourses);
+
         } catch (onlineError) {
           console.warn("Supabase fetch failed, using local DB", onlineError);
         }
       }
-
-      // STEP 2: Fallback to local DB
-      if (usersData.length === 0) {
-        usersData = await getUsers();
-      }
-      if (coursesData.length === 0) {
-        coursesData = await getCourses();
-      }
-
-      // Cache Supabase users to local DB for offline support
-      if (tenantId && usersData.length > 0 && usersData[0].synced) {
-        for (const user of usersData) {
-          if (user.role !== "admin") {
-            await db.users.put(user);
-          }
-        }
-      }
-
-      setUsers(usersData.filter((user) => user.role !== "admin"));
-      setCourses(coursesData);
     } catch (error) {
       console.error("Failed to load data", error);
     } finally {
@@ -436,12 +444,7 @@ export default function UserManagement() {
 
   return (
     <div style={{ width: "100%", minHeight: "100%", background: C.bg, fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif", display: "flex", flexDirection: "column", boxSizing: "border-box", paddingBottom: "40px" }}>
-      <style>{`
-        @keyframes pulse {
-          0%, 100% { opacity: 1; }
-          50% { opacity: 0.4; }
-        }
-      `}</style>
+      <style>{`@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }`}</style>
       <input ref={fileInputRef} type="file" accept="image/*" style={{ display: "none" }} onChange={uploadPic} />
       <input ref={inlinePicRef} type="file" accept="image/*" style={{ display: "none" }} onChange={handleInlinePicUpload} />
 

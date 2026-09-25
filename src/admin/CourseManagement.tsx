@@ -188,12 +188,8 @@ export default function CourseManagement() {
     loadCourses();
   }, []);
 
-  // Listen for background syncs or realtime changes from syncService.ts
   useEffect(() => {
-    const handleBackgroundSync = () => {
-      console.log("Courses updated via background sync, refreshing UI...");
-      loadCourses();
-    };
+    const handleBackgroundSync = () => loadCourses();
     window.addEventListener("coursesChanged", handleBackgroundSync);
     window.addEventListener("dataSynced", handleBackgroundSync);
     return () => {
@@ -211,7 +207,19 @@ export default function CourseManagement() {
       let usersData: User[] = [];
       let schedulesData: any[] = [];
 
-      // STEP 1: Try Supabase first
+      // STEP 1: Load from Local DB INSTANTLY (Offline support)
+      try {
+        coursesData = await getCourses();
+        const rawUsers = await getUsers();
+        usersData = Array.isArray(rawUsers) ? rawUsers : [];
+        schedulesData = await db.schedules.toArray();
+      } catch (e) { /* ignore */ }
+
+      setCourses(coursesData);
+      buildCourseDetails(coursesData, usersData, schedulesData);
+      setIsLoading(false);
+
+      // STEP 2: Try Supabase to update in background
       if (tenantId) {
         try {
           const [coursesRes, usersRes] = await Promise.all([
@@ -219,17 +227,21 @@ export default function CourseManagement() {
             supabase.from("users").select("*").eq("tenant_id", tenantId),
           ]);
 
+          let remoteCourses: Course[] = [];
+          let remoteUsers: User[] = [];
+
           if (coursesRes.data && coursesRes.data.length > 0) {
-            coursesData = coursesRes.data.map(mapCourseFromSupabase);
+            remoteCourses = coursesRes.data.map(mapCourseFromSupabase);
           }
           if (usersRes.data) {
-            usersData = usersRes.data.map(mapUserFromSupabase);
+            remoteUsers = usersRes.data.map(mapUserFromSupabase);
           }
 
+          let remoteSchedules: any[] = [];
           try {
             const { data: schedData } = await supabase.from("schedules").select("*").eq("tenant_id", tenantId);
             if (schedData) {
-              schedulesData = schedData.map((s: any) => ({
+              remoteSchedules = schedData.map((s: any) => ({
                 ...s,
                 courseId: s.course_id,
                 trainerId: s.trainer_id,
@@ -238,30 +250,23 @@ export default function CourseManagement() {
             }
           } catch (e) { /* schedules table may not exist */ }
 
+          // Save remote data to local DB for offline support
+          for (const course of remoteCourses) {
+            await db.courses.put(course);
+          }
+
+          // Use remote data if available, otherwise keep local
+          const finalCourses = remoteCourses.length > 0 ? remoteCourses : coursesData;
+          const finalUsers = remoteUsers.length > 0 ? remoteUsers : usersData;
+          const finalSchedules = remoteSchedules.length > 0 ? remoteSchedules : schedulesData;
+
+          setCourses(finalCourses);
+          buildCourseDetails(finalCourses, finalUsers, finalSchedules);
+
         } catch (onlineError) {
           console.warn("Supabase fetch failed, using local DB", onlineError);
         }
       }
-
-      // STEP 2: Fallback to local DB
-      if (coursesData.length === 0) coursesData = await getCourses();
-      if (usersData.length === 0) {
-        const raw = await getUsers();
-        usersData = Array.isArray(raw) ? raw : [];
-      }
-      if (schedulesData.length === 0) {
-        try { schedulesData = await db.schedules.toArray(); } catch (e) { /* ignore */ }
-      }
-
-      // Save Supabase courses to local DB for offline support
-      if (tenantId && coursesData.length > 0 && coursesData[0].synced) {
-        for (const course of coursesData) {
-          await db.courses.put(course);
-        }
-      }
-
-      setCourses(coursesData);
-      buildCourseDetails(coursesData, usersData, schedulesData);
     } catch (error) {
       console.error("Failed to load courses", error);
     } finally {
@@ -409,12 +414,7 @@ export default function CourseManagement() {
 
   return (
     <div style={{ width: "100%", minHeight: "100%", background: C.bg, fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif", display: "flex", flexDirection: "column", boxSizing: "border-box", paddingBottom: "40px" }}>
-      <style>{`
-        @keyframes pulse {
-          0%, 100% { opacity: 1; }
-          50% { opacity: 0.4; }
-        }
-      `}</style>
+      <style>{`@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }`}</style>
       <input ref={fileInputRef} type="file" accept="image/*" style={{ display: "none" }} onChange={uploadLogo} />
       <input ref={inlinePicRef} type="file" accept="image/*" style={{ display: "none" }} onChange={handleInlinePicUpload} />
       <div style={{ width: "100%", display: "flex", flexDirection: "column", boxSizing: "border-box" }}>

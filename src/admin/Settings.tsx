@@ -64,21 +64,39 @@ export default function Settings() {
         const tenantId = currentUser?.tenantId as string | null;
 
         if (tenantId) {
-          const { data, error } = await supabase
-            .from("business_settings")
-            .select("*")
-            .eq("tenant_id", tenantId)
-            .maybeSingle();
+          let mappedSettings: BusinessSettings | null = null;
 
-          if (!error && data) {
-            const mapped = mapSettingsFromSupabase(data);
-            setSettings(mapped);
-            setBusinessName(mapped.businessName || "");
-            setPhone(mapped.phone || "");
-            setEmail(mapped.email || "");
-            setAddress(mapped.address || "");
-            setLogo(mapped.logo || "");
-            setLoginBackground(mapped.loginBackground || "");
+          // 1. Try fetching from Supabase
+          try {
+            const { data, error } = await supabase
+              .from("business_settings")
+              .select("*")
+              .eq("tenant_id", tenantId)
+              .maybeSingle();
+
+            if (!error && data) {
+              mappedSettings = mapSettingsFromSupabase(data);
+            }
+          } catch (e) {
+            console.warn("Offline: Fetching settings from local storage...");
+          }
+
+          // 2. If online failed, load from localStorage
+          if (!mappedSettings) {
+            const localData = localStorage.getItem("localBusinessSettings");
+            if (localData) {
+              mappedSettings = JSON.parse(localData) as BusinessSettings;
+            }
+          }
+
+          if (mappedSettings) {
+            setSettings(mappedSettings);
+            setBusinessName(mappedSettings.businessName || "");
+            setPhone(mappedSettings.phone || "");
+            setEmail(mappedSettings.email || "");
+            setAddress(mappedSettings.address || "");
+            setLogo(mappedSettings.logo || "");
+            setLoginBackground(mappedSettings.loginBackground || "");
           }
         }
       } catch (error) {
@@ -91,7 +109,6 @@ export default function Settings() {
     loadSettings();
   }, []);
 
-  // ✅ UPDATED: Added maxSize parameter so backgrounds can be larger (1280px) instead of tiny (200px)
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>, setter: (val: string) => void, maxSize: number = 200) => {
     const file = e.target.files?.[0];
     if (file) {
@@ -105,7 +122,6 @@ export default function Settings() {
           let width = img.width;
           let height = img.height;
 
-          // Maintain aspect ratio while scaling down
           if (width > height) {
             if (width > maxSize) { height *= maxSize / width; width = maxSize; }
           } else {
@@ -114,7 +130,7 @@ export default function Settings() {
           canvas.width = width;
           canvas.height = height;
           ctx?.drawImage(img, 0, 0, width, height);
-          setter(canvas.toDataURL("image/jpeg", 0.7)); // Slightly higher quality for backgrounds
+          setter(canvas.toDataURL("image/jpeg", 0.7));
         };
       };
       reader.readAsDataURL(file);
@@ -144,41 +160,49 @@ export default function Settings() {
         app_bar_items: settings?.appBarItems || [],
       };
 
-      if (settings?.id && settings.id !== "main") {
-        const { error } = await supabase
-          .from("business_settings")
-          .update(payload)
-          .eq("id", settings.id);
+      let savedToCloud = false;
 
-        if (error) throw error;
-      } else {
-        const { data: existing, error: checkError } = await supabase
-          .from("business_settings")
-          .select("id")
-          .eq("tenant_id", tenantId)
-          .maybeSingle();
-
-        if (checkError) throw checkError;
-
-        if (existing) {
+      try {
+        if (settings?.id && settings.id !== "main") {
           const { error } = await supabase
             .from("business_settings")
             .update(payload)
-            .eq("id", existing.id);
+            .eq("id", settings.id);
 
           if (error) throw error;
+          savedToCloud = true;
         } else {
-          const { error } = await supabase
+          const { data: existing, error: checkError } = await supabase
             .from("business_settings")
-            .insert(payload);
+            .select("id")
+            .eq("tenant_id", tenantId)
+            .maybeSingle();
 
-          if (error) throw error;
+          if (checkError) throw checkError;
+
+          if (existing) {
+            const { error } = await supabase
+              .from("business_settings")
+              .update(payload)
+              .eq("id", existing.id);
+
+            if (error) throw error;
+            savedToCloud = true;
+          } else {
+            const { error } = await supabase
+              .from("business_settings")
+              .insert(payload);
+
+            if (error) throw error;
+            savedToCloud = true;
+          }
         }
+      } catch (e) {
+        console.warn("Offline: Saving settings to local storage. Will sync later.", e);
       }
 
-      setMessage("Settings saved successfully!");
-      
-      localStorage.setItem("localBusinessSettings", JSON.stringify({ 
+      // Always save to localStorage so it persists offline and can be used for login branding
+      const localSettings = { 
         ...settings, 
         businessName, 
         phone, 
@@ -186,9 +210,19 @@ export default function Settings() {
         address, 
         logo, 
         loginBackground 
+      };
+      localStorage.setItem("localBusinessSettings", JSON.stringify(localSettings));
+      // Also update the login branding cache
+      localStorage.setItem("institutionBranding", JSON.stringify({
+        businessName,
+        logo,
+        phone,
+        loginBackground
       }));
       
       window.dispatchEvent(new Event("settingsChanged"));
+
+      setMessage(savedToCloud ? "Settings saved successfully!" : "Saved offline! Will sync when online.");
     } catch (error: unknown) {
       const err = error as { message?: string };
       setMessage(err.message || "Failed to save settings.");
@@ -208,6 +242,12 @@ export default function Settings() {
       const currentUser: Record<string, unknown> = JSON.parse(localStorage.getItem("currentUser") || "{}");
       const userId = currentUser.id as string;
       if (!userId) return setPasswordMessage("Not logged in.");
+
+      // Check if offline
+      const token = localStorage.getItem("authToken");
+      if (token === "offline-mode-pending-sync") {
+        return setPasswordMessage("Cannot change password offline. Please connect to the internet.");
+      }
 
       const { data: profileData, error: fetchError } = await supabase
         .from("profile_settings")
@@ -236,6 +276,13 @@ export default function Settings() {
 
       if (userUpdateError) throw userUpdateError;
 
+      // Update local DB password as well
+      try {
+        const { updateUser } = await import("../database/userDB");
+        const userObj = JSON.parse(localStorage.getItem("currentUser") || "{}");
+        await updateUser({ ...userObj, password: newPassword });
+      } catch (e) { console.error("Failed to update local password", e); }
+
       setPasswordMessage("Password changed successfully!");
       setCurrentPassword("");
       setNewPassword("");
@@ -243,7 +290,7 @@ export default function Settings() {
       setShowPasswordSection(false);
     } catch (error: unknown) {
       const err = error as { message?: string };
-      setPasswordMessage(err.message || "Failed to change password.");
+      setPasswordMessage(err.message || "Failed to change password. You might be offline.");
     } finally {
       setChangingPassword(false);
     }
@@ -343,7 +390,6 @@ export default function Settings() {
             </div>
           </div>
           <button onClick={() => logoInputRef.current?.click()} style={{ padding: "10px 16px", background: "#F2F2F7", border: "none", borderRadius: "10px", color: C.blue, fontSize: "14px", fontWeight: "600", cursor: "pointer" }}>Upload</button>
-          {/* ✅ Passes 200 as max size for Logo */}
           <input type="file" accept="image/*" ref={logoInputRef} style={{ display: "none" }} onChange={(e) => handleImageUpload(e, setLogo, 200)} />
         </div>
       </div>
@@ -365,13 +411,12 @@ export default function Settings() {
             </div>
           </div>
           <button onClick={() => bgInputRef.current?.click()} style={{ padding: "10px 16px", background: "#F2F2F7", border: "none", borderRadius: "10px", color: C.blue, fontSize: "14px", fontWeight: "600", cursor: "pointer" }}>Upload</button>
-          {/* ✅ Passes 1280 as max size for Background so it isn't blurry */}
           <input type="file" accept="image/*" ref={bgInputRef} style={{ display: "none" }} onChange={(e) => handleImageUpload(e, setLoginBackground, 1280)} />
         </div>
       </div>
 
       {message && (
-        <p style={{ color: message.includes("success") ? C.green : C.red, textAlign: "center", marginBottom: "16px", fontWeight: "500" }}>
+        <p style={{ color: message.includes("success") || message.includes("offline") ? C.green : C.red, textAlign: "center", marginBottom: "16px", fontWeight: "500" }}>
           {message}
         </p>
       )}
