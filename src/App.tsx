@@ -50,6 +50,7 @@ export default function App() {
 
     const [updateProgress, setUpdateProgress] = useState<number | null>(null);
     const [updateStatus, setUpdateStatus] = useState<string>("");
+    const [updateError, setUpdateError] = useState<string | null>(null); // ✅ Added Error State
 
     // ✅ TAURI AUTO-UPDATE
     useEffect(() => {
@@ -62,6 +63,7 @@ export default function App() {
 
                 const update = await check();
                 if (update?.available) {
+                    setUpdateError(null); // Clear any old errors
                     let contentLength = 0;
                     let downloaded = 0;
 
@@ -93,6 +95,8 @@ export default function App() {
                 }
             } catch (err) {
                 console.error('Tauri update check failed:', err);
+                // ✅ Show the error visually on the screen!
+                setUpdateError(err instanceof Error ? err.message : String(err));
                 setUpdateProgress(null); 
             }
         };
@@ -142,6 +146,17 @@ export default function App() {
     return (
         <DailyProvider>
             <BrowserRouter>
+                {/* 🔴 ERROR OVERLAY (Shows if update fails) */}
+                {updateError && (
+                    <div style={{
+                        position: "fixed", top: 20, left: 20, right: 20, background: "red", color: "white",
+                        padding: "16px", borderRadius: "8px", zIndex: 999999, boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
+                        fontWeight: "bold", fontSize: "14px"
+                    }}>
+                        Update Error: {updateError}
+                    </div>
+                )}
+
                 {/* UPDATE PROGRESS OVERLAY */}
                 {updateProgress !== null && (
                     <div style={{
