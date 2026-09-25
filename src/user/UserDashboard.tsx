@@ -128,12 +128,12 @@ export default function UserDashboard() {
       // ✅ 2. If Supabase failed or returned nothing, try local DB
       if (fetchedCourses.length === 0) {
         try {
-          const courseDB = await import("../database/courseDB") as any;
-          if (courseDB.getCoursesForUser) {
-            const localCourses = await courseDB.getCoursesForUser(savedUser.id);
-            if (localCourses && localCourses.length > 0) {
-              fetchedCourses = localCourses;
-            }
+          const { getCourses } = await import("../database/courseDB");
+          const allLocalCourses = await getCourses();
+          if (allLocalCourses && allLocalCourses.length > 0 && savedUser.assignedCourses) {
+            fetchedCourses = allLocalCourses
+              .filter((c: any) => savedUser.assignedCourses.includes(c.id))
+              .map((c: any) => ({ id: c.id, name: c.name, description: c.description || "", logo: c.logo || "", category: c.mediaName || "" }));
           }
         } catch (e) {
           console.warn("No local courses found in DB.");
