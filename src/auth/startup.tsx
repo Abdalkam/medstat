@@ -7,45 +7,93 @@ import { supabase } from "../auth/supabase";
 import PhoneEntry from "./PhoneEntry";
 import VerifyCode from "./VerifyCode";
 import RegisterAdmin from "./RegisterAdmin";
+import { getVersion } from "@tauri-apps/api/app";
 
 const MEDICAL_BLUE = "#007AFF";
 const iosFont = "-apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif";
 
 type AppScreen = "main" | "login" | "admin_sms" | "admin_otp" | "admin_register";
 
-const ScreenWrapper = ({ children, showBack, onBack }: { children: React.ReactNode, showBack?: boolean, onBack?: () => void }) => (
-  <div style={{ width: "100%", height: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#FFFFFF", fontFamily: iosFont, overflow: "hidden", position: "relative", padding: "24px" }}>
+// ✅ Premium Reusable Auth Layout
+const AuthLayout = ({ children, background, logo, version, showBack, onBack, watermark }: { 
+  children: React.ReactNode, 
+  background?: string, 
+  logo?: string, 
+  version?: string,
+  showBack?: boolean, 
+  onBack?: () => void,
+  watermark?: boolean
+}) => (
+  <div style={{ 
+    width: "100%", 
+    height: "100vh", 
+    display: "flex", 
+    alignItems: "center", 
+    justifyContent: "center", 
+    backgroundImage: watermark ? "none" : (background ? `url(${background})` : "linear-gradient(135deg, #F2F2F7 0%, #E5E5EA 100%)"),
+    backgroundSize: watermark ? "auto" : "cover",
+    backgroundPosition: "center",
+    backgroundColor: watermark ? "#FFFFFF" : "#F2F2F7",
+    fontFamily: iosFont, 
+    overflow: "hidden", 
+    position: "relative", 
+    padding: "24px" 
+  }}>
     <style>{`
-      @keyframes scrollBg {
-        0% { background-position: 0px 0px; }
-        100% { background-position: 120px 120px; }
-      }
-      @keyframes fadeUp {
-        from { opacity: 0; transform: translateY(10px); }
-        to { opacity: 1; transform: translateY(0); }
-      }
+      @keyframes fadeUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+      @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+      @keyframes scrollBg { 0% { background-position: 0px 0px; } 100% { background-position: 120px 120px; } }
     `}</style>
     
-    {/* Animated Watermark Background */}
-    <div style={{
-      position: "absolute",
-      top: 0, left: 0, right: 0, bottom: 0,
-      backgroundImage: "url(/applogo.png)",
-      backgroundRepeat: "repeat",
-      backgroundSize: "120px 120px",
-      opacity: 0.08, // Slightly more visible
-      animation: "scrollBg 30s linear infinite",
-      zIndex: 0
-    }} />
+    {/* ✅ Animated Watermark Background (using loadlogo.png) */}
+    {watermark && (
+      <div style={{
+        position: "absolute",
+        top: 0, left: 0, right: 0, bottom: 0,
+        backgroundImage: "url(/loadlogo.png)",
+        backgroundRepeat: "repeat",
+        backgroundSize: "120px 120px",
+        opacity: 0.08,
+        animation: "scrollBg 30s linear infinite",
+        zIndex: 0
+      }} />
+    )}
+
+    {/* Dark overlay for Supabase custom backgrounds */}
+    {!watermark && background && <div style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.4)", zIndex: 0 }} />}
 
     {showBack && onBack && (
-      <button onClick={onBack} style={{ position: "absolute", top: "24px", left: "24px", width: "44px", height: "44px", borderRadius: "50%", background: "transparent", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: MEDICAL_BLUE, zIndex: 10 }}>
+      <button onClick={onBack} style={{ position: "absolute", top: "24px", left: "24px", width: "44px", height: "44px", borderRadius: "50%", background: "rgba(255,255,255,0.2)", backdropFilter: "blur(10px)", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", zIndex: 10 }}>
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
       </button>
     )}
-    <div style={{ position: "relative", zIndex: 1, width: "100%", maxWidth: "400px", display: "flex", flexDirection: "column", alignItems: "center", animation: "fadeUp 0.6s ease-out" }}>
+
+    {/* Glassmorphism Card */}
+    <div style={{ 
+      position: "relative", 
+      zIndex: 1, 
+      width: "100%", 
+      maxWidth: "400px", 
+      background: "rgba(255, 255, 255, 0.85)", 
+      backdropFilter: "blur(30px)", 
+      WebkitBackdropFilter: "blur(30px)",
+      borderRadius: "28px", 
+      padding: "40px 32px", 
+      boxShadow: "0 20px 60px rgba(0,0,0,0.15)", 
+      border: "1px solid rgba(255,255,255,0.6)",
+      animation: "fadeUp 0.6s ease-out"
+    }}>
+      {logo && (
+        <img src={logo} alt="Logo" style={{ width: "80px", height: "80px", borderRadius: "20px", objectFit: "cover", display: "block", margin: "0 auto 24px", boxShadow: "0 8px 24px rgba(0,0,0,0.1)" }} />
+      )}
       {children}
     </div>
+
+    {version && (
+      <div style={{ position: "absolute", bottom: "20px", width: "100%", textAlign: "center", color: (watermark || !background) ? "#8E8E93" : "rgba(255,255,255,0.8)", fontSize: "12px", fontFamily: iosFont, zIndex: 10, pointerEvents: "none" }}>
+        Version {version}
+      </div>
+    )}
   </div>
 );
 
@@ -53,7 +101,8 @@ export default function Startup() {
   const location = useLocation();
   const [redirectRoute, setRedirectRoute] = useState<string | null>(null);
   const [screen, setScreen] = useState<AppScreen>("main");
-  const [branding, setBranding] = useState<{ businessName: string; logo: string; phone: string } | null>(null);
+  const [branding, setBranding] = useState<{ businessName: string; logo: string; phone: string; loginBackground: string } | null>(null);
+  const [appVersion, setAppVersion] = useState("");
 
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -71,10 +120,8 @@ export default function Startup() {
   const isLoggingIn = useRef(false);
 
   useEffect(() => {
-    supabase.from('business_settings').select('business_name, logo, phone').limit(1).maybeSingle().then(({ data }) => {
-      if (data) setBranding({ businessName: data.business_name || "", logo: data.logo || "", phone: data.phone || "" });
-    });
-
+    getVersion().then(v => setAppVersion(v)).catch(() => {});
+    
     const storedUser = localStorage.getItem("currentUser");
     if (storedUser && location.pathname === "/") {
       try {
@@ -83,6 +130,17 @@ export default function Startup() {
           setRequiresUnlock(true);
           setUsername(userObj.username || "");
           setTenantId(userObj.tenantId || null);
+          
+          if (userObj.tenantId) {
+            supabase.from('business_settings').select('business_name, logo, phone, login_background').eq('tenant_id', userObj.tenantId).maybeSingle().then(({ data }) => {
+              if (data) setBranding({ 
+                businessName: data.business_name || "", 
+                logo: data.logo || "", 
+                phone: data.phone || "", 
+                loginBackground: data.login_background || "" 
+              });
+            });
+          }
         }
       } catch {
         localStorage.removeItem("currentUser");
@@ -115,6 +173,21 @@ export default function Startup() {
       const { data: tenant, error } = await supabase.from("tenants").select("id").ilike("business_name", businessName.trim()).maybeSingle();
       if (error || !tenant?.id) return setLookupError("Institution not found. Check the spelling or ask your Admin.");
       setTenantId(tenant.id);
+      
+      const { data: settings } = await supabase.from("business_settings")
+        .select("business_name, logo, phone, login_background")
+        .eq("tenant_id", tenant.id)
+        .maybeSingle();
+        
+      if (settings) {
+        setBranding({ 
+          businessName: settings.business_name || "", 
+          logo: settings.logo || "", 
+          phone: settings.phone || "", 
+          loginBackground: settings.login_background || "" 
+        });
+      }
+
       setScreen("login");
     } catch (err: any) {
       setLookupError(err.message || "Network error.");
@@ -185,17 +258,15 @@ export default function Startup() {
   if (redirectRoute) return <Navigate to={redirectRoute} replace />;
 
   const inputStyle: React.CSSProperties = { 
-    width: "100%", 
-    height: "56px", 
-    padding: "0 16px", 
-    border: "none", 
-    outline: "none", 
-    background: "#F2F2F7", 
-    fontSize: "17px", 
-    color: "#1C1C1E", 
-    boxSizing: "border-box", 
-    borderRadius: "12px", 
-    marginBottom: "12px" 
+    width: "100%", height: "54px", padding: "0 16px", border: "none", outline: "none", 
+    background: "rgba(255,255,255,0.8)", fontSize: "17px", color: "#1C1C1E", boxSizing: "border-box", 
+    borderRadius: "14px", marginBottom: "12px", transition: "background 0.2s"
+  };
+
+  const primaryBtn: React.CSSProperties = {
+    width: "100%", height: "54px", borderRadius: "14px", border: "none", background: MEDICAL_BLUE,
+    color: "white", fontSize: "17px", fontWeight: "600", cursor: "pointer", 
+    opacity: loading ? 0.4 : 1, marginBottom: "0", boxShadow: "0 4px 12px rgba(0,122,255,0.3)"
   };
 
   // Admin Auth Flow Routing
@@ -204,9 +275,8 @@ export default function Startup() {
   if (screen === "admin_register") return <RegisterAdmin phone={phoneNumber} tempToken={tempToken || ""} onComplete={handleAdminCreated} onBack={() => setScreen("admin_otp")} />;
 
   if (requiresUnlock) {
-    const storedUser = JSON.parse(localStorage.getItem("currentUser") || "{}");
     return (
-      <ScreenWrapper showBack onBack={() => { 
+      <AuthLayout background={branding?.loginBackground} logo={branding?.logo || "/loadlogo.png"} version={appVersion} showBack onBack={() => { 
         stopPeriodicPull(); 
         localStorage.removeItem("currentUser"); 
         localStorage.removeItem("authToken"); 
@@ -214,11 +284,8 @@ export default function Startup() {
         setPassword(""); 
         setUsername("");
       }}>
-        <div style={{ width: "96px", height: "96px", borderRadius: "24px", overflow: "hidden", marginBottom: "32px", background: "#F2F2F7", display: "flex", justifyContent: "center", alignItems: "center", color: MEDICAL_BLUE, fontSize: "36px", fontWeight: "700" }}>
-          {storedUser.profilePic ? <img src={storedUser.profilePic} alt="Profile" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : storedUser.username?.charAt(0).toUpperCase() || "?"}
-        </div>
         <h2 style={{ textAlign: "center", fontSize: "24px", color: "#1C1C1E", fontWeight: "700", marginBottom: "8px" }}>Welcome back</h2>
-        <p style={{ textAlign: "center", fontSize: "15px", color: "#8E8E93", marginBottom: "32px" }}>Enter your password to continue.</p>
+        <p style={{ textAlign: "center", fontSize: "15px", color: "#8E8E93", marginBottom: "24px" }}>Enter your password to continue.</p>
         <form onSubmit={(e) => { e.preventDefault(); handleLogin(); }} style={{ width: "100%" }}>
           <input 
             type="password" 
@@ -230,79 +297,58 @@ export default function Startup() {
             autoComplete="current-password"
           />
           {message && <p style={{ textAlign: "center", color: "#FF3B30", fontSize: "14px", marginBottom: "12px" }}>{message}</p>}
-          <button type="submit" disabled={loading || !password} style={{ width: "100%", height: "56px", borderRadius: "12px", border: "none", background: MEDICAL_BLUE, color: "white", fontSize: "16px", fontWeight: "600", cursor: (!password || loading) ? "not-allowed" : "pointer", opacity: (!password || loading) ? 0.4 : 1, transition: "opacity 0.2s" }}>{loading ? "Signing in..." : "Unlock"}</button>
+          <button type="submit" disabled={loading || !password} style={primaryBtn}>{loading ? "Signing in..." : "Unlock"}</button>
         </form>
-      </ScreenWrapper>
+      </AuthLayout>
     );
   }
 
   if (screen === "login") {
     return (
-      <ScreenWrapper showBack onBack={() => { stopPeriodicPull(); setScreen("main"); setTenantId(null); setMessage(""); }}>
-        <img src="/applogo.png" alt="App Logo" style={{ width: "96px", height: "96px", borderRadius: "20px", marginBottom: "32px", objectFit: "contain" }} />
-        <h1 style={{ textAlign: "center", fontSize: "24px", color: "#1C1C1E", fontWeight: "700", marginBottom: "32px" }}>Welcome Back</h1>
+      <AuthLayout background={branding?.loginBackground} logo={branding?.logo || "/loadlogo.png"} version={appVersion} showBack onBack={() => { stopPeriodicPull(); setScreen("main"); setTenantId(null); setMessage(""); }}>
+        <h1 style={{ textAlign: "center", fontSize: "24px", color: "#1C1C1E", fontWeight: "700", marginBottom: "24px" }}>Welcome Back</h1>
         <form onSubmit={(e) => { e.preventDefault(); handleLogin(); }} style={{ width: "100%" }}>
           <input 
-            name="username" 
-            placeholder="Username" 
-            value={username} 
-            onChange={e => setUsername(e.target.value)} 
-            style={inputStyle} 
-            autoFocus 
-            autoComplete="username"
-            autoCapitalize="none"
-            autoCorrect="off"
+            name="username" placeholder="Username" value={username} 
+            onChange={e => setUsername(e.target.value)} style={inputStyle} 
+            autoFocus autoComplete="username" autoCapitalize="none" autoCorrect="off"
           />
           <input 
-            type="password" 
-            name="password" 
-            placeholder="Password" 
-            value={password} 
-            onChange={e => setPassword(e.target.value)} 
-            style={inputStyle} 
+            type="password" name="password" placeholder="Password" value={password} 
+            onChange={e => setPassword(e.target.value)} style={inputStyle} 
             autoComplete="current-password"
           />
           {message && <p style={{ textAlign: "center", color: "#FF3B30", fontSize: "14px", marginBottom: "12px" }}>{message}</p>}
-          <button type="submit" disabled={loading} style={{ width: "100%", height: "56px", borderRadius: "12px", border: "none", background: MEDICAL_BLUE, color: "white", fontSize: "16px", fontWeight: "600", cursor: loading ? "not-allowed" : "pointer", opacity: loading ? 0.6 : 1, transition: "opacity 0.2s" }}>{loading ? "Signing in..." : "Login"}</button>
+          <button type="submit" disabled={loading} style={primaryBtn}>{loading ? "Signing in..." : "Login"}</button>
         </form>
-      </ScreenWrapper>
+      </AuthLayout>
     );
   }
 
   // Main Screen
   return (
-    <ScreenWrapper>
-      <img 
-        src={branding?.logo || "/applogo.png"} 
-        alt="Logo" 
-        style={{ width: "96px", height: "96px", borderRadius: "20px", objectFit: "contain", marginBottom: "32px" }} 
-      />
-      <h1 style={{ textAlign: "center", fontSize: "24px", color: "#1C1C1E", fontWeight: "700", marginBottom: "8px" }}>{branding?.businessName || "Welcome"}</h1>
-      {branding?.phone && <p style={{ textAlign: "center", fontSize: "15px", color: "#8E8E93", marginBottom: "32px" }}>{branding.phone}</p>}
-      {!branding?.phone && <p style={{ textAlign: "center", fontSize: "15px", color: "#8E8E93", marginBottom: "32px" }}>Enter your institution to continue</p>}
+    // ✅ CHANGED: Watermark uses loadlogo.png, card uses loadlogo.png
+    <AuthLayout watermark logo="/loadlogo.png" version={appVersion}>
+      <h1 style={{ textAlign: "center", fontSize: "24px", color: "#1C1C1E", fontWeight: "700", marginBottom: "8px" }}>Welcome</h1>
+      <p style={{ textAlign: "center", fontSize: "15px", color: "#8E8E93", marginBottom: "24px" }}>Enter your institution to continue</p>
       
       <form onSubmit={(e) => { e.preventDefault(); handleTrainerLookup(); }} style={{ width: "100%" }}>
         <input 
-          type="text" 
-          placeholder="Enter Institution Name" 
-          value={businessName} 
+          type="text" placeholder="Enter Institution Name" value={businessName} 
           onChange={e => { setBusinessName(e.target.value); setLookupError(""); }} 
-          style={inputStyle} 
-          autoFocus 
-          autoComplete="organization"
+          style={inputStyle} autoFocus autoComplete="organization"
         />
         {lookupError && <p style={{ textAlign: "center", color: "#FF3B30", fontSize: "14px", marginBottom: "12px" }}>{lookupError}</p>}
-        
-        <button type="submit" disabled={lookupLoading || !businessName.trim()} style={{ width: "100%", height: "56px", borderRadius: "12px", border: "none", background: MEDICAL_BLUE, color: "white", fontSize: "16px", fontWeight: "600", cursor: (lookupLoading || !businessName.trim()) ? "not-allowed" : "pointer", opacity: (lookupLoading || !businessName.trim()) ? 0.4 : 1, transition: "opacity 0.2s" }}>
+        <button type="submit" disabled={lookupLoading || !businessName.trim()} style={primaryBtn}>
           {lookupLoading ? "Finding..." : "Continue"}
         </button>
       </form>
 
-      <button onClick={handleStartAdminRegister} style={{ position: "absolute", bottom: "32px", right: "32px", width: "56px", height: "56px", borderRadius: "50%", border: "none", background: MEDICAL_BLUE, boxShadow: "0 4px 12px rgba(0,0,0,0.2)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 2 }} title="Register New Institution">
+      <button onClick={handleStartAdminRegister} style={{ position: "absolute", bottom: "32px", right: "32px", width: "56px", height: "56px", borderRadius: "50%", border: "none", background: MEDICAL_BLUE, boxShadow: "0 4px 12px rgba(0,122,255,0.3)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 2 }} title="Register New Institution">
         <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="8.5" cy="7" r="4" /><line x1="20" y1="8" x2="20" y2="14" /><line x1="23" y1="11" x2="17" y2="11" />
         </svg>
       </button>
-    </ScreenWrapper>
+    </AuthLayout>
   );
 }

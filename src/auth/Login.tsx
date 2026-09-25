@@ -10,7 +10,7 @@ const MEDICAL_BLUE = "#007AFF";
 const iosFont = "-apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif";
 
 export default function Login() {
-  const [loginStep, setLoginStep] = useState(1); // ✅ 1 = Institution, 2 = Username/Password
+  const [loginStep, setLoginStep] = useState(1); // 1 = Institution, 2 = Username/Password
   const [businessName, setBusinessName] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -26,7 +26,6 @@ export default function Login() {
   useEffect(() => {
     const initLogin = async () => {
       try {
-        // ✅ Simplified: Just try to get the version. If it fails (e.g. in browser), it ignores it.
         const version = await getVersion();
         setAppVersion(version);
       } catch (err) {
@@ -39,7 +38,7 @@ export default function Login() {
 
   if (redirectRoute) return <Navigate to={redirectRoute} replace />;
 
-  // ✅ Step 1: Fetch institution details from Supabase
+  // Step 1: Fetch institution details from Supabase
   async function handleContinue() {
     setMessage("");
     if (!businessName.trim()) {
@@ -70,7 +69,7 @@ export default function Login() {
     }
   }
 
-  // ✅ Step 2: Handle Login
+  // Step 2: Handle Login
   async function handleLogin() {
     setMessage("");
     if (!username.trim() || !password.trim()) {
@@ -83,7 +82,8 @@ export default function Login() {
       const result = await loginTenant({ 
         username, 
         password, 
-        business_name: businessName.trim() 
+        // ✅ FIX: Use the exact business name from the database to avoid case-sensitivity issues
+        business_name: publicSettings?.business_name || businessName.trim() 
       });
       processLoginResult(result);
     } catch (error: unknown) {
@@ -141,7 +141,7 @@ export default function Login() {
     opacity: loading ? 0.4 : 1, marginBottom: "12px",
   };
 
-  // ✅ Step 1 uses default bg. Step 2 uses Supabase bg (or default if empty).
+  // Step 1 uses default bg. Step 2 uses Supabase bg (or default if empty).
   const currentBg = loginStep === 2 && publicSettings?.login_background
     ? `url(${publicSettings.login_background}) center/cover no-repeat`
     : "#F2F2F7";
@@ -158,7 +158,6 @@ export default function Login() {
       <div style={{ flex: 1, display: "flex", justifyContent: "center", alignItems: "center", padding: "24px" }}>
         <div style={cardStyle}>
           
-          {/* ✅ Step 1 always shows loadlogo.png. Step 2 shows supabase logo or loadlogo.png */}
           <img 
             src={loginStep === 1 ? "/loadlogo.png" : (publicSettings?.logo || "/loadlogo.png")} 
             alt="App Logo" 

@@ -91,7 +91,6 @@ export default function App() {
                     setUpdateStatus("Restarting...");
                     await relaunch();
                 }
-                // If no update is available, it skips all of this and shows nothing.
             } catch (err) {
                 console.error('Tauri update check failed:', err);
                 setUpdateProgress(null); 
@@ -143,71 +142,23 @@ export default function App() {
     return (
         <DailyProvider>
             <BrowserRouter>
-                {/* UPDATE PROGRESS OVERLAY (Only shows if updateProgress is not null) */}
+                {/* UPDATE PROGRESS OVERLAY */}
                 {updateProgress !== null && (
                     <div style={{
-                        position: "fixed",
-                        top: 0,
-                        left: 0,
-                        width: "100%",
-                        height: "100%",
-                        background: "rgba(0,0,0,0.85)",
-                        display: "flex",
-                        flexDirection: "column",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        zIndex: 99999,
-                        color: "#fff",
+                        position: "fixed", top: 0, left: 0, width: "100%", height: "100%",
+                        background: "rgba(0,0,0,0.85)", display: "flex", flexDirection: "column",
+                        alignItems: "center", justifyContent: "center", zIndex: 99999, color: "#fff",
                         fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
                     }}>
-                        <div style={{
-                            width: "90%",
-                            maxWidth: "380px",
-                            textAlign: "center",
-                        }}>
+                        <div style={{ width: "90%", maxWidth: "380px", textAlign: "center" }}>
                             <div style={{ 
-                                width: "48px", 
-                                height: "48px", 
-                                border: "3px solid rgba(255,255,255,0.2)", 
-                                borderTopColor: "#007AFF", 
-                                borderRadius: "50%", 
-                                animation: "spin 0.8s linear infinite", 
-                                margin: "0 auto 24px" 
+                                width: "48px", height: "48px", border: "3px solid rgba(255,255,255,0.2)", 
+                                borderTopColor: "#007AFF", borderRadius: "50%", animation: "spin 0.8s linear infinite", margin: "0 auto 24px" 
                             }} />
-                            
-                            <h3 style={{ 
-                                margin: "0 0 8px", 
-                                fontSize: "18px", 
-                                fontWeight: 700, 
-                                color: "#fff",
-                                letterSpacing: "-0.2px"
-                            }}>
-                                System Update
-                            </h3>
-                            
-                            <p style={{ 
-                                margin: "0 0 24px", 
-                                fontSize: "14px", 
-                                color: "rgba(255,255,255,0.6)",
-                                fontWeight: 500
-                            }}>
-                                {updateStatus}
-                            </p>
-
-                            <div style={{ 
-                                width: "100%", 
-                                height: "4px", 
-                                background: "rgba(255,255,255,0.15)", 
-                                borderRadius: "2px", 
-                                overflow: "hidden" 
-                            }}>
-                                <div style={{ 
-                                    width: `${updateProgress}%`, 
-                                    height: "100%", 
-                                    background: "#007AFF", 
-                                    borderRadius: "2px", 
-                                    transition: "width 0.2s ease",
-                                }} />
+                            <h3 style={{ margin: "0 0 8px", fontSize: "18px", fontWeight: 700, color: "#fff" }}>System Update</h3>
+                            <p style={{ margin: "0 0 24px", fontSize: "14px", color: "rgba(255,255,255,0.6)", fontWeight: 500 }}>{updateStatus}</p>
+                            <div style={{ width: "100%", height: "4px", background: "rgba(255,255,255,0.15)", borderRadius: "2px", overflow: "hidden" }}>
+                                <div style={{ width: `${updateProgress}%`, height: "100%", background: "#007AFF", borderRadius: "2px", transition: "width 0.2s ease" }} />
                             </div>
                         </div>
                     </div>
