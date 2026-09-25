@@ -127,15 +127,25 @@ export default function Startup() {
           setUsername(userObj.username || "");
           setTenantId(userObj.tenantId || null);
           
+          // Load branding from localStorage for offline unlock
+          const savedBranding = localStorage.getItem("institutionBranding");
+          if (savedBranding) {
+            setBranding(JSON.parse(savedBranding));
+          }
+
           if (userObj.tenantId) {
             try {
               supabase.from('business_settings').select('business_name, logo, phone, login_background').eq('tenant_id', userObj.tenantId).maybeSingle().then(({ data }) => {
-                if (data) setBranding({ 
-                  businessName: data.business_name || "", 
-                  logo: data.logo || "", 
-                  phone: data.phone || "", 
-                  loginBackground: data.login_background || "" 
-                });
+                if (data) {
+                  const b = { 
+                    businessName: data.business_name || "", 
+                    logo: data.logo || "", 
+                    phone: data.phone || "", 
+                    loginBackground: data.login_background || "" 
+                  };
+                  setBranding(b);
+                  localStorage.setItem("institutionBranding", JSON.stringify(b));
+                }
               });
             } catch (e) {
               console.warn("Offline: Cannot fetch branding");
@@ -176,16 +186,16 @@ export default function Startup() {
       const { data: tenant } = await supabase.from("tenants").select("id").ilike("business_name", businessName.trim()).maybeSingle();
       if (tenant?.id) foundTenantId = tenant.id;
     } catch (err) {
-      console.warn("Network error, checking local DB for institution...");
+      console.warn("Network error, checking local storage for institution...");
     }
 
+    // ✅ FIX: Check localStorage for offline institution name
     if (!foundTenantId) {
-      try {
-        const { getUsers } = await import("../database/userDB");
-        const localUsers = await getUsers();
-        const localMatch = localUsers.find((u: any) => u.tenantId && u.tenantId.toLowerCase().includes(businessName.trim().toLowerCase()));
-        if (localMatch) foundTenantId = localMatch.tenantId ?? null;
-      } catch (e) { console.error("Local DB lookup failed", e); }
+      const savedInstName = localStorage.getItem("institutionName");
+      const savedInstId = localStorage.getItem("institutionTenantId");
+      if (savedInstName && savedInstId && savedInstName.toLowerCase() === businessName.trim().toLowerCase()) {
+        foundTenantId = savedInstId;
+      }
     }
 
     if (!foundTenantId) {
@@ -199,14 +209,24 @@ export default function Startup() {
     try {
       const { data: settings } = await supabase.from("business_settings").select("*").eq("tenant_id", foundTenantId).maybeSingle();
       if (settings) {
-        setBranding({ 
+        const b = { 
           businessName: settings.business_name || "", 
           logo: settings.logo || "", 
           phone: settings.phone || "", 
           loginBackground: settings.login_background || "" 
-        });
+        };
+        setBranding(b);
+        // ✅ Save to localStorage for offline use!
+        localStorage.setItem("institutionName", b.businessName || businessName.trim());
+        localStorage.setItem("institutionTenantId", foundTenantId);
+        localStorage.setItem("institutionBranding", JSON.stringify(b));
       }
-    } catch (e) { console.warn("Offline mode: Using default branding"); }
+    } catch (e) { 
+      console.warn("Offline mode: Using default branding");
+      // Load branding from localStorage if offline
+      const savedBranding = localStorage.getItem("institutionBranding");
+      if (savedBranding) setBranding(JSON.parse(savedBranding));
+    }
 
     setScreen("login");
     setLookupLoading(false);
