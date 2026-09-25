@@ -127,7 +127,6 @@ export default function Startup() {
           setUsername(userObj.username || "");
           setTenantId(userObj.tenantId || null);
           
-          // Load branding from localStorage for offline unlock
           const savedBranding = localStorage.getItem("institutionBranding");
           if (savedBranding) {
             setBranding(JSON.parse(savedBranding));
@@ -188,9 +187,9 @@ export default function Startup() {
       if (tenant?.id) {
         foundTenantId = tenant.id;
         
-        // ✅ FIX: Save to localStorage IMMEDIATELY when found online!
+        // ✅ FIX: Save to localStorage IMMEDIATELY when found online! Use tenant.id to avoid TS null error.
         localStorage.setItem("institutionName", tenant.business_name || businessName.trim());
-        localStorage.setItem("institutionTenantId", foundTenantId);
+        localStorage.setItem("institutionTenantId", tenant.id);
       }
     } catch (err) {
       console.warn("Network error, checking local storage for institution...");
