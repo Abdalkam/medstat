@@ -1,0 +1,11 @@
+{
+  "version": "1.0.23",
+  "notes": "Release v1.0.23",
+  "pub_date": "2025-05-24T12:00:00Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSRGpLU1lZNUd4WGtqL1NENnNBU3RBcDJWbmhtc2VwY1krWlppeXRYamc4WTNmMkZzWWtnOFJ0cjBNck5TMHdWd29BR29xT2dPZVRscWtpQ00rekNoMlZybU13aTVYeUFzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwMzQ1MTI3CWZpbGU6U21hcnRQYWdlc18xLjAuMjNfeDY0LXNldHVwLmV4ZQpXbzRPWGxkVTJxN0xkekJweXJWRGU0d0NuOGllNjRnWHg3aE10THgwNlNyNFVqdUdQNHhXME01eVNqVkVXRGtHdlFhNGx0V0NEdWJvWGxNR0Vub2NCdz09Cg==",
+      "url": "https://github.com/Abdalkam/medstat/releases/download/v1.0.18/SmartPages_1.0.18_x64-setup.exe"
+    }
+  }
+}
