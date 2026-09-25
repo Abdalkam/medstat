@@ -52,19 +52,23 @@ export default function App() {
     const [updateStatus, setUpdateStatus] = useState<string>("");
     const [updateError, setUpdateError] = useState<string | null>(null);
 
-    // ✅ TAURI AUTO-UPDATE
+    // ✅ TAURI AUTO-UPDATE WITH DEBUG BOXES
     useEffect(() => {
         const checkTauriUpdate = async () => {
             if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) return;
+
+            // 🟢 FORCE A GREEN BOX TO APPEAR IMMEDIATELY
+            setUpdateError("1. App opened. Code is running. Waiting 5 seconds to check..."); 
 
             try {
                 const { check } = await import('@tauri-apps/plugin-updater');
                 const { relaunch } = await import('@tauri-apps/plugin-process');
 
                 const update = await check();
+                
                 // ✅ FIXED: In Tauri v2, if 'update' exists, an update is available!
                 if (update) {
-                    setUpdateError(null); // Clear any old errors
+                    setUpdateError(null); // Clear the debug box
                     let contentLength = 0;
                     let downloaded = 0;
 
@@ -93,10 +97,14 @@ export default function App() {
                     
                     setUpdateStatus("Restarting...");
                     await relaunch();
+                } else {
+                    // 🟠 IF NO UPDATE, SHOW A YELLOW BOX
+                    setUpdateError("2. Checked GitHub. No update found. App is up to date.");
                 }
             } catch (err) {
                 console.error('Tauri update check failed:', err);
-                setUpdateError(err instanceof Error ? err.message : String(err));
+                // 🔴 IF ERROR, SHOW A RED BOX
+                setUpdateError("3. ERROR CAUGHT: " + (err instanceof Error ? err.message : String(err)));
                 setUpdateProgress(null); 
             }
         };
@@ -143,17 +151,22 @@ export default function App() {
         return <>{children}</>;
     }, [currentUser]);
 
+    // Dynamic background color for the debug box
+    let debugBoxBg = "red";
+    if (updateError?.startsWith("1.")) debugBoxBg = "green";
+    if (updateError?.startsWith("2.")) debugBoxBg = "orange";
+
     return (
         <DailyProvider>
             <BrowserRouter>
-                {/* 🔴 ERROR OVERLAY (Shows if update fails) */}
+                {/* 🔴🟢🟠 DEBUG OVERLAY */}
                 {updateError && (
                     <div style={{
-                        position: "fixed", top: 20, left: 20, right: 20, background: "red", color: "white",
+                        position: "fixed", top: 20, left: 20, right: 20, background: debugBoxBg, color: "white",
                         padding: "16px", borderRadius: "8px", zIndex: 999999, boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
                         fontWeight: "bold", fontSize: "14px"
                     }}>
-                        Update Error: {updateError}
+                        {updateError}
                     </div>
                 )}
 
