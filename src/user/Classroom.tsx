@@ -371,5 +371,7 @@ function VideoTile({ videoTrack }: { videoTrack: MediaStreamTrack | null }) {
     videoRef.current.srcObject = stream;
     return () => { if (videoRef.current) videoRef.current.srcObject = null; };
   }, [videoTrack]);
-  return <video ref={videoRef} autoPlay muted playsInline style={{ width: "100%", height: "100%", objectFit: "cover", transform: "scaleX(-1)" }} />;
+  
+  // ✅ Removed 'muted' so the trainer's audio plays!
+  return <video ref={videoRef} autoPlay playsInline style={{ width: "100%", height: "100%", objectFit: "cover", transform: "scaleX(-1)" }} />;
 }

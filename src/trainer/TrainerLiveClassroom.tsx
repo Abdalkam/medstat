@@ -210,6 +210,7 @@ export default function TrainerLiveClassroom() {
     }
   }
 
+  // ✅ FIXED: Daily.co join method to use startVideoOff instead of invalid boolean properties
   async function toggleMic() {
     if (!daily) return alert("Audio room is not connected yet.");
     if (!isVoiceJoined) {
@@ -217,7 +218,7 @@ export default function TrainerLiveClassroom() {
         setIsConnecting(true);
         const roomUrl = await getDailyRoomUrl();
         if (!roomUrl) return;
-        await daily.join({ url: roomUrl, audioSource: true, videoSource: false });
+        await daily.join({ url: roomUrl, startVideoOff: true });
         setIsVoiceJoined(true); setIsMicOn(true);
       } catch (e: unknown) {
         const err = e as { errorMsg?: string; message?: string };
@@ -229,6 +230,7 @@ export default function TrainerLiveClassroom() {
     try { const n = !isMicOn; await daily.setLocalAudio(n); setIsMicOn(n); } catch (e) { console.error(e); }
   }
 
+  // ✅ FIXED: Daily.co join method
   async function toggleCam() {
     if (!daily) return alert("Audio room is not connected yet.");
     if (!isVoiceJoined) {
@@ -236,7 +238,7 @@ export default function TrainerLiveClassroom() {
         setIsConnecting(true);
         const roomUrl = await getDailyRoomUrl();
         if (!roomUrl) return;
-        await daily.join({ url: roomUrl, audioSource: true, videoSource: true });
+        await daily.join({ url: roomUrl });
         await daily.setLocalVideo(true);
         setIsVoiceJoined(true); setIsMicOn(true); setIsCamOn(true);
       } catch (e: unknown) {
@@ -387,6 +389,7 @@ export default function TrainerLiveClassroom() {
     } catch (error) { console.error("Failed to mute student:", error); }
   }
 
+  // ✅ FIXED: Daily.co join method
   async function startSession() {
     if (!courseId || !tenantId) return;
     const { data: existing } = await supabase.from("live_session").select("id").eq("course_id", courseId).maybeSingle();
@@ -416,7 +419,7 @@ export default function TrainerLiveClassroom() {
         setIsConnecting(true);
         const roomUrl = await getDailyRoomUrl();
         if (!roomUrl) return;
-        await daily.join({ url: roomUrl, audioSource: true, videoSource: false });
+        await daily.join({ url: roomUrl, startVideoOff: true });
         setIsVoiceJoined(true); setIsMicOn(true);
       } catch (e: unknown) {
         const err = e as { errorMsg?: string; message?: string };
