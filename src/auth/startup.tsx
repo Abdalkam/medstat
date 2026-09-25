@@ -183,13 +183,20 @@ export default function Startup() {
     let foundTenantId: string | null = null;
 
     try {
-      const { data: tenant } = await supabase.from("tenants").select("id").ilike("business_name", businessName.trim()).maybeSingle();
-      if (tenant?.id) foundTenantId = tenant.id;
+      // 1. Try online first
+      const { data: tenant } = await supabase.from("tenants").select("id, business_name").ilike("business_name", businessName.trim()).maybeSingle();
+      if (tenant?.id) {
+        foundTenantId = tenant.id;
+        
+        // ✅ FIX: Save to localStorage IMMEDIATELY when found online!
+        localStorage.setItem("institutionName", tenant.business_name || businessName.trim());
+        localStorage.setItem("institutionTenantId", foundTenantId);
+      }
     } catch (err) {
       console.warn("Network error, checking local storage for institution...");
     }
 
-    // ✅ FIX: Check localStorage for offline institution name
+    // 2. If online failed, check local storage
     if (!foundTenantId) {
       const savedInstName = localStorage.getItem("institutionName");
       const savedInstId = localStorage.getItem("institutionTenantId");
@@ -206,6 +213,7 @@ export default function Startup() {
 
     setTenantId(foundTenantId);
 
+    // Fetch branding (Online only)
     try {
       const { data: settings } = await supabase.from("business_settings").select("*").eq("tenant_id", foundTenantId).maybeSingle();
       if (settings) {
@@ -216,14 +224,10 @@ export default function Startup() {
           loginBackground: settings.login_background || "" 
         };
         setBranding(b);
-        // ✅ Save to localStorage for offline use!
-        localStorage.setItem("institutionName", b.businessName || businessName.trim());
-        localStorage.setItem("institutionTenantId", foundTenantId);
         localStorage.setItem("institutionBranding", JSON.stringify(b));
       }
     } catch (e) { 
       console.warn("Offline mode: Using default branding");
-      // Load branding from localStorage if offline
       const savedBranding = localStorage.getItem("institutionBranding");
       if (savedBranding) setBranding(JSON.parse(savedBranding));
     }
