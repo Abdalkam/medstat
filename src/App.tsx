@@ -50,7 +50,7 @@ export default function App() {
 
     const [updateProgress, setUpdateProgress] = useState<number | null>(null);
     const [updateStatus, setUpdateStatus] = useState<string>("");
-    const [updateError, setUpdateError] = useState<string | null>(null); // ✅ Added Error State
+    const [updateError, setUpdateError] = useState<string | null>(null);
 
     // ✅ TAURI AUTO-UPDATE
     useEffect(() => {
@@ -62,7 +62,8 @@ export default function App() {
                 const { relaunch } = await import('@tauri-apps/plugin-process');
 
                 const update = await check();
-                if (update?.available) {
+                // ✅ FIXED: In Tauri v2, if 'update' exists, an update is available!
+                if (update) {
                     setUpdateError(null); // Clear any old errors
                     let contentLength = 0;
                     let downloaded = 0;
@@ -95,7 +96,6 @@ export default function App() {
                 }
             } catch (err) {
                 console.error('Tauri update check failed:', err);
-                // ✅ Show the error visually on the screen!
                 setUpdateError(err instanceof Error ? err.message : String(err));
                 setUpdateProgress(null); 
             }
