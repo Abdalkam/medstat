@@ -14,7 +14,6 @@ const iosFont = "-apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif";
 
 type AppScreen = "main" | "login" | "admin_sms" | "admin_otp" | "admin_register";
 
-// ✅ Premium Reusable Auth Layout
 const AuthLayout = ({ children, background, logo, version, showBack, onBack, watermark }: { 
   children: React.ReactNode, 
   background?: string, 
@@ -45,7 +44,6 @@ const AuthLayout = ({ children, background, logo, version, showBack, onBack, wat
       @keyframes scrollBg { 0% { background-position: 0px 0px; } 100% { background-position: 120px 120px; } }
     `}</style>
     
-    {/* ✅ Animated Watermark Background (using loadlogo.png) */}
     {watermark && (
       <div style={{
         position: "absolute",
@@ -59,7 +57,6 @@ const AuthLayout = ({ children, background, logo, version, showBack, onBack, wat
       }} />
     )}
 
-    {/* Dark overlay for Supabase custom backgrounds */}
     {!watermark && background && <div style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.4)", zIndex: 0 }} />}
 
     {showBack && onBack && (
@@ -68,7 +65,6 @@ const AuthLayout = ({ children, background, logo, version, showBack, onBack, wat
       </button>
     )}
 
-    {/* Glassmorphism Card */}
     <div style={{ 
       position: "relative", 
       zIndex: 1, 
@@ -132,14 +128,18 @@ export default function Startup() {
           setTenantId(userObj.tenantId || null);
           
           if (userObj.tenantId) {
-            supabase.from('business_settings').select('business_name, logo, phone, login_background').eq('tenant_id', userObj.tenantId).maybeSingle().then(({ data }) => {
-              if (data) setBranding({ 
-                businessName: data.business_name || "", 
-                logo: data.logo || "", 
-                phone: data.phone || "", 
-                loginBackground: data.login_background || "" 
+            try {
+              supabase.from('business_settings').select('business_name, logo, phone, login_background').eq('tenant_id', userObj.tenantId).maybeSingle().then(({ data }) => {
+                if (data) setBranding({ 
+                  businessName: data.business_name || "", 
+                  logo: data.logo || "", 
+                  phone: data.phone || "", 
+                  loginBackground: data.login_background || "" 
+                });
               });
-            });
+            } catch (e) {
+              console.warn("Offline: Cannot fetch branding");
+            }
           }
         }
       } catch {
@@ -169,16 +169,35 @@ export default function Startup() {
     setLookupError("");
     if (!businessName.trim()) return setLookupError("Please enter your institution name");
     setLookupLoading(true);
+    
+    let foundTenantId: string | null = null;
+
     try {
-      const { data: tenant, error } = await supabase.from("tenants").select("id").ilike("business_name", businessName.trim()).maybeSingle();
-      if (error || !tenant?.id) return setLookupError("Institution not found. Check the spelling or ask your Admin.");
-      setTenantId(tenant.id);
-      
-      const { data: settings } = await supabase.from("business_settings")
-        .select("business_name, logo, phone, login_background")
-        .eq("tenant_id", tenant.id)
-        .maybeSingle();
-        
+      const { data: tenant } = await supabase.from("tenants").select("id").ilike("business_name", businessName.trim()).maybeSingle();
+      if (tenant?.id) foundTenantId = tenant.id;
+    } catch (err) {
+      console.warn("Network error, checking local DB for institution...");
+    }
+
+    if (!foundTenantId) {
+      try {
+        const { getUsers } = await import("../database/userDB");
+        const localUsers = await getUsers();
+        const localMatch = localUsers.find((u: any) => u.tenantId && u.tenantId.toLowerCase().includes(businessName.trim().toLowerCase()));
+        if (localMatch) foundTenantId = localMatch.tenantId ?? null;
+      } catch (e) { console.error("Local DB lookup failed", e); }
+    }
+
+    if (!foundTenantId) {
+      setLookupError("Institution not found. Please check the name or connect to the internet.");
+      setLookupLoading(false);
+      return;
+    }
+
+    setTenantId(foundTenantId);
+
+    try {
+      const { data: settings } = await supabase.from("business_settings").select("*").eq("tenant_id", foundTenantId).maybeSingle();
       if (settings) {
         setBranding({ 
           businessName: settings.business_name || "", 
@@ -187,13 +206,10 @@ export default function Startup() {
           loginBackground: settings.login_background || "" 
         });
       }
+    } catch (e) { console.warn("Offline mode: Using default branding"); }
 
-      setScreen("login");
-    } catch (err: any) {
-      setLookupError(err.message || "Network error.");
-    } finally {
-      setLookupLoading(false);
-    }
+    setScreen("login");
+    setLookupLoading(false);
   }
 
   async function handleLogin() {
@@ -201,9 +217,10 @@ export default function Startup() {
     if (!username.trim() || !password.trim()) return setMessage("Please enter username and password");
     if (!tenantId) return setMessage("Session error. Please go back and re-select institution.");
 
+    setLoading(true);
+    isLoggingIn.current = true;
+    
     try {
-      setLoading(true);
-      isLoggingIn.current = true;
       try {
         const result = await loginTenant({ tenantId, username, password });
         const safeUser = {
@@ -216,43 +233,46 @@ export default function Startup() {
         localStorage.setItem("currentUser", JSON.stringify(safeUser));
         localStorage.setItem("authToken", result.authToken);
         window.dispatchEvent(new Event("authStateChanged"));
+        
         enableSyncHooks();
         startPeriodicPull(60000);
         if (safeUser.tenantId) {
           pullAllTenantData(safeUser.tenantId).catch(() => {});
           pullSettings().catch(() => {});
         }
-        if (safeUser.role === "admin") setRedirectRoute("/admin");
-        else if (safeUser.role === "trainer") setRedirectRoute("/trainer");
-        else setRedirectRoute("/user");
+        
+        redirectUser(safeUser.role);
         return;
       } catch (backendError) {
-        console.warn("Backend login failed, trying offline...", backendError);
+        console.warn("Backend login failed, trying offline local DB login...", backendError);
       }
 
       const user = await loginUser(username, password);
-      if (!user) throw new Error("Invalid username or password");
+      if (!user) throw new Error("Invalid username or password (Offline Mode)");
 
       const safeUser = {
         id: user.id, username: user.username, email: user.email || "", phone: user.phone || "",
-        profilePic: user.profilePic || "", role: user.role, tenantId: (user as any).tenant_id || (user as any).tenantId,
-        assignedCourses: user.assignedCourses || [], createdAt: user.createdAt, synced: user.synced || false
+        profilePic: user.profilePic || "", role: user.role, tenantId: user.tenantId,
+        assignedCourses: user.assignedCourses || [], createdAt: user.createdAt, synced: false
       };
+      
       localStorage.setItem("currentUser", JSON.stringify(safeUser));
       localStorage.setItem("authToken", "offline-mode-pending-sync");
       window.dispatchEvent(new Event("authStateChanged"));
-      enableSyncHooks();
-      startPeriodicPull(60000);
-      try { await pullAllTenantData(safeUser.tenantId); } catch(e) { console.error(e); }
-      if (user.role === "admin") setRedirectRoute("/admin");
-      else if (user.role === "trainer") setRedirectRoute("/trainer");
-      else setRedirectRoute("/user");
+      
+      redirectUser(safeUser.role);
     } catch (error: any) {
       isLoggingIn.current = false;
       setMessage(error.message || "Login failed");
     } finally {
       setLoading(false);
     }
+  }
+
+  function redirectUser(role: string) {
+    if (role === "admin") setRedirectRoute("/admin");
+    else if (role === "trainer") setRedirectRoute("/trainer");
+    else setRedirectRoute("/user");
   }
 
   if (redirectRoute) return <Navigate to={redirectRoute} replace />;
@@ -269,7 +289,6 @@ export default function Startup() {
     opacity: loading ? 0.4 : 1, marginBottom: "0", boxShadow: "0 4px 12px rgba(0,122,255,0.3)"
   };
 
-  // Admin Auth Flow Routing
   if (screen === "admin_sms") return <PhoneEntry onSent={handleSmsSent} onBack={() => setScreen("main")} />;
   if (screen === "admin_otp") return <VerifyCode phone={phoneNumber} onVerified={handleOtpVerified} onBack={() => setScreen("admin_sms")} />;
   if (screen === "admin_register") return <RegisterAdmin phone={phoneNumber} tempToken={tempToken || ""} onComplete={handleAdminCreated} onBack={() => setScreen("admin_otp")} />;
@@ -325,9 +344,7 @@ export default function Startup() {
     );
   }
 
-  // Main Screen
   return (
-    // ✅ CHANGED: Watermark uses loadlogo.png, card uses loadlogo.png
     <AuthLayout watermark logo="/loadlogo.png" version={appVersion}>
       <h1 style={{ textAlign: "center", fontSize: "24px", color: "#1C1C1E", fontWeight: "700", marginBottom: "8px" }}>Welcome</h1>
       <p style={{ textAlign: "center", fontSize: "15px", color: "#8E8E93", marginBottom: "24px" }}>Enter your institution to continue</p>

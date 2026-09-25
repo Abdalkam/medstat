@@ -1,4 +1,3 @@
-// src/user/UserDashboard.tsx
 import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "../auth/supabase";
@@ -109,6 +108,9 @@ export default function UserDashboard() {
 
       setCurrentUser(savedUser);
 
+      let fetchedCourses: CourseData[] = [];
+
+      // ✅ 1. Try fetching from Supabase first
       try {
         const { data, error } = await supabase
           .from("enrollments")
@@ -116,16 +118,29 @@ export default function UserDashboard() {
           .eq("user_id", savedUser.id)
           .eq("status", "active");
 
-        if (!cancelled && !error && data) {
-          setCourses(
-            data
-              .map((e: any) => e.courses as unknown as CourseData)
-              .filter(Boolean)
-          );
+        if (!error && data) {
+          fetchedCourses = data.map((e: any) => e.courses as unknown as CourseData).filter(Boolean);
         }
       } catch (err) {
-        console.error("Courses fetch exception:", err);
+        console.error("Network fetch failed, trying local DB...", err);
       }
+
+      // ✅ 2. If Supabase failed or returned nothing, try local DB
+      if (fetchedCourses.length === 0) {
+        try {
+          const courseDB = await import("../database/courseDB") as any;
+          if (courseDB.getCoursesForUser) {
+            const localCourses = await courseDB.getCoursesForUser(savedUser.id);
+            if (localCourses && localCourses.length > 0) {
+              fetchedCourses = localCourses;
+            }
+          }
+        } catch (e) {
+          console.warn("No local courses found in DB.");
+        }
+      }
+
+      if (!cancelled) setCourses(fetchedCourses);
 
       const activeSession = localStorage.getItem("activeAttendanceCourseId");
       if (!cancelled) setActiveAttendanceCourseId(activeSession);
@@ -247,7 +262,6 @@ export default function UserDashboard() {
 
   return (
     <div style={{ minHeight: "100vh", background: C.card, fontFamily: FONT, WebkitFontSmoothing: "antialiased", MozOsxFontSmoothing: "grayscale" }}>
-      {/* SINGLE APP BAR */}
       <div style={{ borderBottom: `1px solid ${C.separator}`, padding: "12px 24px", position: "sticky", top: 0, zIndex: 10, width: "100%", boxSizing: "border-box", background: C.card }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, width: "100%" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12, flex: 1, minWidth: 0 }}>
@@ -275,7 +289,6 @@ export default function UserDashboard() {
         </div>
       </div>
 
-      {/* MAIN CONTENT */}
       <div style={{ flex: 1, padding: "40px 48px 40px", width: "100%", boxSizing: "border-box" }}>
         <h2 style={{ ...TS.caption, margin: "0 0 20px 0" }}>My Courses</h2>
 
