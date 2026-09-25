@@ -49,9 +49,8 @@ export default function App() {
     });
 
     const [updateProgress, setUpdateProgress] = useState<number | null>(null);
-    const [updateStatus, setUpdateStatus] = useState<string>("");
 
-    // ✅ TAURI AUTO-UPDATE
+    // ✅ MINIMAL TAURI AUTO-UPDATE
     useEffect(() => {
         const checkTauriUpdate = async () => {
             if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) return;
@@ -65,12 +64,10 @@ export default function App() {
                     let contentLength = 0;
                     let downloaded = 0;
 
-                    // Download and install
                     await update.downloadAndInstall((event) => {
                         switch (event.event) {
                             case 'Started':
                                 contentLength = event.data.contentLength as number;
-                                setUpdateStatus("Preparing update...");
                                 setUpdateProgress(0);
                                 break;
                             case 'Progress':
@@ -78,22 +75,19 @@ export default function App() {
                                 if (contentLength > 0) {
                                     const percent = Math.round((downloaded / contentLength) * 100);
                                     setUpdateProgress(percent);
-                                    setUpdateStatus(`Downloading ${percent}%`);
                                 }
                                 break;
                             case 'Finished':
-                                setUpdateStatus("Installing update...");
                                 setUpdateProgress(100);
                                 break;
                         }
                     });
                     
-                    setUpdateStatus("Restarting...");
                     await relaunch();
                 }
             } catch (err) {
                 console.error('Tauri update check failed:', err);
-                setUpdateProgress(null); // Hide progress bar silently on error
+                setUpdateProgress(null);
             }
         };
 
@@ -142,28 +136,25 @@ export default function App() {
     return (
         <DailyProvider>
             <BrowserRouter>
-                {/* UPDATE PROGRESS OVERLAY */}
+                {/* ✅ MINIMAL UPDATE PROGRESS BAR (Bottom of screen, non-blocking) */}
                 {updateProgress !== null && (
-                    <div style={{
-                        position: "fixed", top: 0, left: 0, width: "100%", height: "100%",
-                        background: "rgba(0,0,0,0.85)", display: "flex", flexDirection: "column",
-                        alignItems: "center", justifyContent: "center", zIndex: 99999, color: "#fff",
-                        fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+                    <div style={{ 
+                        position: "fixed", 
+                        bottom: 0, 
+                        left: 0, 
+                        width: "100%", 
+                        height: "3px", 
+                        background: "rgba(0,0,0,0.1)", 
+                        zIndex: 999999 
                     }}>
-                        <div style={{ width: "90%", maxWidth: "380px", textAlign: "center" }}>
-                            <div style={{ 
-                                width: "48px", height: "48px", border: "3px solid rgba(255,255,255,0.2)", 
-                                borderTopColor: "#007AFF", borderRadius: "50%", animation: "spin 0.8s linear infinite", margin: "0 auto 24px" 
-                            }} />
-                            <h3 style={{ margin: "0 0 8px", fontSize: "18px", fontWeight: 700, color: "#fff" }}>System Update</h3>
-                            <p style={{ margin: "0 0 24px", fontSize: "14px", color: "rgba(255,255,255,0.6)", fontWeight: 500 }}>{updateStatus}</p>
-                            <div style={{ width: "100%", height: "4px", background: "rgba(255,255,255,0.15)", borderRadius: "2px", overflow: "hidden" }}>
-                                <div style={{ width: `${updateProgress}%`, height: "100%", background: "#007AFF", borderRadius: "2px", transition: "width 0.2s ease" }} />
-                            </div>
-                        </div>
+                        <div style={{ 
+                            width: `${updateProgress}%`, 
+                            height: "100%", 
+                            background: "#007AFF", 
+                            transition: "width 0.2s ease" 
+                        }} />
                     </div>
                 )}
-                <style>{`@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }`}</style>
 
                 {/* ✅ SHOW SYNC LOADING SCREEN FIRST */}
                 {!isSynced ? (
