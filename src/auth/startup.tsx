@@ -220,7 +220,9 @@ export default function Startup() {
     // 2. If not found locally, try Supabase online
     let foundTenantId: string | null = null;
     try {
-      const { data: tenant } = await supabase.from("tenants").select("id, business_name").ilike("business_name", enteredName).maybeSingle();
+      // FIX: Added % wildcards to allow partial name matching (e.g., "Medstat" finds "Medstat Hospital")
+      const { data: tenant } = await supabase.from("tenants").select("id, business_name").ilike("business_name", `%${enteredName}%`).maybeSingle();
+      
       if (tenant?.id) {
         foundTenantId = tenant.id;
         localStorage.setItem("institutionName", tenant.business_name || businessName.trim());
