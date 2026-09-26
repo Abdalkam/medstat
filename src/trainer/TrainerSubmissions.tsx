@@ -62,7 +62,10 @@ export default function TrainerSubmissions() {
       try {
         // 1. Load from Local Storage INSTANTLY
         const localSettings = localStorage.getItem("localBusinessSettings");
-        if (localSettings) setBusiness(JSON.parse(localSettings));
+        if (localSettings) {
+          const parsed = JSON.parse(localSettings);
+          setBusiness({ business_name: parsed.businessName || null, phone: parsed.phone || null, logo: parsed.logo || null });
+        }
 
         // 2. Try Supabase
         const { data } = await supabase.from("business_settings").select("business_name, phone, logo").eq("tenant_id", currentUser.tenantId).maybeSingle();
