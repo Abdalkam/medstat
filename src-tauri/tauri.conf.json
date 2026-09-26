@@ -1,6 +1,6 @@
 {
     "productName": "SmartPages",
-    "version": "1.0.62",
+    "version": "1.0.63",
     "identifier": "com.medstat.app",
     "build": {
         "frontendDist": "../dist",
@@ -42,17 +42,8 @@
             "active": true,
             "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDVFQjE5MTYzOThBNDhDNDMKUldSRGpLU1lZNUd4WHBTQ3V5V08vM3JYUEhydGVTZ2p6WXFaeEZvU1NFSUptYXVyeU12ejZ3VnAK",
             "endpoints": [
-                "https://raw.githubusercontent.com/Abdalkam/medstat-updates/main/latest.json"
+                "https://github.com/Abdalkam/medstat/releases/latest/download/latest.json"
             ]
         }
     }
 }
-
-
-
-
-
-
-
-
-
