@@ -16,6 +16,14 @@ export default function AdminLayout({ user }: Props) {
     useEffect(() => {
         const loadSettings = async () => {
             if (!user?.tenantId) return;
+            
+            // 1. Load from Local Storage INSTANTLY
+            const localSettings = localStorage.getItem("localBusinessSettings");
+            if (localSettings) {
+                setSettings(JSON.parse(localSettings));
+            }
+
+            // 2. Try Supabase
             try {
                 const { data: s } = await supabase
                     .from("business_settings")
@@ -66,13 +74,16 @@ export default function AdminLayout({ user }: Props) {
         textPrimary: "#1C1C1E",
         textTertiary: "#8E8E93",
         medBlue: "#0A84FF",
+        medBlueBg: "#E8F2FF",
         purple: "#AF52DE",
         purpleBg: "#F5F0FF",
         red: "#FF3B30",
         redBg: "#FFEFEE",
+        green: "#34C759",
+        greenBg: "#EAF9EE",
     };
 
-    const businessName = settings?.business_name || "";
+    const businessName = settings?.businessName || settings?.business_name || "";
     const businessLogo = settings?.logo;
     const phone = settings?.phone || "";
 
@@ -182,6 +193,29 @@ export default function AdminLayout({ user }: Props) {
                             {user?.username}
                         </span>
                     </div>
+
+                    {/* ✅ ADDED: SMS Button */}
+                    <button
+                        onClick={() => navigate("/admin/sms")}
+                        style={{
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            width: "36px",
+                            height: "36px",
+                            borderRadius: "9px",
+                            background: C.greenBg,
+                            border: "none",
+                            cursor: "pointer",
+                            color: C.green,
+                            flexShrink: 0,
+                        }}
+                        title="Send SMS"
+                    >
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+                        </svg>
+                    </button>
 
                     <button
                         onClick={() => navigate("/admin/settings")}

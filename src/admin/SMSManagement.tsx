@@ -57,7 +57,7 @@ export default function SMSManagement() {
     const phone = customPhone.trim();
 
     if (!phone) {
-      setStatus({ type: "error", text: "Please select a user or enter a phone number." });
+      setStatus({ type: "error", text: "Please enter a phone number." });
       return;
     }
 
@@ -148,7 +148,7 @@ export default function SMSManagement() {
 
       <div style={{ width: "100%", maxWidth: "600px", margin: "0 auto", display: "flex", flexDirection: "column", gap: "24px" }}>
 
-        <p style={{ margin: 0, color: LABEL_COLOR, fontSize: "14px", fontWeight: "400" }}>Notify users via text message</p>
+        <p style={{ margin: 0, color: LABEL_COLOR, fontSize: "14px", fontWeight: "400" }}>Send a text message to anyone, whether they are registered on the app or not.</p>
 
         {status.type !== "idle" && (
           <div style={{
@@ -168,16 +168,17 @@ export default function SMSManagement() {
         )}
 
         <div style={{ display: "flex", flexDirection: "column" }}>
-          <label style={labelStyle}>Recipient</label>
+          <label style={labelStyle}>Recipient Phone Number</label>
           <div style={cardStyle}>
             <div style={{ borderBottom: `0.5px solid ${SEPARATOR}`, position: "relative" }}>
               <select
-                style={{ ...iosInput, appearance: "none", cursor: "pointer", paddingRight: "36px" }}
+                style={{ ...iosInput, appearance: "none", cursor: "pointer", paddingRight: "36px", color: LABEL_COLOR }}
                 value={selectedUserId} onChange={(e) => handleSelectUser(e.target.value)}
               >
-                <option value="">Select a user...</option>
+                {/* ✅ UPDATED: Clearer text that it's optional */}
+                <option value="">Select a registered user (Optional)</option>
                 {users.map((user) => (
-                  <option key={user.id} value={user.id}>
+                  <option key={user.id} value={user.id} style={{ color: "#1C1C1E" }}>
                     {user.username} ({user.phone})
                   </option>
                 ))}
@@ -188,8 +189,9 @@ export default function SMSManagement() {
             </div>
             <div>
               <input
-                style={iosInput}
-                placeholder="Enter number (+CountryCode...)"
+                style={{ ...iosInput, fontWeight: "500" }}
+                // ✅ UPDATED: Clearer placeholder
+                placeholder="Or enter ANY number here (+CountryCode...)"
                 type="tel"
                 value={customPhone}
                 onChange={(e) => handlePhoneChange(e.target.value)}
