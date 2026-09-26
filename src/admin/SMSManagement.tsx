@@ -1,8 +1,7 @@
 import { useState, useEffect } from "react";
 import { getUsers } from "../database/userDB";
 import { db } from "../database/db";
-
-const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:3001";
+import { sendSms } from "../api/smsApi"; // <-- Borrowed leaf!
 
 const C = {
   bg: "#F2F2F7",
@@ -67,35 +66,11 @@ export default function SMSsettings() {
     setSuccess(false);
 
     try {
-      const token = localStorage.getItem("authToken");
-      
-      // Borrowed from Startup.tsx: Prevent action if in offline mode
-      if (!token || token === "offline-mode-pending-sync") {
-        setError("You must be online and logged in to send SMS.");
-        return;
-      }
-
       // Borrowed from PhoneEntry.tsx: Clean phone numbers before sending
       const cleanRecipients = selectedPhones.map(p => p.replace(/\s/g, "").trim());
 
-      const response = await fetch(`${API_BASE_URL}/api/sms/send`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          recipients: cleanRecipients,
-          message: message.trim(),
-        }),
-      });
-
-      if (!response.ok) {
-        const errData = await response.json().catch(() => ({}));
-        throw new Error(errData.error || "Failed to send SMS");
-      }
-
-      const data = await response.json();
+      // Borrowed from RegisterAdmin.tsx: Call the abstracted API function
+      const data = await sendSms(cleanRecipients, message.trim());
       
       if (data.logs && data.logs.length > 0) {
         await db.smsLogs.bulkAdd(data.logs.map((log: any) => ({
@@ -110,8 +85,9 @@ export default function SMSsettings() {
       
       setTimeout(() => setSuccess(false), 3000);
     } catch (err: any) {
+      // Borrowed exact error catching from PhoneEntry.tsx
       console.error("Send SMS error:", err);
-      setError(err.message || "An error occurred while sending SMS.");
+      setError(err.message || "Failed to send SMS. Check your network.");
     } finally {
       setSending(false);
     }
