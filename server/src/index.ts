@@ -125,7 +125,6 @@ app.post("/api/auth/send-code", async (req: Request, res: Response) => {
   const { phone: rawPhone } = req.body;
   if (!rawPhone) return res.status(400).json({ error: "Phone is required" });
   
-  // Format the phone number strictly
   const phone = formatPhoneNumber(rawPhone);
 
   const code = Math.floor(100000 + Math.random() * 900000).toString();
@@ -143,7 +142,6 @@ app.post("/api/auth/send-code", async (req: Request, res: Response) => {
       return res.json({ sent: true });
     }
     
-    // If AT API returns a specific error string in recipients
     const atError = recipients?.[0]?.status || "Failed to send SMS.";
     return res.status(500).json({ error: atError });
   } catch (error: any) {
@@ -162,7 +160,6 @@ app.post("/api/auth/verify-code", async (req: Request, res: Response) => {
   const { phone: rawPhone, code } = req.body;
   if (!rawPhone || !code) return res.status(400).json({ error: "Missing fields" });
   
-  // Format the phone number exactly as it was formatted during send-code
   const phone = formatPhoneNumber(rawPhone);
   
   const storedOtp = otpStore.get(phone);
@@ -269,6 +266,60 @@ app.post("/api/auth/login", async (req: Request, res: Response) => {
       profile_pic: user.profile_pic,
     },
   });
+});
+
+// ==========================================
+// 🚀 SMS BULK/CUSTOM SEND ENDPOINT
+// ==========================================
+app.post("/api/sms/send", requireAuth, async (req: Request, res: Response) => {
+  const { _auth } = req.body;
+  const { recipients, message } = req.body;
+
+  if (!recipients || !Array.isArray(recipients) || recipients.length === 0) {
+    return res.status(400).json({ error: "Recipients array is required" });
+  }
+  if (!message) {
+    return res.status(400).json({ error: "Message content is required" });
+  }
+
+  try {
+    // Format all phone numbers
+    const formattedRecipients = recipients.map((p: string) => formatPhoneNumber(p));
+
+    // Send via Africa's Talking
+    const result = await smsService.send({ 
+      to: formattedRecipients, 
+      message: message, 
+      from: "ATTech" 
+    });
+
+    const atRecipients = result?.SMSMessageData?.Recipients || [];
+    
+    // Prepare logs to insert into Supabase
+    const logsToInsert = formattedRecipients.map((phone: string) => {
+      // Match the number to the AT response to get the status
+      const atResult = atRecipients.find((r: any) => r.number === phone || r.number === phone.replace("+", ""));
+      return {
+        tenant_id: _auth.tenantId,
+        phone: phone,
+        message: message,
+        status: atResult?.status || "Unknown",
+        sent_at: new Date().toISOString(),
+        sent_by: _auth.userId
+      };
+    });
+
+    // Save logs to Supabase
+    if (logsToInsert.length > 0) {
+      const { error: logError } = await supabase.from("sms_logs").insert(logsToInsert);
+      if (logError) console.error("Failed to save SMS logs to Supabase", logError);
+    }
+
+    res.json({ success: true, logs: logsToInsert });
+  } catch (error: any) {
+    console.error("Bulk SMS Error:", error);
+    res.status(500).json({ error: error.message || "Failed to send SMS" });
+  }
 });
 
 // ==========================================
