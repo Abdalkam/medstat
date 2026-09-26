@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "1.0.0"
+version = "1.0.69"
 description = "A Tauri App"
 authors = ["you"]
 license = ""
@@ -32,6 +32,7 @@ tauri-plugin-updater = "2"
 
 # Prevents Cargo from searching parent directories (like Desktop) for a workspace
 [workspace]
+
 
 
 
