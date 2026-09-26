@@ -65,6 +65,9 @@ export default function TrainerLiveClassroom() {
 
   const [isBlackboardMode, setIsBlackboardMode] = useState(false);
   const [isVideoExpanded, setIsVideoExpanded] = useState(false);
+  const [isLeftCollapsed, setIsLeftCollapsed] = useState(false);
+  const [isRightCollapsed, setIsRightCollapsed] = useState(false);
+  
   const [bbInput, setBbInput] = useState("");
   const [activeTool, setActiveTool] = useState<ToolType | "label">("pen");
   const [penColor, setPenColor] = useState("#FFFFFF");
@@ -210,7 +213,6 @@ export default function TrainerLiveClassroom() {
     }
   }
 
-  // ✅ FIXED: Daily.co join method to use startVideoOff instead of invalid boolean properties
   async function toggleMic() {
     if (!daily) return alert("Audio room is not connected yet.");
     if (!isVoiceJoined) {
@@ -230,7 +232,6 @@ export default function TrainerLiveClassroom() {
     try { const n = !isMicOn; await daily.setLocalAudio(n); setIsMicOn(n); } catch (e) { console.error(e); }
   }
 
-  // ✅ FIXED: Daily.co join method
   async function toggleCam() {
     if (!daily) return alert("Audio room is not connected yet.");
     if (!isVoiceJoined) {
@@ -389,7 +390,6 @@ export default function TrainerLiveClassroom() {
     } catch (error) { console.error("Failed to mute student:", error); }
   }
 
-  // ✅ FIXED: Daily.co join method
   async function startSession() {
     if (!courseId || !tenantId) return;
     const { data: existing } = await supabase.from("live_session").select("id").eq("course_id", courseId).maybeSingle();
@@ -485,7 +485,7 @@ export default function TrainerLiveClassroom() {
   const videoTileContainerStyle: React.CSSProperties = isVideoExpanded ? {
     position: "fixed", top: 0, left: 0, width: "100vw", height: "100vh", borderRadius: 0, overflow: "hidden", border: "none", zIndex: 1000, background: "#000"
   } : {
-    position: "absolute", bottom: "32px", right: "32px", width: "200px", height: "130px", borderRadius: "16px", overflow: "hidden", border: "3px solid #FFFFFF", boxShadow: "0 8px 24px rgba(0,0,0,0.15)", zIndex: 10, background: "#000",
+    position: "absolute", bottom: "32px", right: "32px", width: "200px", height: "130px", borderRadius: "16px", overflow: "hidden", border: "3px solid #FFFFFF", boxShadow: "0 8px 24px rgba(0,0,0,0.15)", zIndex: 1000, background: "#000",
   };
 
   const drawingActiveTool = activeTool === "label" ? "pen" as ToolType : activeTool;
@@ -502,7 +502,17 @@ export default function TrainerLiveClassroom() {
             </div>
           )}
         </div>
+        
         <div style={{ display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 }}>
+          {/* Toggle Left Sidebar */}
+          <button onClick={() => setIsLeftCollapsed(!isLeftCollapsed)} style={{ display: "flex", alignItems: "center", justifyContent: "center", width: "36px", height: "36px", borderRadius: "9px", background: "rgba(118, 118, 128, 0.12)", border: "none", cursor: "pointer", color: C.textPrimary }} title="Toggle Controls">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
+          </button>
+          {/* Toggle Right Sidebar */}
+          <button onClick={() => setIsRightCollapsed(!isRightCollapsed)} style={{ display: "flex", alignItems: "center", justifyContent: "center", width: "36px", height: "36px", borderRadius: "9px", background: "rgba(118, 118, 128, 0.12)", border: "none", cursor: "pointer", color: C.textPrimary }} title="Toggle Chat">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="15" y1="3" x2="15" y2="21"/></svg>
+          </button>
+
           <div style={{ display: "flex", alignItems: "center", gap: "8px", background: C.purpleBg, padding: "4px 12px 4px 4px", borderRadius: "20px" }}>
             {(trainer as Record<string, unknown>)?.avatar_url ? <img src={(trainer as Record<string, unknown>).avatar_url as string} alt="Trainer" style={{ width: "28px", height: "28px", borderRadius: "50%", objectFit: "cover" }} /> : <div style={{ width: "28px", height: "28px", borderRadius: "50%", background: C.card, color: C.purple, display: "flex", alignItems: "center", justifyContent: "center", fontSize: "12px", fontWeight: "700" }}>{(trainer?.username as string)?.charAt(0).toUpperCase()}</div>}
             <span style={{ fontSize: "13px", fontWeight: "600", color: C.purple }}>{(trainer?.username as string) || ""}</span>
@@ -513,7 +523,7 @@ export default function TrainerLiveClassroom() {
       </div>
 
       <div style={{ flex: 1, display: "flex", overflow: "hidden", minWidth: 0, width: "100%", boxSizing: "border-box" }}>
-        <div style={{ flex: "0 0 220px", minWidth: "180px", overflowY: "auto", overflowX: "hidden", background: C.panelBg, display: "flex", flexDirection: "column" }}>
+        <div style={{ flex: isLeftCollapsed ? "0 0 0px" : "0 0 220px", minWidth: isLeftCollapsed ? "0" : "180px", overflow: "hidden", transition: "flex 0.3s ease", background: C.panelBg, display: "flex", flexDirection: "column" }}>
           <div style={{ padding: "12px", margin: "12px", background: C.card, borderRadius: "14px", boxShadow: "0 4px 12px rgba(0,0,0,0.03)", flexShrink: 0, display: "flex", flexDirection: "column", gap: "10px" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <button onClick={() => navigate("/trainer")} style={{ background: "none", border: "none", color: C.medBlue, cursor: "pointer", display: "flex", alignItems: "center", padding: 0, gap: "4px", fontSize: "14px", fontWeight: "600" }}><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6"/></svg>Exit</button>
@@ -547,11 +557,31 @@ export default function TrainerLiveClassroom() {
             </div>
 
             <p style={{ fontSize: "13px", color: C.textTertiary, textTransform: "uppercase", fontWeight: "600", letterSpacing: "0.5px", margin: "0 0 8px 0" }}>Lesson Pages</p>
-            {materials.length === 0 ? <div style={{ textAlign: "center" }}><p style={{ fontSize: "14px", color: C.textTertiary, margin: "0 0 12px 0" }}>No pages added yet.</p><button onClick={() => navigate("/trainer/upload/" + courseId)} style={{ width: "100%", padding: "10px", background: C.medBlue, color: "#fff", border: "none", borderRadius: "10px", fontSize: "14px", fontWeight: "600", cursor: "pointer" }}>Upload Pages</button></div> : materials.map((mat) => { const meta = getFileMeta(mat.fileType); const isActive = liveState?.materialId === mat.id && !isBlackboardMode; return (<div key={mat.id} onClick={() => selectPage(mat.id)} style={{ display: "flex", alignItems: "center", padding: "12px", gap: "10px", cursor: "pointer", background: isActive ? C.medBlueBg : C.card, borderRadius: "10px", marginBottom: "6px", boxShadow: isActive ? "none" : "0 1px 2px rgba(0,0,0,0.03)" }}><div style={{ width: "32px", height: "32px", borderRadius: "8px", background: meta.bg, color: meta.color, display: "flex", alignItems: "center", justifyContent: "center", fontSize: "16px", flexShrink: 0 }}>{meta.icon}</div><div style={{ flex: 1, minWidth: 0, overflow: "hidden" }}><div style={{ fontSize: "14px", color: isActive ? C.medBlue : C.textPrimary, fontWeight: isActive ? "600" : "500", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{mat.title}</div><div style={{ fontSize: "11px", color: C.textTertiary, marginTop: "2px" }}>{meta.label}</div></div></div>); })}
+            {materials.length === 0 ? (
+              <div style={{ textAlign: "center" }}>
+                <p style={{ fontSize: "14px", color: C.textTertiary, margin: "0 0 12px 0" }}>No pages added yet.</p>
+                <button onClick={() => navigate("/trainer/upload/" + courseId)} style={{ width: "100%", padding: "10px", background: C.medBlue, color: "#fff", border: "none", borderRadius: "10px", fontSize: "14px", fontWeight: "600", cursor: "pointer" }}>Upload Pages</button>
+              </div>
+            ) : (
+              materials.map((mat) => {
+                const meta = getFileMeta(mat.fileType);
+                const isActive = liveState?.materialId === mat.id && !isBlackboardMode;
+                return (
+                  <div key={mat.id} onClick={() => selectPage(mat.id)} style={{ display: "flex", alignItems: "center", padding: "12px", gap: "10px", cursor: "pointer", background: isActive ? C.medBlueBg : C.card, borderRadius: "10px", marginBottom: "6px", boxShadow: isActive ? "none" : "0 1px 2px rgba(0,0,0,0.03)" }}>
+                    <div style={{ width: "32px", height: "32px", borderRadius: "8px", background: meta.bg, color: meta.color, display: "flex", alignItems: "center", justifyContent: "center", fontSize: "16px", flexShrink: 0 }}>{meta.icon}</div>
+                    <div style={{ flex: 1, minWidth: 0, overflow: "hidden" }}>
+                      <div style={{ fontSize: "14px", color: isActive ? C.medBlue : C.textPrimary, fontWeight: isActive ? "600" : "500", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{mat.title}</div>
+                      <div style={{ fontSize: "11px", color: C.textTertiary, marginTop: "2px" }}>{meta.label}</div>
+                    </div>
+                  </div>
+                );
+              })
+            )}
           </div>
         </div>
 
-        <div style={{ flex: "1 1 auto", minWidth: 0, background: C.bg, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+        {/* Main Center Content (Presentation / Blackboard) */}
+        <div style={{ flex: "1 1 auto", minWidth: 0, background: C.bg, display: "flex", flexDirection: "column", overflow: "hidden", position: "relative" }}>
           <div style={{ flex: 1, display: "flex", width: "200%", height: "100%", transition: "transform 0.3s cubic-bezier(0.4, 0, 0.2, 1)", transform: isBlackboardMode ? "translateX(-50%)" : "translateX(0%)" }}>
             <div style={{ width: "50%", height: "100%", flexShrink: 0, display: "flex", flexDirection: "column", background: C.card, overflow: "hidden", position: "relative" }}>
               {presentation ? (
@@ -561,13 +591,6 @@ export default function TrainerLiveClassroom() {
                   <div style={{ width: "80px", height: "80px", borderRadius: "50%", background: C.medBlueBg, margin: "0 auto 20px", display: "flex", alignItems: "center", justifyContent: "center" }}><svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke={C.medBlue} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></div>
                   <p style={{ color: C.textPrimary, fontSize: "20px", fontWeight: "600", margin: "0 0 6px 0" }}>No Content Presenting</p>
                   <p style={{ color: C.textTertiary, fontSize: "15px", margin: "0 0 24px 0" }}>{materials.length > 0 ? "Click Start, then select a page from the sidebar." : "Upload pages first, then start the session."}</p>
-                </div>
-              )}
-              
-              {isCamOn && videoTrack && (
-                <div style={videoTileContainerStyle}>
-                  <VideoTile videoTrack={videoTrack} />
-                  <button onClick={() => setIsVideoExpanded(!isVideoExpanded)} style={{ position: "absolute", top: "8px", right: "8px", background: "rgba(0,0,0,0.5)", border: "none", color: "#fff", borderRadius: "8px", padding: "6px 10px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>{isVideoExpanded ? "Collapse" : "Expand"}</button>
                 </div>
               )}
             </div>
@@ -597,9 +620,23 @@ export default function TrainerLiveClassroom() {
               </div>
             </div>
           </div>
+
+          {/* Video Tile Moved Here (Overlays both Presentation and Blackboard) */}
+          {isCamOn && videoTrack && (
+            <div style={videoTileContainerStyle}>
+              <VideoTile videoTrack={videoTrack} />
+              <button onClick={() => setIsVideoExpanded(!isVideoExpanded)} style={{ position: "absolute", top: "8px", right: "8px", background: "rgba(0,0,0,0.5)", border: "none", color: "#fff", borderRadius: "6px", padding: "6px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                {isVideoExpanded ? (
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+                ) : (
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+                )}
+              </button>
+            </div>
+          )}
         </div>
 
-        <div style={{ flex: "0 0 300px", minWidth: "240px", background: C.panelBg, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+        <div style={{ flex: isRightCollapsed ? "0 0 0px" : "0 0 300px", minWidth: isRightCollapsed ? "0" : "240px", overflow: "hidden", transition: "flex 0.3s ease", background: C.panelBg, display: "flex", flexDirection: "column" }}>
           {courseId && <ClassChat courseId={courseId} />}
         </div>
       </div>
