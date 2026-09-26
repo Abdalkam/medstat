@@ -1,3 +1,4 @@
+// src/Startup.tsx (or whatever your file is named)
 import { useState, useEffect, useRef } from "react";
 import { Navigate, useLocation } from "react-router-dom";
 import { loginUser, addUser } from "../database/userDB";
@@ -127,11 +128,13 @@ export default function Startup() {
           setUsername(userObj.username || "");
           setTenantId(userObj.tenantId || null);
           
+          // 1. Load branding INSTANTLY from local storage
           const savedBranding = localStorage.getItem("institutionBranding");
           if (savedBranding) {
             setBranding(JSON.parse(savedBranding));
           }
 
+          // 2. Silently sync branding in background if online
           if (userObj.tenantId) {
             try {
               supabase.from('business_settings').select('business_name, logo, phone, login_background').eq('tenant_id', userObj.tenantId).maybeSingle().then(({ data }) => {
@@ -179,60 +182,79 @@ export default function Startup() {
     if (!businessName.trim()) return setLookupError("Please enter your institution name");
     setLookupLoading(true);
     
-    let foundTenantId: string | null = null;
+    const enteredName = businessName.trim().toLowerCase();
 
-    try {
-      // 1. Try online first
-      const { data: tenant } = await supabase.from("tenants").select("id, business_name").ilike("business_name", businessName.trim()).maybeSingle();
-      if (tenant?.id) {
-        foundTenantId = tenant.id;
-        
-        // ✅ FIX: Save to localStorage IMMEDIATELY when found online! Use tenant.id to avoid TS null error.
-        localStorage.setItem("institutionName", tenant.business_name || businessName.trim());
-        localStorage.setItem("institutionTenantId", tenant.id);
-      }
-    } catch (err) {
-      console.warn("Network error, checking local storage for institution...");
-    }
+    // 1. Check Local Storage INSTANTLY
+    const savedInstName = localStorage.getItem("institutionName");
+    const savedInstId = localStorage.getItem("institutionTenantId");
+    const savedBranding = localStorage.getItem("institutionBranding");
 
-    // 2. If online failed, check local storage
-    if (!foundTenantId) {
-      const savedInstName = localStorage.getItem("institutionName");
-      const savedInstId = localStorage.getItem("institutionTenantId");
-      if (savedInstName && savedInstId && savedInstName.toLowerCase() === businessName.trim().toLowerCase()) {
-        foundTenantId = savedInstId;
-      }
-    }
-
-    if (!foundTenantId) {
-      setLookupError("Institution not found. Please check the name or connect to the internet.");
+    if (savedInstName && savedInstId && savedInstName.toLowerCase() === enteredName) {
+      // Found locally! Move to login screen immediately.
+      setTenantId(savedInstId);
+      if (savedBranding) setBranding(JSON.parse(savedBranding));
+      setScreen("login");
       setLookupLoading(false);
+
+      // Fetch branding from Supabase in background to update silently
+      (async () => {
+        try {
+          const { data: settings } = await supabase.from("business_settings").select("*").eq("tenant_id", savedInstId).maybeSingle();
+          if (settings) {
+            const b = { 
+              businessName: settings.business_name || "", 
+              logo: settings.logo || "", 
+              phone: settings.phone || "", 
+              loginBackground: settings.login_background || "" 
+            };
+            setBranding(b);
+            localStorage.setItem("institutionBranding", JSON.stringify(b));
+          }
+        } catch (e) { 
+          console.warn("Background branding sync failed");
+        }
+      })();
       return;
     }
 
-    setTenantId(foundTenantId);
-
-    // Fetch branding (Online only)
+    // 2. If not found locally, try Supabase online
+    let foundTenantId: string | null = null;
     try {
-      const { data: settings } = await supabase.from("business_settings").select("*").eq("tenant_id", foundTenantId).maybeSingle();
-      if (settings) {
-        const b = { 
-          businessName: settings.business_name || "", 
-          logo: settings.logo || "", 
-          phone: settings.phone || "", 
-          loginBackground: settings.login_background || "" 
-        };
-        setBranding(b);
-        localStorage.setItem("institutionBranding", JSON.stringify(b));
-      }
-    } catch (e) { 
-      console.warn("Offline mode: Using default branding");
-      const savedBranding = localStorage.getItem("institutionBranding");
-      if (savedBranding) setBranding(JSON.parse(savedBranding));
-    }
+      const { data: tenant } = await supabase.from("tenants").select("id, business_name").ilike("business_name", enteredName).maybeSingle();
+      if (tenant?.id) {
+        foundTenantId = tenant.id;
+        localStorage.setItem("institutionName", tenant.business_name || businessName.trim());
+        localStorage.setItem("institutionTenantId", tenant.id);
+        
+        // Fetch branding
+        try {
+          const { data: settings } = await supabase.from("business_settings").select("*").eq("tenant_id", foundTenantId).maybeSingle();
+          if (settings) {
+            const b = { 
+              businessName: settings.business_name || "", 
+              logo: settings.logo || "", 
+              phone: settings.phone || "", 
+              loginBackground: settings.login_background || "" 
+            };
+            setBranding(b);
+            localStorage.setItem("institutionBranding", JSON.stringify(b));
+          }
+        } catch (e) { 
+          console.warn("Branding fetch failed");
+        }
 
-    setScreen("login");
-    setLookupLoading(false);
+        setTenantId(foundTenantId);
+        setScreen("login");
+        setLookupLoading(false);
+      } else {
+        setLookupError("Institution not found. Please check the name.");
+        setLookupLoading(false);
+      }
+    } catch (err) {
+      console.warn("Network error checking institution");
+      setLookupError("Institution not found locally. Please connect to the internet the first time.");
+      setLookupLoading(false);
+    }
   }
 
   async function handleLogin() {
