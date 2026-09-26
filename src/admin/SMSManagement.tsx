@@ -4,6 +4,9 @@ import { useNavigate } from "react-router-dom";
 import { getUsers } from "../database/userDB";
 import { db } from "../database/db";
 
+// Define your backend URL here. Change the port if your backend is not on 3001.
+const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:3001";
+
 const C = {
   bg: "#F2F2F7",
   card: "#FFFFFF",
@@ -31,7 +34,6 @@ export default function SMSsettings() {
     async function loadUsers() {
       try {
         const localUsers = await getUsers();
-        // Only show users who actually have a phone number
         setUsers(localUsers.filter((u: any) => u.phone));
       } catch (e) {
         console.error("Failed to load users for SMS", e);
@@ -75,8 +77,8 @@ export default function SMSsettings() {
         return;
       }
 
-      // Call the exact backend endpoint we created in index.ts
-      const response = await fetch("/api/sms/send", {
+      // Use the absolute backend URL here
+      const response = await fetch(`${API_BASE_URL}/api/sms/send`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -95,7 +97,6 @@ export default function SMSsettings() {
 
       const data = await response.json();
       
-      // Save logs to local IndexedDB so the Dashboard chart updates instantly
       if (data.logs && data.logs.length > 0) {
         await db.smsLogs.bulkAdd(data.logs.map((log: any) => ({
           ...log,
@@ -143,7 +144,6 @@ export default function SMSsettings() {
         </div>
       )}
 
-      {/* Recipients List */}
       <div style={{ background: C.card, borderRadius: "14px", overflow: "hidden" }}>
         {users.length === 0 ? (
           <div style={{ padding: "20px", textAlign: "center", color: C.textTertiary, fontSize: "15px" }}>
@@ -166,7 +166,6 @@ export default function SMSsettings() {
                 <div style={{ fontSize: "16px", fontWeight: "600", color: C.textPrimary }}>{user.username}</div>
                 <div style={{ fontSize: "13px", color: C.textTertiary, marginTop: "2px" }}>{user.phone}</div>
               </div>
-              {/* iOS Checkbox */}
               <div style={{
                 width: "24px",
                 height: "24px",
@@ -189,7 +188,6 @@ export default function SMSsettings() {
         )}
       </div>
 
-      {/* Message Textarea */}
       <div style={{ background: C.card, borderRadius: "14px", padding: "4px" }}>
         <textarea 
           placeholder="Type your message here..."
@@ -214,7 +212,6 @@ export default function SMSsettings() {
         {selectedPhones.length} recipient(s) selected
       </p>
 
-      {/* Send Button */}
       <button 
         onClick={handleSendSms} 
         disabled={sending}
