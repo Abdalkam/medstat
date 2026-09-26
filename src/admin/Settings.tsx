@@ -67,8 +67,9 @@ export default function Settings() {
           setLogo(mapped.logo || "");
           setLoginBackground(mapped.loginBackground || "");
         }
+        setLoading(false); // Stop loading immediately after local data is shown
 
-        // 2. Try fetching from Supabase to update
+        // 2. Try fetching from Supabase to update silently
         if (tenantId) {
           try {
             const { data, error } = await supabase.from("business_settings").select("*").eq("tenant_id", tenantId).maybeSingle();
@@ -89,7 +90,6 @@ export default function Settings() {
         }
       } catch (error) {
         console.error("Failed to load settings", error);
-      } finally {
         setLoading(false);
       }
     }
