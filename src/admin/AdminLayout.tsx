@@ -133,24 +133,24 @@ export default function AdminLayout({ user }: Props) {
                     top: 0,
                     zIndex: 10,
                     flexShrink: 0,
-                    flexWrap: "wrap",
-                    gap: "8px",
+                    gap: "12px",
                 }}
             >
-                <div style={{ display: "flex", alignItems: "center", gap: "10px", flex: 1, minWidth: "200px" }}>
+                {/* Left Side - Business Info */}
+                <div style={{ display: "flex", alignItems: "center", gap: "10px", flex: 1, minWidth: 0, overflow: "hidden" }}>
                     {businessLogo && (
-                        <img src={businessLogo} alt="Logo" style={{ width: "36px", height: "36px", borderRadius: "8px", objectFit: "cover" }} />
+                        <img src={businessLogo} alt="Logo" style={{ width: "36px", height: "36px", borderRadius: "8px", objectFit: "cover", flexShrink: 0 }} />
                     )}
                     {(businessName || phone) && (
-                        <div style={{ display: "flex", flexDirection: "column", minWidth: 0, justifyContent: "center" }}>
+                        <div style={{ display: "flex", flexDirection: "column", minWidth: 0, justifyContent: "center", overflow: "hidden" }}>
                             {businessName && (
                                 <h1 style={{ margin: 0, color: C.textPrimary, fontSize: "17px", fontWeight: 700, letterSpacing: "-0.4px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                                     {businessName}
                                 </h1>
                             )}
                             {phone && (
-                                <a href={`tel:${phone}`} style={{ fontSize: "12px", color: C.textTertiary, textDecoration: "none", display: "flex", alignItems: "center", gap: "4px", whiteSpace: "nowrap" }}>
-                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z" /></svg>
+                                <a href={`tel:${phone}`} style={{ fontSize: "12px", color: C.textTertiary, textDecoration: "none", display: "flex", alignItems: "center", gap: "4px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z" /></svg>
                                     {phone}
                                 </a>
                             )}
@@ -158,7 +158,8 @@ export default function AdminLayout({ user }: Props) {
                     )}
                 </div>
 
-                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                {/* Right Side - Actions Group */}
+                <div style={{ display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 }}>
                     <div
                         style={{
                             display: "flex",
@@ -167,6 +168,7 @@ export default function AdminLayout({ user }: Props) {
                             background: C.purpleBg,
                             padding: "4px 12px 4px 4px",
                             borderRadius: "20px",
+                            flexShrink: 0,
                         }}
                     >
                         {user?.profilePic ? (
@@ -189,12 +191,12 @@ export default function AdminLayout({ user }: Props) {
                                 {user?.username?.charAt(0).toUpperCase()}
                             </div>
                         )}
-                        <span style={{ fontSize: "13px", fontWeight: "600", color: C.purple }}>
+                        <span style={{ fontSize: "13px", fontWeight: "600", color: C.purple, whiteSpace: "nowrap" }}>
                             {user?.username}
                         </span>
                     </div>
 
-                    {/* ✅ ADDED: SMS Button */}
+                    {/* ✅ SMS Button */}
                     <button
                         onClick={() => navigate("/admin/sms")}
                         style={{
@@ -212,8 +214,8 @@ export default function AdminLayout({ user }: Props) {
                         }}
                         title="Send SMS"
                     >
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+                            <path d="M4 4h16a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H8.5L4 21v-4H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"></path>
                         </svg>
                     </button>
 
@@ -230,7 +232,8 @@ export default function AdminLayout({ user }: Props) {
                             border: "none",
                             cursor: "pointer",
                             color: C.textPrimary,
-                            fontSize: "18px"
+                            fontSize: "18px",
+                            flexShrink: 0,
                         }}
                         title="Settings"
                     >⚙️</button>
@@ -248,6 +251,7 @@ export default function AdminLayout({ user }: Props) {
                             border: "none",
                             cursor: "pointer",
                             color: C.red,
+                            flexShrink: 0,
                         }}
                         title="Logout"
                     >
