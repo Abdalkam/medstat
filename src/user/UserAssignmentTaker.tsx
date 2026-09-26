@@ -1,7 +1,9 @@
-// src/user/UserAssignmentTaker.tsx
 import { useEffect, useState, useMemo } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { supabase } from "../auth/supabase";
+import { openPath } from "@tauri-apps/plugin-opener";
+import { writeFile } from "@tauri-apps/plugin-fs";
+import { appDataDir, join } from "@tauri-apps/api/path";
 
 const C = {
   textPrimary: "#1C1C1E", textTertiary: "#8E8E93", bg: "#F2F2F7", card: "#FFFFFF",
@@ -41,6 +43,7 @@ export default function UserAssignmentTaker() {
   const [activeSlide, setActiveSlide] = useState(0);
   const [business, setBusiness] = useState<BusinessData | null>(null);
   const [showSubmitConfirm, setShowSubmitConfirm] = useState(false);
+  const [openingFile, setOpeningFile] = useState(false);
 
   function handleLogout() {
     localStorage.removeItem("currentUser");
@@ -56,6 +59,8 @@ export default function UserAssignmentTaker() {
     let cancelled = false;
     const fetchBusiness = async () => {
       try {
+        const localSettings = localStorage.getItem("localBusinessSettings");
+        if (localSettings) setBusiness(JSON.parse(localSettings));
         const { data } = await supabase.from("business_settings").select("business_name, phone, logo").eq("tenant_id", currentUser.tenantId).maybeSingle();
         if (!cancelled && data) setBusiness(data as BusinessData);
       } catch (err: unknown) { console.error("Business fetch failed:", err); }
@@ -109,6 +114,48 @@ export default function UserAssignmentTaker() {
   const correctCount = Object.values(gradeData).filter(v => v === "correct").length;
 
   function setAnswer(fieldId: string, value: any) { setAnswers((p) => ({ ...p, [fieldId]: value })); }
+
+  // ✅ FIXED: Tauri Background Download & Open Function
+  async function handleOpenFile(url: string, fileName: string) {
+    setOpeningFile(true);
+    try {
+      let byteArray: Uint8Array;
+
+      if (url.startsWith("data:")) {
+        // Handle Base64 strings
+        const base64Data = url.split(",")[1];
+        const byteCharacters = atob(base64Data);
+        const byteNumbers = new Array(byteCharacters.length);
+        for (let i = 0; i < byteCharacters.length; i++) {
+          byteNumbers[i] = byteCharacters.charCodeAt(i);
+        }
+        byteArray = new Uint8Array(byteNumbers);
+      } else {
+        // Handle Remote URLs
+        const response = await fetch(url);
+        const blob = await response.blob();
+        const arrayBuffer = await blob.arrayBuffer();
+        byteArray = new Uint8Array(arrayBuffer);
+      }
+
+      // Save to background temp directory
+      const appData = await appDataDir();
+      const tempDir = await join(appData, "temp_materials");
+      
+      // Ensure directory exists (Tauri handles this automatically with writeFile in v2)
+      const filePath = await join(tempDir, fileName);
+      await writeFile(filePath, byteArray);
+
+      // Open the file using the default system application (e.g., PowerPoint)
+      await openPath(filePath);
+      
+    } catch (error) {
+      console.error("Failed to open file:", error);
+      alert("Failed to open file: " + error);
+    } finally {
+      setOpeningFile(false);
+    }
+  }
 
   async function handleSaveDraft() {
     setSavingDraft(true);
@@ -173,13 +220,11 @@ export default function UserAssignmentTaker() {
 
   return (
     <div style={{ minHeight: "100vh", background: C.card, fontFamily: FONT, WebkitFontSmoothing: "antialiased", MozOsxFontSmoothing: "grayscale" }}>
-      {/* APP BAR */}
       <div style={{ borderBottom: `1px solid ${C.separator}`, padding: "12px 24px", position: "sticky", top: 0, zIndex: 10, width: "100%", boxSizing: "border-box", background: C.card }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, width: "100%" }}>
           <button onClick={() => navigate(`/user/assignments/${assignment?.course_id || ""}`)} style={{ background: C.bg, border: `1px solid ${C.separator}`, borderRadius: 10, color: C.medBlue, cursor: "pointer", width: 36, height: 36, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="15 18 9 12 15 6" /></svg>
           </button>
-
           <div style={{ display: "flex", alignItems: "center", gap: 12, flex: 1, minWidth: 0 }}>
             {business?.logo ? (
               <img src={business.logo} alt={business.business_name || "Business"} style={{ width: 36, height: 36, borderRadius: 8, objectFit: "cover", flexShrink: 0 }} />
@@ -198,18 +243,15 @@ export default function UserAssignmentTaker() {
               )}
             </div>
           </div>
-
           <button onClick={handleLogout} title="Logout" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 40, height: 40, borderRadius: 9, background: C.redBg, border: "none", cursor: "pointer", color: C.red, flexShrink: 0 }}>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></svg>
           </button>
         </div>
       </div>
 
-      {/* BODY */}
       <div style={{ padding: "48px 48px 100px", width: "100%", boxSizing: "border-box" }}>
         <h1 style={{ ...TS.h1, margin: "0 0 12px" }}>{assignment?.title}</h1>
 
-        {/* SLIDE INDICATOR */}
         {slides.length > 1 && (
           <div style={{ marginBottom: 24, display: "flex", alignItems: "center", gap: 8 }}>
             {slides.map((_, i) => (
@@ -219,7 +261,6 @@ export default function UserAssignmentTaker() {
           </div>
         )}
 
-        {/* PROGRESS BAR */}
         {hasQuestions && !isSubmitted && (
           <div style={{ marginBottom: 40, display: "flex", alignItems: "center", gap: 12 }}>
             <div style={{ flex: 1, height: 6, borderRadius: 3, background: C.separator, overflow: "hidden" }}>
@@ -229,7 +270,6 @@ export default function UserAssignmentTaker() {
           </div>
         )}
 
-        {/* GRADED RESULTS BANNER */}
         {isGraded && (
           <div style={{ background: C.greenBg, borderRadius: 14, padding: "20px 24px", marginBottom: 40, border: `1px solid ${C.green}33`, display: "flex", alignItems: "center", gap: 16, width: "100%", boxSizing: "border-box" }}>
             <div style={{ width: 44, height: 44, borderRadius: "50%", background: C.green, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
@@ -242,7 +282,6 @@ export default function UserAssignmentTaker() {
           </div>
         )}
 
-        {/* PENDING REVIEW BANNER */}
         {isSubmitted && !isGraded && (
           <div style={{ background: C.medBlueBg, borderRadius: 12, padding: "20px 24px", marginBottom: 40, border: `1px solid ${C.medBlue}33`, display: "flex", alignItems: "center", gap: 12, width: "100%", boxSizing: "border-box" }}>
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke={C.medBlue} strokeWidth="2.5"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
@@ -253,11 +292,9 @@ export default function UserAssignmentTaker() {
           </div>
         )}
 
-        {/* SLIDE CONTENT — flat, skip headers that match assignment title */}
         <div style={{ display: "flex", flexDirection: "column", gap: 0, width: "100%" }}>
           {currentSlideFields.map((field) => {
             if (field.type === "header") {
-              // Skip if this header text matches the assignment title (already shown as h1 above)
               if (field.label?.trim() === assignment?.title?.trim()) return null;
               return <h2 key={field.id} style={{ ...TS.h2, margin: "32px 0 16px" }}>{field.label}</h2>;
             }
@@ -279,26 +316,51 @@ export default function UserAssignmentTaker() {
                 </p>
               );
             }
+            
+            // ✅ UPDATED: File Viewer with Background Open Button
             if (field.type === "file" && field.file_url) {
               const isImage = field.file_url.match(/\.(jpeg|jpg|gif|png|webp)$/i);
               const isVideo = field.file_url.match(/\.(mp4|webm|mov)$/i);
+              const fileName = field.label || "downloaded_file";
+
               return (
-                <div key={field.id} style={{ marginBottom: 24, width: "100%" }}>
+                <div key={field.id} style={{ marginBottom: 24, width: "100%", position: "relative" }}>
                   {isImage ? (
                     <img src={field.file_url} alt={field.label} style={{ width: "100%", maxHeight: "500px", objectFit: "contain", borderRadius: 4 }} />
                   ) : isVideo ? (
                     <video controls style={{ width: "100%", maxHeight: "500px", borderRadius: 4 }} src={field.file_url} />
                   ) : (
-                    <a href={field.file_url} target="_blank" rel="noreferrer" style={{ ...TS.body, display: "inline-flex", alignItems: "center", gap: 10, padding: "8px 0", color: C.medBlue, textDecoration: "none" }}>
-                      <span style={{ fontSize: 20 }}>📄</span>
-                      <span>{field.label || "View File"}</span>
-                    </a>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: C.bg, padding: "12px 16px", borderRadius: 10, marginTop: 8 }}>
+                      <div style={{ display: "inline-flex", alignItems: "center", gap: 10, color: C.medBlue, textDecoration: "none" }}>
+                        <span style={{ fontSize: 20 }}>📊</span>
+                        <span style={{ ...TS.body, color: C.textPrimary }}>{field.label || "Presentation File"}</span>
+                      </div>
+                      <button 
+                        onClick={() => handleOpenFile(field.file_url, fileName)} 
+                        disabled={openingFile}
+                        style={{ ...TS.input, padding: "8px 16px", background: openingFile ? C.textTertiary : C.medBlue, color: "#fff", border: "none", borderRadius: 8, fontWeight: 600, cursor: openingFile ? "wait" : "pointer", fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}
+                      >
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                        {openingFile ? "Opening..." : "Open File"}
+                      </button>
+                    </div>
+                  )}
+                  
+                  {/* Floating Open button for Images and Videos */}
+                  {(isImage || isVideo) && (
+                    <button 
+                      onClick={() => handleOpenFile(field.file_url, fileName)} 
+                      disabled={openingFile}
+                      style={{ position: "absolute", top: 8, right: 8, background: "rgba(0,0,0,0.6)", color: "#fff", border: "none", borderRadius: 8, padding: "6px 12px", cursor: openingFile ? "wait" : "pointer", fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}
+                    >
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                      {openingFile ? "Opening..." : "Open Externally"}
+                    </button>
                   )}
                 </div>
               );
             }
 
-            // QUESTION — flat, no card
             questionCounter++;
             const isAnswered = (() => {
               const ans = answers[field.id];
@@ -309,18 +371,12 @@ export default function UserAssignmentTaker() {
             const answerText = Array.isArray(answers[field.id]) ? (answers[field.id] as string[]).join(", ") : (answers[field.id] || "");
 
             return (
-              <div key={field.id} style={{
-                width: "100%", boxSizing: "border-box",
-                margin: "0 0 32px 0", padding: 0,
-                background: "transparent", border: "none", borderRadius: 0,
-              }}>
-                {/* Question header — "Question 1" + ✓/✗ mark on the right */}
+              <div key={field.id} style={{ width: "100%", boxSizing: "border-box", margin: "0 0 32px 0", padding: 0, background: "transparent", border: "none", borderRadius: 0 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                     <span style={{ ...TS.input, fontSize: 15, fontWeight: 700, color: isGraded ? (mark === "correct" ? C.green : mark === "incorrect" ? C.red : C.textPrimary) : C.textPrimary }}>Question {questionCounter}</span>
                     {field.required && <span style={{ ...TS.caption, fontSize: 10, color: "#fff", background: C.red, padding: "2px 6px", borderRadius: 4 }}>Required</span>}
                   </div>
-                  {/* ✓ or ✗ badge */}
                   {isGraded ? (
                     mark === "correct" ? (
                       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -344,10 +400,8 @@ export default function UserAssignmentTaker() {
                   ) : null}
                 </div>
 
-                {/* Question text */}
                 <p style={{ ...TS.body, margin: "0 0 16px" }}>{field.label}</p>
 
-                {/* When graded — show the trainee's answer as plain text (no input boxes) */}
                 {isGraded ? (
                   <div style={{ padding: "12px 0", borderBottom: `1px solid ${mark === "correct" ? C.green : mark === "incorrect" ? C.red : C.separator}` }}>
                     <div style={{ ...TS.body, fontSize: 15, color: C.textTertiary }}>
@@ -356,7 +410,6 @@ export default function UserAssignmentTaker() {
                   </div>
                 ) : (
                   <>
-                    {/* Answer input — flat underline style */}
                     {field.type === "text" && (
                       <input type="text" value={answers[field.id] || ""} onChange={(e) => setAnswer(field.id, e.target.value)} disabled={isSubmitted} placeholder="Type your answer..." style={{ ...TS.input, width: "100%", padding: "12px 0", border: "none", borderBottom: `1px solid ${isAnswered ? C.green : C.separator}`, borderRadius: 0, outline: "none", background: "transparent", boxSizing: "border-box" }} />
                     )}
@@ -392,7 +445,6 @@ export default function UserAssignmentTaker() {
           })}
         </div>
 
-        {/* SLIDE NAVIGATION */}
         {slides.length > 1 && (
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 48, width: "100%" }}>
             <button onClick={() => setActiveSlide(prev => Math.max(0, prev - 1))} disabled={activeSlide === 0}
@@ -423,7 +475,6 @@ export default function UserAssignmentTaker() {
           </div>
         )}
 
-        {/* SINGLE SLIDE */}
         {slides.length <= 1 && !isSubmitted && (
           <div style={{ marginTop: 48, display: "flex", gap: 12, width: "100%" }}>
             <button onClick={handleSaveDraft} disabled={savingDraft}
@@ -438,7 +489,6 @@ export default function UserAssignmentTaker() {
         )}
       </div>
 
-      {/* SUBMIT CONFIRMATION MODAL */}
       {showSubmitConfirm && (
         <div onClick={() => setShowSubmitConfirm(false)} style={{ position: "fixed", top: 0, left: 0, width: "100%", height: "100%", background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 16, boxSizing: "border-box" }}>
           <div onClick={(e) => e.stopPropagation()} style={{ background: C.card, borderRadius: 16, padding: 28, maxWidth: 420, width: "100%", textAlign: "center" }}>
