@@ -52,6 +52,11 @@ export default function TrainerAssignments() {
     let cancelled = false;
     const fetchBusiness = async () => {
       try {
+        // 1. Load from Local Storage INSTANTLY
+        const localSettings = localStorage.getItem("localBusinessSettings");
+        if (localSettings) setBusiness(JSON.parse(localSettings));
+
+        // 2. Try Supabase
         const { data } = await supabase.from("business_settings").select("business_name, phone, logo").eq("tenant_id", currentUser.tenantId).maybeSingle();
         if (!cancelled && data) setBusiness(data as BusinessData);
       } catch (err: unknown) { console.error("Business fetch failed:", err); }

@@ -60,6 +60,11 @@ export default function TrainerSubmissions() {
     let cancelled = false;
     const fetchBusiness = async () => {
       try {
+        // 1. Load from Local Storage INSTANTLY
+        const localSettings = localStorage.getItem("localBusinessSettings");
+        if (localSettings) setBusiness(JSON.parse(localSettings));
+
+        // 2. Try Supabase
         const { data } = await supabase.from("business_settings").select("business_name, phone, logo").eq("tenant_id", currentUser.tenantId).maybeSingle();
         if (!cancelled && data) setBusiness(data as BusinessData);
       } catch (err: unknown) { console.error("Business fetch failed:", err); }
@@ -334,7 +339,7 @@ export default function TrainerSubmissions() {
               const isGraded = !!sub.graded_at;
               let gradeData: Record<string, string> = {};
               if (sub.grade) { try { gradeData = JSON.parse(sub.grade); } catch { } }
-              const correctCount = Object.values(gradeData).filter(v => v === "correct").length;
+              const subCorrectCount = Object.values(gradeData).filter(v => v === "correct").length;
 
               return (
                 <div key={sub.id} onClick={() => selectSubmission(sub)}
@@ -351,10 +356,10 @@ export default function TrainerSubmissions() {
                       <span style={{ ...TS.caption, color: isGraded ? C.green : C.orange, background: isGraded ? C.greenBg : C.orangeBg, padding: "3px 8px", borderRadius: 6 }}>
                         {isGraded ? "Graded" : "Pending"}
                       </span>
-                      {isGraded && <span style={{ ...TS.caption, color: C.textTertiary, background: C.card, padding: "3px 8px", borderRadius: 6, border: `1px solid ${C.separator}` }}>{correctCount}/{questions.length} correct</span>}
+                      {isGraded && <span style={{ ...TS.caption, color: C.textTertiary, background: C.card, padding: "3px 8px", borderRadius: 6, border: `1px solid ${C.separator}` }}>{subCorrectCount}/{questions.length} correct</span>}
                     </div>
                     <h3 style={{ ...TS.h3, margin: 0 }}>{sub.username}</h3>
-                    <p style={{ ...TS.bodySm, margin: "4px 0 0" }}>{isGraded ? `Marked ${correctCount} of ${questions.length} correct` : "Awaiting review"}</p>
+                    <p style={{ ...TS.bodySm, margin: "4px 0 0" }}>{isGraded ? `Marked ${subCorrectCount} of ${questions.length} correct` : "Awaiting review"}</p>
                   </div>
 
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={C.textTertiary} strokeWidth="2"><polyline points="9 18 15 12 9 6" /></svg>
