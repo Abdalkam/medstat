@@ -315,6 +315,16 @@ app.post("/api/sms/send", requireAuth, async (req: Request, res: Response) => {
       if (logError) console.error("Failed to save SMS logs to Supabase", logError);
     }
 
+    // ✅ NEW: Check if any numbers failed, and tell the frontend!
+    const failedNumbers = logsToInsert.filter(log => log.status !== "Success");
+    if (failedNumbers.length > 0) {
+      const failList = failedNumbers.map(f => `${f.phone} (${f.status})`).join(", ");
+      return res.status(400).json({ 
+        error: `Some SMS failed: ${failList}`,
+        logs: logsToInsert 
+      });
+    }
+
     res.json({ success: true, logs: logsToInsert });
   } catch (error: any) {
     console.error("Bulk SMS Error:", error);

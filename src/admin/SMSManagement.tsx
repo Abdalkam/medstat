@@ -105,6 +105,18 @@ export default function SMSsettings() {
       // Borrowed exact error catching from PhoneEntry.tsx
       console.error("Send SMS error:", err);
       setError(err.message || "Failed to send SMS. Check your network.");
+      
+      // If some SMS succeeded but others failed, save the successful ones to local DB
+      if (err.logs && err.logs.length > 0) {
+        try {
+          await db.smsLogs.bulkAdd(err.logs.map((log: any) => ({
+            ...log,
+            sentAt: log.sent_at ? new Date(log.sent_at).toISOString() : new Date().toISOString()
+          })));
+        } catch (dbErr) {
+          console.error("Failed to save partial SMS logs:", dbErr);
+        }
+      }
     } finally {
       setSending(false);
     }

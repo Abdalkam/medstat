@@ -25,9 +25,20 @@ export async function sendSms(recipients: string[], message: string) {
     }),
   });
 
-  // Borrowed exactly from authApi.ts
   const data = await response.json();
-  if (!response.ok) throw new Error(data.error || "Failed to send SMS");
+  
+  if (!response.ok) {
+    // Create a custom error so we can attach the partial logs to it
+    const error: any = new Error(data.error || "Failed to send SMS");
+    
+    // If the backend provided logs (e.g., some succeeded, some failed), attach them
+    // so the frontend can still save the successful ones to the local DB.
+    if (data.logs) {
+      error.logs = data.logs;
+    }
+    
+    throw error;
+  }
   
   return data;
 }
