@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { getUsers } from "../database/userDB";
 import { db } from "../database/db";
-import { sendSms } from "../api/smsApi"; // <-- Borrowed leaf!
+import { sendSms } from "../api/smsApi";
 
 const C = {
   bg: "#F2F2F7",
@@ -25,20 +25,38 @@ export default function SMSsettings() {
   const [error, setError] = useState("");
   const [success, setSuccess] = useState(false);
   
-  // New state for custom phone numbers
+  // State for custom phone numbers
   const [manualPhone, setManualPhone] = useState("");
 
+  // State for Sent History
+  const [sentLogs, setSentLogs] = useState<any[]>([]);
+
+  // Load users and sent logs on mount
   useEffect(() => {
-    async function loadUsers() {
+    async function loadInitialData() {
       try {
         const localUsers = await getUsers();
         setUsers(localUsers.filter((u: any) => u.phone));
+        
+        // Load sent logs
+        await loadSentLogs();
       } catch (e) {
-        console.error("Failed to load users for SMS", e);
+        console.error("Failed to load initial data", e);
       }
     }
-    loadUsers();
+    loadInitialData();
   }, []);
+
+  const loadSentLogs = async () => {
+    try {
+      const logs = await db.smsLogs.toArray();
+      // Sort newest first
+      logs.sort((a, b) => new Date(b.sentAt).getTime() - new Date(a.sentAt).getTime());
+      setSentLogs(logs);
+    } catch (e) {
+      console.error("Failed to load SMS logs", e);
+    }
+  };
 
   const toggleSelect = (phone: string) => {
     setSelectedPhones(prev =>
@@ -83,10 +101,7 @@ export default function SMSsettings() {
     setSuccess(false);
 
     try {
-      // Borrowed from PhoneEntry.tsx: Clean phone numbers before sending
       const cleanRecipients = selectedPhones.map(p => p.replace(/\s/g, "").trim());
-
-      // Borrowed from RegisterAdmin.tsx: Call the abstracted API function
       const data = await sendSms(cleanRecipients, message.trim());
       
       if (data.logs && data.logs.length > 0) {
@@ -102,7 +117,6 @@ export default function SMSsettings() {
       
       setTimeout(() => setSuccess(false), 3000);
     } catch (err: any) {
-      // Borrowed exact error catching from PhoneEntry.tsx
       console.error("Send SMS error:", err);
       setError(err.message || "Failed to send SMS. Check your network.");
       
@@ -119,6 +133,8 @@ export default function SMSsettings() {
       }
     } finally {
       setSending(false);
+      // Refresh the history list at the bottom regardless of success/fail
+      await loadSentLogs();
     }
   };
 
@@ -177,7 +193,6 @@ export default function SMSsettings() {
             </button>
           </div>
           
-          {/* Render custom number chips */}
           {selectedPhones.filter(p => !users.some(u => u.phone === p)).length > 0 && (
             <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", marginTop: "12px" }}>
               {selectedPhones.filter(p => !users.some(u => u.phone === p)).map(phone => (
@@ -283,6 +298,47 @@ export default function SMSsettings() {
         >
           {sending ? "Sending..." : "Send SMS"}
         </button>
+
+        {/* ==========================================
+            SENT HISTORY SECTION
+        ========================================== */}
+        <h2 style={{ fontSize: "20px", fontWeight: "700", color: C.textPrimary, marginBottom: "16px" }}>Sent History</h2>
+        <div style={{ background: C.card, borderRadius: "14px", overflow: "hidden", marginBottom: "40px", boxShadow: "0 4px 12px rgba(0,0,0,0.05)" }}>
+          {sentLogs.length === 0 ? (
+            <div style={{ padding: "40px 20px", textAlign: "center", color: C.textTertiary, fontSize: "15px" }}>
+              No sent messages found.
+            </div>
+          ) : (
+            sentLogs.map((log, index) => (
+              <div 
+                key={log.id} 
+                style={{ 
+                  padding: "16px", 
+                  borderBottom: index < sentLogs.length - 1 ? `0.5px solid ${C.separator}` : "none" 
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
+                  <span style={{ fontSize: "15px", fontWeight: "600", color: C.textPrimary }}>{log.phone}</span>
+                  <span style={{ 
+                    fontSize: "11px", 
+                    fontWeight: "700", 
+                    color: log.status === "Success" ? C.green : C.red, 
+                    background: log.status === "Success" ? "#EAF9EE" : "#FFEFEE", 
+                    padding: "4px 8px", 
+                    borderRadius: "6px",
+                    textTransform: "uppercase"
+                  }}>
+                    {log.status || "Unknown"}
+                  </span>
+                </div>
+                <p style={{ margin: "0 0 6px 0", fontSize: "14px", color: C.textSecondary }}>{log.message}</p>
+                <span style={{ fontSize: "12px", color: C.textTertiary }}>
+                  {new Date(log.sentAt).toLocaleString()}
+                </span>
+              </div>
+            ))
+          )}
+        </div>
       </div>
     </div>
   );
