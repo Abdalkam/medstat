@@ -7,7 +7,15 @@ import type {
 
 export interface ActiveAttendance { userId: string; courseId: string; }
 export interface RaisedHand { userId: string; courseId: string; username: string; timestamp: number; }
-export interface SmsLog { id?: string; to: string; message: string; sentAt: Date; }
+export interface SmsLog { 
+  id: string; 
+  tenant_id: string; 
+  phone: string; 
+  message: string; 
+  status: string; 
+  sent_by: string; 
+  sentAt: string; 
+}
 export interface AllowedSpeaker { userId: string; allowed: boolean; }
 
 export async function generateConsistentId(prefix: string, uniqueString: string): Promise<string> {
@@ -55,7 +63,7 @@ export class MedstatDatabase extends Dexie {
       assignmentFields: "id,assignmentId,type",
       assignmentSubmissions: "id,assignmentId,userId",
       schedules: "id,courseId,trainerId,scheduledAt",
-      smsLogs: "++id,to,sentAt",
+      smsLogs: "++id,to,sentAt", // Old schema (will be upgraded)
       allowedSpeakers: "userId"
     });
 
@@ -74,7 +82,27 @@ export class MedstatDatabase extends Dexie {
       assignmentFields: "id,assignmentId,type",
       assignmentSubmissions: "id,assignmentId,userId",
       schedules: "id,tenantId,courseId,trainerId,scheduledAt",
-      smsLogs: "++id,to,sentAt",
+      smsLogs: "++id,to,sentAt", // Old schema (will be upgraded)
+      allowedSpeakers: "userId"
+    });
+
+    // ✅ NEW VERSION 16: Fix smsLogs schema to use UUID and correct columns
+    this.version(16).stores({
+      users: "id,tenantId,email,username,role,createdAt,synced",
+      courses: "id,tenantId,name,createdAt",
+      materials: "id,courseId,title,fileType,presentationOrder,createdAt",
+      enrollments: "id,tenantId,courseId,userId,[userId+courseId],createdAt",
+      liveSessions: "id,courseId,trainerId,active,createdAt",
+      livePresentations: "id,courseId,materialId",
+      chatMessages: "id,courseId,userId,createdAt",
+      settings: "id,tenantId",
+      activeAttendances: "userId,courseId,[userId+courseId]",
+      raisedHands: "userId,courseId,[userId+courseId]",
+      assignments: "id,tenantId,courseId,trainerId",
+      assignmentFields: "id,assignmentId,type",
+      assignmentSubmissions: "id,assignmentId,userId",
+      schedules: "id,tenantId,courseId,trainerId,scheduledAt",
+      smsLogs: "id,tenant_id,phone,status,sentAt", // Fixed!
       allowedSpeakers: "userId"
     });
 

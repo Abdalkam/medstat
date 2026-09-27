@@ -106,7 +106,12 @@ export default function SMSsettings() {
       
       if (data.logs && data.logs.length > 0) {
         await db.smsLogs.bulkAdd(data.logs.map((log: any) => ({
-          ...log,
+          id: log.id || crypto.randomUUID(),
+          tenant_id: log.tenant_id,
+          phone: log.phone,
+          message: log.message,
+          status: log.status,
+          sent_by: log.sent_by,
           sentAt: log.sent_at ? new Date(log.sent_at).toISOString() : new Date().toISOString()
         })));
       }
@@ -124,7 +129,12 @@ export default function SMSsettings() {
       if (err.logs && err.logs.length > 0) {
         try {
           await db.smsLogs.bulkAdd(err.logs.map((log: any) => ({
-            ...log,
+            id: log.id || crypto.randomUUID(),
+            tenant_id: log.tenant_id,
+            phone: log.phone,
+            message: log.message,
+            status: log.status,
+            sent_by: log.sent_by,
             sentAt: log.sent_at ? new Date(log.sent_at).toISOString() : new Date().toISOString()
           })));
         } catch (dbErr) {
