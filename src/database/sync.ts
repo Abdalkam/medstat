@@ -123,6 +123,11 @@ export async function pullAllTenantData(tenantId: string) {
     if (data.enrollments) {
       for (const e of data.enrollments) await db.enrollments.put(mapEnrollment(e));
     }
+    
+    // ✅ NEW: Pull and save SMS logs from Supabase
+    if (data.smsLogs) {
+      for (const log of data.smsLogs) await db.smsLogs.put(mapSmsLog(log));
+    }
   } catch (error) {
     if (!(error instanceof Error && error.message === "401")) {
       console.error("❌ Pull tenant data failed:", error);
@@ -235,5 +240,18 @@ function mapEnrollment(e: any) {
     enrolledAt: e.enrolled_at || e.enrolledAt || new Date().toISOString(),
     createdAt: e.created_at || e.createdAt || new Date().toISOString(),
     synced: true,
+  };
+}
+
+// ✅ NEW: Helper to map SMS logs from Supabase to local Dexie format
+function mapSmsLog(log: any) {
+  return {
+    id: log.id,
+    tenant_id: log.tenant_id || log.tenantId || "",
+    phone: log.phone || "",
+    message: log.message || "",
+    status: log.status || "Unknown",
+    sent_by: log.sent_by || log.sentBy || "",
+    sentAt: log.sent_at ? new Date(log.sent_at).toISOString() : new Date().toISOString(),
   };
 }

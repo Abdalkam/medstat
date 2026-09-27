@@ -791,13 +791,14 @@ app.get("/api/sync/pull", requireAuth, async (req: Request, res: Response) => {
   const targetTenantId = (tenant_id as string) || _auth.tenantId;
 
   try {
-    const [usersRes, coursesRes, enrollmentsRes, materialsRes, assignmentsRes, schedulesRes] = await Promise.all([
+    const [usersRes, coursesRes, enrollmentsRes, materialsRes, assignmentsRes, schedulesRes, smsLogsRes] = await Promise.all([
       supabase.from("users").select("id, tenant_id, username, phone, email, role, assigned_courses, profile_pic, tuition, remuneration, created_at").eq("tenant_id", targetTenantId),
       supabase.from("courses").select("*").eq("tenant_id", targetTenantId),
       supabase.from("enrollments").select("*").eq("tenant_id", targetTenantId),
       supabase.from("course_materials").select("*").eq("tenant_id", targetTenantId),
       supabase.from("assignments").select("*").eq("tenant_id", targetTenantId),
       supabase.from("schedules").select("*").eq("tenant_id", targetTenantId),
+      supabase.from("sms_logs").select("*").eq("tenant_id", targetTenantId) // ✅ NEW: Fetch SMS logs
     ]);
 
     res.json({
@@ -807,6 +808,7 @@ app.get("/api/sync/pull", requireAuth, async (req: Request, res: Response) => {
       course_materials: materialsRes.data || [],
       assignments: assignmentsRes.data || [],
       schedules: schedulesRes.data || [],
+      smsLogs: smsLogsRes.data || [] // ✅ NEW: Include SMS logs in response
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
