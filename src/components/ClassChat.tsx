@@ -15,9 +15,9 @@ const C = {
   green: "#34C759",
   red: "#FF3B30",
   orange: "#FF9F0A",
-  bubbleOut: "#D9FDD3", // WhatsApp Outgoing
-  bubbleIn: "#FFFFFF",  // WhatsApp Incoming
-  whatsappBg: "#0B141A" // WhatsApp Dark Background
+  bubbleOut: "#D9FDD3", 
+  bubbleIn: "#FFFFFF",  
+  whatsappBg: "#0B141A" 
 };
 
 function VideoTile({ videoTrack }: { videoTrack: MediaStreamTrack | null }) {
@@ -188,7 +188,7 @@ export default function ClassChat({ courseId, isChatOpen, toggleChatOpen, videoT
 
   const msgGroups = getMsgGroups();
 
-  // Collapsed State (Thin Sidebar)
+  // Collapsed State
   if (!isChatOpen) {
     return (
       <div style={{ width: "100%", height: "100%", background: C.bg, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "space-between", padding: "16px 0" }}>
@@ -212,7 +212,7 @@ export default function ClassChat({ courseId, isChatOpen, toggleChatOpen, videoT
     );
   }
 
-  // Expanded State (Full Chat)
+  // Expanded State
   return (
     <div style={{ width: "100%", height: "100%", background: C.bg, display: "flex", flexDirection: "column", overflow: "hidden", color: C.textPrimary, fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" }}>
       <div style={{ padding: "12px 16px", background: "rgba(0,0,0,0.3)", display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: `1px solid ${C.separator}` }}>
@@ -225,7 +225,14 @@ export default function ClassChat({ courseId, isChatOpen, toggleChatOpen, videoT
       <div style={{ padding: "12px", borderBottom: `1px solid ${C.separator}` }}>
         <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
           <div style={{ width: "100px", height: "70px", borderRadius: "12px", overflow: "hidden", background: "#000", flexShrink: 0, position: "relative" }}>
-            {videoTrack ? <VideoTile videoTrack={videoTrack} /> : <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: C.textSecondary, fontSize: "24px" }}>🦗</div>}
+            {videoTrack ? (
+              <VideoTile videoTrack={videoTrack} />
+            ) : (
+              // Replaced Grasshopper with Camera Icon
+              <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: C.textSecondary }}>
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+              </div>
+            )}
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: "8px", flex: 1 }}>
             {toggleMic && (

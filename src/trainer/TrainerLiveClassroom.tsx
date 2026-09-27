@@ -268,8 +268,7 @@ export default function TrainerLiveClassroom() {
       await supabase.from("live_presentations").delete().eq("course_id", courseId);
       await supabase.from("live_presentations").insert({ id: crypto.randomUUID(), tenant_id: tenantId, course_id: courseId, started_by: currentUser.id, material_id: firstMat.id, current_page: 1, is_blackboard: false, blackboard_strokes: [], blackboard_lines: [], blackboard_labels: [], updated_at: new Date().toISOString() });
     }
-
-    if (daily && !isVoiceJoined) { try { setIsConnecting(true); const roomUrl = await getDailyRoomUrl(); if (!roomUrl) return; await daily.join({ url: roomUrl, startVideoOff: true }); setIsVoiceJoined(true); setIsMicOn(true); } catch (e) {} finally { setIsConnecting(false); } }
+    // Note: Removed automatic daily.join() from here. Trainer must use the Chat Sidebar icons to activate audio/video.
   }
 
   async function stopSession() {
@@ -344,24 +343,11 @@ export default function TrainerLiveClassroom() {
             </div>
             {presentation && !isBlackboardMode && (<div style={{ display: "flex", background: C.bg, borderRadius: "10px", padding: "4px" }}><button onClick={() => changePage(-1)} style={{ flex: 1, padding: "8px", border: "none", background: "transparent", cursor: "pointer", color: C.medBlue, fontWeight: "600", borderRadius: "8px" }}>‹ Prev</button><button onClick={() => changePage(1)} style={{ flex: 1, padding: "8px", border: "none", background: "transparent", cursor: "pointer", color: C.medBlue, fontWeight: "600", borderRadius: "8px" }}>Next ›</button></div>)}
             
-            {/* Live Class A/V Controls with Filled Solid Icons */}
+            {/* Live Class Controls (No Mic/Cam here anymore) */}
             <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-              <button onClick={toggleMic} disabled={isConnecting} style={{ ...iosBtnStyle, background: isMicOn ? C.green : C.iosBtnBg, color: isMicOn ? "#FFFFFF" : C.textPrimary, opacity: isConnecting ? 0.7 : 1 }}>
-                {isMicOn ? (
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3z"/><path d="M19 11c0 3.86-3.14 7-7 7s-7-3.14-7-7" fill="none" stroke="currentColor" strokeWidth="2"/><line x1="12" y1="19" x2="12" y2="22" stroke="currentColor" strokeWidth="2"/></svg>
-                ) : (
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><line x1="2" y1="2" x2="22" y2="22" stroke="currentColor" strokeWidth="2"/><path d="M9 5a3 3 0 0 1 5.94-.6" fill="none" stroke="currentColor" strokeWidth="2"/><path d="M15 9v2c0 .3-.03.59-.08.87L9.41 6.36C9.76 6.13 10 5.79 10 5v4.59l2.7 2.7H15z" fill="none" stroke="currentColor" strokeWidth="2"/></svg>
-                )}
-              </button>
-              <button onClick={toggleCam} disabled={isConnecting} style={{ ...iosBtnStyle, background: isCamOn ? C.medBlue : C.iosBtnBg, color: isCamOn ? "#FFFFFF" : C.textPrimary, opacity: isConnecting ? 0.7 : 1 }}>
-                {isCamOn ? (
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
-                ) : (
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M23 7l-7 5 7 5V7z" fill="none" stroke="currentColor" strokeWidth="2"/><rect x="1" y="5" width="15" height="14" rx="2" fill="none" stroke="currentColor" strokeWidth="2"/><line x1="1" y1="1" x2="23" y2="23" stroke="currentColor" strokeWidth="2"/></svg>
-                )}
-              </button>
-              <button onClick={toggleBlackboard} style={{ ...iosBtnStyle, background: isBlackboardMode ? C.purple : C.iosBtnBg, color: isBlackboardMode ? "#FFFFFF" : C.textPrimary }}>
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><rect x="2" y="4" width="20" height="16" rx="2" ry="2"/><line x1="6" y1="20" x2="18" y2="20"/></svg>
+              <button onClick={toggleBlackboard} style={{ ...iosBtnStyle, background: isBlackboardMode ? C.purple : C.iosBtnBg, color: isBlackboardMode ? "#FFFFFF" : C.textPrimary, width: "100%" }}>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ marginRight: 8 }}><rect x="2" y="4" width="20" height="16" rx="2" ry="2"/><line x1="6" y1="20" x2="18" y2="20"/></svg>
+                Toggle Blackboard
               </button>
             </div>
 
@@ -424,6 +410,7 @@ export default function TrainerLiveClassroom() {
           )}
         </div>
 
+        {/* Sliding Chat Sidebar (Sole handler of Mic/Cam) */}
         <div style={{ width: isChatOpen ? "360px" : "64px", minWidth: 0, transition: "width 0.3s ease", flexShrink: 0, borderLeft: "1px solid #E5E5EA", background: "#1C1C1E" }}>
           <ClassChat 
             courseId={courseId || ""} 
