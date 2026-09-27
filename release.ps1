@@ -96,7 +96,9 @@ if (Test-Path $bundlePath) {
 
 # ✅ FIX 1: Wipe Rust cache so it rebuilds the new version properly
 Write-Host "Cleaning Rust cache to prevent version mismatch..." -ForegroundColor DarkGray
-npm run tauri -- clean
+Push-Location src-tauri
+cargo clean
+Pop-Location
 
 # ✅ FIX 2: Use the new medstat_prime.key
  $env:TAURI_SIGNING_PRIVATE_KEY = "C:\Users\HP\.tauri\medstat_prime.key"
