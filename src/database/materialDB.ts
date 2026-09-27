@@ -35,5 +35,10 @@ export async function getMaterialById(id: string): Promise<CourseMaterial | unde
 
 export async function deleteMaterial(id: string): Promise<void> {
   await db.materials.delete(id);
-  deleteMaterialFromSupabase(id);
+  
+  // ✅ FIX: Fetch tenantId and pass it to Supabase to bypass RLS policies
+  const tenantId = getTenantId();
+  if (tenantId) {
+    deleteMaterialFromSupabase(id, tenantId);
+  }
 }

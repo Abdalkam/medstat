@@ -1,3 +1,4 @@
+// src/database/supabaseCourseSync.ts
 import { db } from "./db";
 import { sbFetch } from "../auth/supabase";
 import type { Course, Enrollment, CourseMaterial, Assignment, AssignmentSubmission, Schedule } from "../types";
@@ -66,11 +67,13 @@ export async function pushMaterialToSupabase(material: CourseMaterial, tenantId:
   }
 }
 
-export async function deleteMaterialFromSupabase(id: string): Promise<void> {
+// ✅ FIX: Include tenantId in the delete query to satisfy RLS
+export async function deleteMaterialFromSupabase(id: string, tenantId: string): Promise<void> {
   try {
     await sbFetch("course_materials", {
       method: "DELETE",
       id: `eq.${id}`,
+      tenant_id: `eq.${tenantId}`,
     });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : "Unknown error";

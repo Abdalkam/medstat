@@ -180,9 +180,9 @@ export default function UploadMaterials() {
   // ====================================================================
   // FIXED: Explicit Error Throwing For Diagnostics
   // ====================================================================
-  async function deleteMaterialFromSupabase(materialId: string) {
+  async function deleteMaterialFromSupabase(materialId: string, tenantId: string) {
     try { 
-      const { error } = await supabase.from('course_materials').delete().eq('id', materialId); 
+      const { error } = await supabase.from('course_materials').delete().eq('id', materialId).eq('tenant_id', tenantId); 
       if (error) throw error; 
       return true;
     } catch (error: any) { 
@@ -297,6 +297,9 @@ export default function UploadMaterials() {
   async function removeMaterial(id: string) {
     if (!confirm("Remove this page from the lesson?")) return;
     
+    const loggedInUser = JSON.parse(localStorage.getItem("currentUser") || "{}");
+    const tenantId = loggedInUser.tenantId;
+
     // 1. INSTANTLY remove from the screen (Optimistic UI)
     setMaterials(prevMaterials => prevMaterials.filter(m => m.id !== id));
     
@@ -312,7 +315,9 @@ export default function UploadMaterials() {
 
     try {
       // 3. Delete from Supabase
-      await deleteMaterialFromSupabase(id);
+      if (tenantId) {
+        await deleteMaterialFromSupabase(id, tenantId);
+      }
     } catch (supabaseErr: any) {
       console.error("Supabase Delete Error:", supabaseErr);
       alert("Failed to delete from cloud database: " + supabaseErr.message);
@@ -325,6 +330,7 @@ export default function UploadMaterials() {
   const canUpload = !uploading && file !== null && title.trim() !== "";
 
   return (
+    // ✅ FIXED: MozOsxFontSmoothing typo
     <div style={{ minHeight: "100vh", background: C.bg, fontFamily: FONT, WebkitFontSmoothing: "antialiased", MozOsxFontSmoothing: "grayscale" }}>
       {/* SINGLE APP BAR */}
       <div style={{ borderBottom: `1px solid ${C.separator}`, padding: "12px 24px", position: "sticky", top: 0, zIndex: 10, width: "100%", boxSizing: "border-box", background: "rgba(255,255,255,0.85)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)" }}>
