@@ -269,7 +269,7 @@ app.post("/api/auth/login", async (req: Request, res: Response) => {
 });
 
 // ==========================================
-// 🚀 SMS BULK/CUSTOM SEND ENDPOINT
+// 🚀 SMS BULK/CUSTOM SEND ENDPOINT (WITH SENDER ID FALLBACK)
 // ==========================================
 app.post("/api/sms/send", requireAuth, async (req: Request, res: Response) => {
   const { _auth } = req.body;
@@ -285,37 +285,82 @@ app.post("/api/sms/send", requireAuth, async (req: Request, res: Response) => {
   try {
     // Format all phone numbers
     const formattedRecipients = recipients.map((p: string) => formatPhoneNumber(p));
-
-    // Send via Africa's Talking
-    const result = await smsService.send({ 
-      to: formattedRecipients, 
-      message: message, 
-      from: "ATTech" 
-    });
-
-    const atRecipients = result?.SMSMessageData?.Recipients || [];
     
-    // Prepare logs to insert into Supabase
-    const logsToInsert = formattedRecipients.map((phone: string) => {
-      // Match the number to the AT response to get the status
-      const atResult = atRecipients.find((r: any) => r.number === phone || r.number === phone.replace("+", ""));
+    let finalLogs: Array<{ phone: string; status: string }> = [];
+    let numbersToRetry: string[] = [];
+
+    // ---------------------------------------------------------
+    // ATTEMPT 1: Send using MEDSTAT Sender ID
+    // ---------------------------------------------------------
+    try {
+      const result1 = await smsService.send({ 
+        to: formattedRecipients, 
+        message: message, 
+        from: "MEDSTAT" 
+      });
+
+      const atRecipients1 = result1?.SMSMessageData?.Recipients || [];
+      
+      atRecipients1.forEach((r: any) => {
+        if (r.status === "Success") {
+          finalLogs.push({ phone: r.number, status: "Success" });
+        } else {
+          // Failed with MEDSTAT, add to retry list
+          numbersToRetry.push(r.number);
+        }
+      });
+    } catch (err: any) {
+      console.error("MEDSTAT Sender ID Error (Retrying with ATTech):", err.message);
+      // If the whole request fails (e.g. Sender ID not approved at all), retry all
+      numbersToRetry = [...formattedRecipients];
+    }
+
+    // ---------------------------------------------------------
+    // ATTEMPT 2: Fallback to ATTech for any failed numbers
+    // ---------------------------------------------------------
+    if (numbersToRetry.length > 0) {
+      try {
+        const result2 = await smsService.send({ 
+          to: numbersToRetry, 
+          message: message, 
+          from: "ATTech" 
+        });
+
+        const atRecipients2 = result2?.SMSMessageData?.Recipients || [];
+        
+        atRecipients2.forEach((r: any) => {
+          finalLogs.push({ phone: r.number, status: r.status || "Failed" });
+        });
+      } catch (err2: any) {
+        console.error("ATTech Fallback Error:", err2.message);
+        // If ATTech also fails, mark them all as failed
+        numbersToRetry.forEach(phone => finalLogs.push({ phone, status: "Failed" }));
+      }
+    }
+
+    // ---------------------------------------------------------
+    // SAVE LOGS TO SUPABASE
+    // ---------------------------------------------------------
+    const logsToInsert = finalLogs.map((log) => {
       return {
+        id: crypto.randomUUID(),
         tenant_id: _auth.tenantId,
-        phone: phone,
+        phone: log.phone,
         message: message,
-        status: atResult?.status || "Unknown",
+        status: log.status,
         sent_at: new Date().toISOString(),
         sent_by: _auth.userId
       };
     });
 
-    // Save logs to Supabase
     if (logsToInsert.length > 0) {
       const { error: logError } = await supabase.from("sms_logs").insert(logsToInsert);
       if (logError) console.error("Failed to save SMS logs to Supabase", logError);
     }
 
-    // ✅ NEW: Check if any numbers failed, and tell the frontend!
+    // ---------------------------------------------------------
+    // RESPOND TO FRONTEND
+    // ---------------------------------------------------------
     const failedNumbers = logsToInsert.filter(log => log.status !== "Success");
     if (failedNumbers.length > 0) {
       const failList = failedNumbers.map(f => `${f.phone} (${f.status})`).join(", ");
