@@ -4,6 +4,8 @@ import type { ChatMessage } from "../types";
 import { supabase } from "../auth/supabase";
 import { db } from "../database/db";
 import { sendChatMessage, getChatMessages } from "../database/chatDB";
+import { save } from "@tauri-apps/plugin-dialog";
+import { writeFile } from "@tauri-apps/plugin-fs";
 
 const C = {
   bg: "#1C1C1E",
@@ -90,6 +92,38 @@ export default function ClassChat({ courseId, isChatOpen, toggleChatOpen, videoT
     return {
       id: raw.id, courseId: raw.course_id ?? raw.courseId ?? courseId, userId: raw.user_id ?? raw.userId ?? "", username: raw.username ?? "", message: raw.message ?? "", createdAt: raw.created_at ?? raw.createdAt ?? "", imageUrl: raw.image_url ?? raw.imageUrl ?? null,
     };
+  }
+
+  async function handleNativeDownload(base64Data: string, fileId: string) {
+    try {
+      const [meta, base64] = base64Data.split(',');
+      const mime = meta.match(/:(.*?);/)?.[1] || 'application/octet-stream';
+      
+      const byteCharacters = atob(base64);
+      const byteNumbers = new Array(byteCharacters.length);
+      for (let i = 0; i < byteCharacters.length; i++) {
+        byteNumbers[i] = byteCharacters.charCodeAt(i);
+      }
+      const byteArray = new Uint8Array(byteNumbers);
+
+      const ext = mime.split('/')[1]?.split(';')[0] || 'bin';
+      
+      const filePath = await save({
+        defaultPath: `file_${fileId}.${ext}`,
+      });
+      
+      if (filePath) {
+        await writeFile(filePath, byteArray);
+      }
+    } catch (error) {
+      console.error("Native save failed, falling back to web download:", error);
+      const link = document.createElement('a');
+      link.href = base64Data;
+      link.download = `file_${fileId}`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    }
   }
 
   useEffect(() => {
@@ -328,7 +362,6 @@ export default function ClassChat({ courseId, isChatOpen, toggleChatOpen, videoT
                   const isLast = idx === group.msgs.length - 1;
                   return (
                     <div key={msg.id} style={{ display: "flex", alignItems: "center", gap: "4px", flexDirection: isOwn ? "row-reverse" : "row" }}>
-                      {/* Standard Rectangular Curved Corners (12px) */}
                       <div style={{ background: isOwn ? C.bubbleOut : C.bubbleIn, color: C.textDark, padding: msg.imageUrl ? "4px" : "6px 8px 6px 10px", borderRadius: "12px", marginBottom: isLast ? "4px" : "0px", maxWidth: "100%", boxShadow: "0 1px 0.5px rgba(11,20,26,0.13)" }}>
                         {msg.imageUrl ? (
                           <div style={{ position: "relative", minWidth: "180px" }}>
@@ -339,20 +372,31 @@ export default function ClassChat({ courseId, isChatOpen, toggleChatOpen, videoT
                             ) : msg.imageUrl.startsWith("data:image") ? (
                               <img src={msg.imageUrl} alt="Uploaded" style={{ width: "100%", maxWidth: "200px", borderRadius: "6px", display: "block" }} />
                             ) : (
-                              <a href={msg.imageUrl} download={"file_" + msg.id} style={{ display: "flex", alignItems: "center", gap: "10px", padding: "8px", background: isOwn ? "#D1E7FF" : C.fileBoxBg, borderRadius: "8px", textDecoration: "none", color: C.textDark, minWidth: "200px" }}>
-                                <div style={{ fontSize: "32px", flexShrink: 0, lineHeight: 1 }}>
+                              <div 
+                                onClick={() => handleNativeDownload(msg.imageUrl!, msg.id)} 
+                                style={{ 
+                                  display: "flex", 
+                                  alignItems: "center", 
+                                  gap: "12px", 
+                                  padding: "10px", 
+                                  background: isOwn ? "#D1E7FF" : C.fileBoxBg, 
+                                  borderRadius: "8px", 
+                                  textDecoration: "none", 
+                                  color: C.textDark, 
+                                  minWidth: "200px", 
+                                  cursor: "pointer" 
+                                }}
+                              >
+                                <div style={{ fontSize: "28px", flexShrink: 0, lineHeight: 1 }}>
                                   {getFileIcon("file").icon}
                                 </div>
-                                <div style={{ display: "flex", flexDirection: "column", overflow: "hidden", flex: 1, gap: "2px" }}>
-                                  <span style={{ fontSize: "14px", fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                                    {msg.imageUrl.split(";")[0].split("/")[1] || "Document"}.dat
-                                  </span>
-                                  <span style={{ fontSize: "12px", color: C.textGrey, display: "flex", alignItems: "center", gap: "4px" }}>
-                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                                    Download
-                                  </span>
+                                <span style={{ fontSize: "14px", fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", flex: 1 }}>
+                                  {msg.imageUrl.split(";")[0].split("/")[1] || "Document"}.dat
+                                </span>
+                                <div style={{ color: C.textGrey, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                                 </div>
-                              </a>
+                              </div>
                             )}
                             <span style={{ position: "absolute", bottom: "4px", right: "4px", background: "rgba(0,0,0,0.6)", color: "#fff", fontSize: "10px", padding: "2px 6px", borderRadius: "4px" }}>{formatTime(msg.createdAt)}</span>
                           </div>
