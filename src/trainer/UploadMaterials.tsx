@@ -240,18 +240,14 @@ export default function UploadMaterials() {
     resetDragState();
   }
 
-  // ==========================================================
-  // NEW: Explicit Move Up/Down Logic
-  // ==========================================================
   function moveItem(id: string, direction: 'up' | 'down') {
     const currentIndex = materials.findIndex(m => m.id === id);
     if (currentIndex === -1) return;
 
     const newIndex = direction === 'up' ? currentIndex - 1 : currentIndex + 1;
-    if (newIndex < 0 || newIndex >= materials.length) return; // Prevent moving out of bounds
+    if (newIndex < 0 || newIndex >= materials.length) return;
 
     const newMaterials = [...materials];
-    // Remove the item and insert it at the new index
     const [movedItem] = newMaterials.splice(currentIndex, 1);
     newMaterials.splice(newIndex, 0, movedItem);
     
@@ -261,17 +257,9 @@ export default function UploadMaterials() {
   function saveNewOrder(newMaterials: CourseMaterial[]) {
     const loggedInUser = JSON.parse(localStorage.getItem("currentUser") || "{}");
     const tenantId = loggedInUser.tenantId;
-    
-    // Re-assign presentationOrder sequentially from 0 to N
     const updatedMaterials = newMaterials.map((m, idx) => ({ ...m, presentationOrder: idx }));
-    
-    // Update state instantly for responsive UI
     setMaterials(updatedMaterials);
-    
-    // Save to local DB
     updatedMaterials.forEach(m => updateMaterial(m));
-    
-    // Sync the newly ordered list to Supabase
     if (tenantId) syncMultipleMaterialsToSupabase(updatedMaterials, tenantId);
   }
 
@@ -298,11 +286,20 @@ export default function UploadMaterials() {
     } catch (err: any) { console.error("Failed to start lesson:", err); alert("Something went wrong while trying to start the live session: " + (err.message || "Unknown error")); } finally { setStartingLive(false); }
   }
 
+  // ==========================================================
+  // FIXED: Optimistic UI Deletion
+  // ==========================================================
   async function removeMaterial(id: string) {
     if (!confirm("Remove this page from the lesson?")) return;
-    await deleteMaterialFromSupabase(id);
+    
+    // 1. INSTANTLY remove from the screen (Optimistic UI)
+    setMaterials(prevMaterials => prevMaterials.filter(m => m.id !== id));
+    
+    // 2. Delete from local IndexedDB
     await deleteMaterial(id);
-    await loadData();
+    
+    // 3. Attempt to delete from Supabase in the background
+    deleteMaterialFromSupabase(id);
   }
 
   useEffect(() => { return () => { if (imagePreview) URL.revokeObjectURL(imagePreview); }; }, [imagePreview]);
@@ -396,7 +393,20 @@ export default function UploadMaterials() {
                     <div style={{ flex: 1, minWidth: 0 }}><div style={{ ...TS.input, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{mat.title}</div><div style={{ ...TS.label, fontSize: 12, marginTop: 2, color: C.textTertiary }}>{meta.label} • {mat.fileName}</div></div>
                   </div>
                   
-                  <button onClick={() => removeMaterial(mat.id)} style={{ width: 32, height: 32, background: "transparent", border: "none", color: C.red, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", opacity: 0.7, transition: "opacity 0.2s", flexShrink: 0 }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
+                  {/* ========================================================== */}
+                  {/* FIXED: Delete button with draggable={false} and stopPropagation */}
+                  {/* ========================================================== */}
+                  <button 
+                    draggable={false}
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={(e) => { 
+                      e.stopPropagation(); 
+                      removeMaterial(mat.id); 
+                    }} 
+                    style={{ width: 32, height: 32, background: "transparent", border: "none", color: C.red, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", opacity: 0.7, transition: "opacity 0.2s", flexShrink: 0 }}
+                  >
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                  </button>
                 </div>
               );
             })}
