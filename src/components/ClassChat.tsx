@@ -15,7 +15,6 @@ const C = {
   green: "#34C759",
   red: "#FF3B30",
   orange: "#FF9F0A",
-  // WhatsApp Theme Colors
   whatsappGreen: "#00A884",
   whatsappDarkGreen: "#075E54",
   bubbleOut: "#D9FDD3", 
@@ -28,6 +27,19 @@ const C = {
   fileBoxBg: "#E1F2FB",
   fileBoxText: "#0277BD"
 };
+
+function getFileIcon(fileName: string) {
+  const ext = fileName.split('.').pop()?.toLowerCase() || '';
+  if (ext === 'pdf') return { icon: '📄', color: '#FF3B30' };
+  if (ext === 'doc' || ext === 'docx') return { icon: '📝', color: '#0A84FF' };
+  if (ext === 'xls' || ext === 'xlsx') return { icon: '📊', color: '#34C759' };
+  if (ext === 'ppt' || ext === 'pptx') return { icon: '📽️', color: '#FF9F0A' };
+  if (ext === 'zip' || ext === 'rar') return { icon: '🗜️', color: '#8E8E93' };
+  if (ext === 'mp3' || ext === 'wav' || ext === 'm4a') return { icon: '🎵', color: '#AF52DE' };
+  if (ext === 'mp4' || ext === 'mov' || ext === 'webm') return { icon: '🎬', color: '#AF52DE' };
+  if (ext === 'jpg' || ext === 'jpeg' || ext === 'png' || ext === 'gif') return { icon: '🖼️', color: '#34C759' };
+  return { icon: '📁', color: '#8E8E93' };
+}
 
 function VideoTile({ videoTrack }: { videoTrack: MediaStreamTrack | null }) {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -63,7 +75,6 @@ export default function ClassChat({ courseId, isChatOpen, toggleChatOpen, videoT
   const [mediaBase64, setMediaBase64] = useState<string | null>(null);
   const [mediaName, setMediaName] = useState<string>("file");
   
-  // Recording State
   const [isRecording, setIsRecording] = useState(false);
   const [recordingType, setRecordingType] = useState<'audio' | 'video'>('audio');
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -150,7 +161,6 @@ export default function ClassChat({ courseId, isChatOpen, toggleChatOpen, videoT
 
   const clearMediaPreview = () => { setMediaPreview(null); setMediaBase64(null); setMediaName("file"); };
 
-  // --- RECORDING LOGIC ---
   const startRecording = async (type: 'audio' | 'video') => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia(
@@ -173,7 +183,6 @@ export default function ClassChat({ courseId, isChatOpen, toggleChatOpen, videoT
           setMediaName(type === 'video' ? 'video_message.webm' : 'voice_message.webm');
         };
         reader.readAsDataURL(blob);
-        // Stop all tracks to turn off camera/mic indicator
         stream.getTracks().forEach(track => track.stop());
       };
       
@@ -249,7 +258,6 @@ export default function ClassChat({ courseId, isChatOpen, toggleChatOpen, videoT
 
   const iconBtnStyle: React.CSSProperties = { width: "40px", height: "40px", borderRadius: "50%", border: "none", background: "transparent", color: C.textGrey, cursor: "pointer", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" };
 
-  // Collapsed State
   if (!isChatOpen) {
     return (
       <div style={{ width: "100%", height: "100%", background: C.bg, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "space-between", padding: "16px 0" }}>
@@ -273,11 +281,10 @@ export default function ClassChat({ courseId, isChatOpen, toggleChatOpen, videoT
     );
   }
 
-  // Expanded State
   return (
     <div style={{ width: "100%", height: "100%", background: C.bg, display: "flex", flexDirection: "column", overflow: "hidden", color: C.textPrimary, fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" }}>
       <div style={{ padding: "12px 16px", background: "rgba(0,0,0,0.3)", display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: `1px solid ${C.separator}` }}>
-        <span style={{ color: C.textPrimary, fontWeight: "600", fontSize: "14px" }}>Live Chat & Call</span>
+        <span style={{ color: C.textPrimary, fontWeight: "600", fontSize: "14px" }}>Live stream</span>
         <button onClick={toggleChatOpen} style={{ background: "none", border: "none", color: C.textSecondary, cursor: "pointer", padding: "4px", borderRadius: "6px" }} title="Close Chat">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="13 17 18 12 13 7"/><polyline points="6 17 11 12 6 7"/></svg>
         </button>
@@ -321,7 +328,8 @@ export default function ClassChat({ courseId, isChatOpen, toggleChatOpen, videoT
                   const isLast = idx === group.msgs.length - 1;
                   return (
                     <div key={msg.id} style={{ display: "flex", alignItems: "center", gap: "4px", flexDirection: isOwn ? "row-reverse" : "row" }}>
-                      <div style={{ background: isOwn ? C.bubbleOut : C.bubbleIn, color: C.textDark, padding: msg.imageUrl ? "4px" : "6px 8px 6px 10px", borderRadius: isOwn ? "8px 0px 8px 8px" : "0px 8px 8px 8px", marginBottom: isLast ? "4px" : "0px", maxWidth: "100%", boxShadow: "0 1px 0.5px rgba(11,20,26,0.13)" }}>
+                      {/* Standard Rectangular Curved Corners (12px) */}
+                      <div style={{ background: isOwn ? C.bubbleOut : C.bubbleIn, color: C.textDark, padding: msg.imageUrl ? "4px" : "6px 8px 6px 10px", borderRadius: "12px", marginBottom: isLast ? "4px" : "0px", maxWidth: "100%", boxShadow: "0 1px 0.5px rgba(11,20,26,0.13)" }}>
                         {msg.imageUrl ? (
                           <div style={{ position: "relative", minWidth: "180px" }}>
                             {msg.imageUrl.startsWith("data:video") ? (
@@ -331,13 +339,18 @@ export default function ClassChat({ courseId, isChatOpen, toggleChatOpen, videoT
                             ) : msg.imageUrl.startsWith("data:image") ? (
                               <img src={msg.imageUrl} alt="Uploaded" style={{ width: "100%", maxWidth: "200px", borderRadius: "6px", display: "block" }} />
                             ) : (
-                              <a href={msg.imageUrl} download={"file_" + msg.id} style={{ display: "flex", alignItems: "center", gap: "8px", padding: "8px", background: C.fileBoxBg, borderRadius: "8px", textDecoration: "none", color: C.fileBoxText, minWidth: "180px" }}>
-                                <div style={{ width: "36px", height: "36px", borderRadius: "50%", background: "rgba(2, 119, 189, 0.15)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                              <a href={msg.imageUrl} download={"file_" + msg.id} style={{ display: "flex", alignItems: "center", gap: "10px", padding: "8px", background: isOwn ? "#D1E7FF" : C.fileBoxBg, borderRadius: "8px", textDecoration: "none", color: C.textDark, minWidth: "200px" }}>
+                                <div style={{ fontSize: "32px", flexShrink: 0, lineHeight: 1 }}>
+                                  {getFileIcon("file").icon}
                                 </div>
-                                <div style={{ display: "flex", flexDirection: "column", overflow: "hidden" }}>
-                                  <span style={{ fontSize: "13px", fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>Document</span>
-                                  <span style={{ fontSize: "11px", color: C.textGrey }}>Click to Download</span>
+                                <div style={{ display: "flex", flexDirection: "column", overflow: "hidden", flex: 1, gap: "2px" }}>
+                                  <span style={{ fontSize: "14px", fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                                    {msg.imageUrl.split(";")[0].split("/")[1] || "Document"}.dat
+                                  </span>
+                                  <span style={{ fontSize: "12px", color: C.textGrey, display: "flex", alignItems: "center", gap: "4px" }}>
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                                    Download
+                                  </span>
                                 </div>
                               </a>
                             )}
@@ -364,10 +377,9 @@ export default function ClassChat({ courseId, isChatOpen, toggleChatOpen, videoT
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Media Preview Bar */}
       {mediaPreview && (
         <div style={{ padding: "8px 12px", background: C.inputBg, display: "flex", alignItems: "center", gap: "12px", borderTop: `1px solid #E9EDEF` }}>
-          {mediaPreview.startsWith("data:video") ? <video src={mediaPreview} style={{ width: "40px", height: "40px", borderRadius: "6px", objectFit: "cover" }} /> : mediaPreview.startsWith("data:audio") ? <audio src={mediaPreview} controls style={{ height: "40px" }} /> : mediaPreview.startsWith("data:image") ? <img src={mediaPreview} alt="Preview" style={{ width: "40px", height: "40px", borderRadius: "6px", objectFit: "cover" }} /> : <div style={{width: "40px", height: "40px", display: "flex", alignItems: "center", justifyContent: "center", background: "#e9edef", borderRadius: "6px", color: C.textGrey}}><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg></div>}
+          {mediaPreview.startsWith("data:video") ? <video src={mediaPreview} style={{ width: "40px", height: "40px", borderRadius: "6px", objectFit: "cover" }} /> : mediaPreview.startsWith("data:audio") ? <audio src={mediaPreview} controls style={{ height: "40px" }} /> : mediaPreview.startsWith("data:image") ? <img src={mediaPreview} alt="Preview" style={{ width: "40px", height: "40px", borderRadius: "6px", objectFit: "cover" }} /> : <div style={{width: "40px", height: "40px", display: "flex", alignItems: "center", justifyContent: "center", background: "#e9edef", borderRadius: "6px", fontSize: "20px"}}>{getFileIcon(mediaName).icon}</div>}
           <span style={{ fontSize: "14px", color: C.textDark, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{mediaName}</span>
           <button onClick={clearMediaPreview} style={{ background: "transparent", border: "none", cursor: "pointer", color: C.textGrey, padding: "8px" }}>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
@@ -375,7 +387,6 @@ export default function ClassChat({ courseId, isChatOpen, toggleChatOpen, videoT
         </div>
       )}
 
-      {/* Recording Bar */}
       {isRecording ? (
         <div style={{ display: "flex", padding: "8px 12px", background: C.inputBg, gap: "8px", alignItems: "center", flexShrink: 0, borderTop: `1px solid #E9EDEF` }}>
           <div style={{ width: "12px", height: "12px", borderRadius: "50%", background: "#FF3B30", animation: "pulse 1s infinite" }} />
@@ -391,12 +402,10 @@ export default function ClassChat({ courseId, isChatOpen, toggleChatOpen, videoT
           </button>
           <input ref={fileInputRef} type="file" style={{ display: "none" }} onChange={handleFileUpload} />
           
-          {/* Record Audio Button */}
           <button type="button" onClick={() => startRecording('audio')} style={iconBtnStyle} title="Record Voice Message">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
           </button>
           
-          {/* Record Video Button */}
           <button type="button" onClick={() => startRecording('video')} style={iconBtnStyle} title="Record Video Message">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
           </button>

@@ -19,6 +19,7 @@ const C = {
   medBlue: "#007AFF",
   medBlueBg: "#E8F2FF",
   green: "#34C759",
+  greenBg: "#EAF9EE",
   purple: "#AF52DE",
   purpleBg: "#F5F0FF",
   red: "#FF3B30",
@@ -68,11 +69,14 @@ function SkeletonCourseCard() {
 export default function UserDashboard() {
   const navigate = useNavigate();
   const [currentUser, setCurrentUser] = useState<any>(null);
+  const [profilePic, setProfilePic] = useState<string | null>(null);
   const [courses, setCourses] = useState<CourseData[]>([]);
   const [loading, setLoading] = useState(true);
   const [liveCourseIds, setLiveCourseIds] = useState<string[]>([]);
   const [activeAttendanceCourseId, setActiveAttendanceCourseId] = useState<string | null>(null);
   const [business, setBusiness] = useState<BusinessData | null>(null);
+
+  const isTrainer = currentUser?.role === "trainer" || currentUser?.role === "admin";
 
   function handleLogout() {
     localStorage.removeItem("currentUser");
@@ -97,6 +101,18 @@ export default function UserDashboard() {
   }, [currentUser?.tenantId]);
 
   useEffect(() => {
+    const fetchProfilePic = async () => {
+      if (!currentUser?.id) return;
+      try {
+        const { data } = await supabase.from("profile_settings").select("avatar_url").eq("user_id", currentUser.id).maybeSingle();
+        if (data?.avatar_url) setProfilePic(data.avatar_url);
+        else if (currentUser.profilePic) setProfilePic(currentUser.profilePic);
+      } catch (e) {}
+    };
+    fetchProfilePic();
+  }, [currentUser?.id]);
+
+  useEffect(() => {
     let cancelled = false;
 
     const initialize = async () => {
@@ -110,7 +126,6 @@ export default function UserDashboard() {
 
       let fetchedCourses: CourseData[] = [];
 
-      // ✅ 1. Try fetching from Supabase first
       try {
         const { data, error } = await supabase
           .from("enrollments")
@@ -125,10 +140,8 @@ export default function UserDashboard() {
         console.error("Network fetch failed, trying local DB...", err);
       }
 
-      // ✅ 2. If Supabase failed or returned nothing, try local DB
       if (fetchedCourses.length === 0) {
         try {
-          // Get the fresh user from local DB to ensure we have assignedCourses
           const { getUser } = await import("../database/userDB");
           const localUser = await getUser(savedUser.id);
           const assignedIds = localUser?.assignedCourses || savedUser.assignedCourses || [];
@@ -236,10 +249,37 @@ export default function UserDashboard() {
     };
   }, [currentUser?.tenantId]);
 
-  function handleJoinClass(courseId: string) {
-    localStorage.setItem("activeAttendanceCourseId", courseId);
-    setActiveAttendanceCourseId(courseId);
-    navigate(`/user/classroom/${courseId}`);
+  async function handleClassAction(courseId: string, isLive: boolean) {
+    if (isTrainer) {
+      if (isLive) {
+        // End Class logic for Trainer/Admin
+        await supabase.from("live_session").update({ active: false, updated_at: new Date().toISOString() }).eq("course_id", courseId);
+        await supabase.from("live_presentations").delete().eq("course_id", courseId);
+        fetchLiveClasses(); // Refresh UI
+      } else {
+        // Start Class logic for Trainer/Admin
+        await supabase.from("live_session").insert({
+          id: crypto.randomUUID(),
+          tenant_id: currentUser.tenantId,
+          course_id: courseId,
+          trainer_id: currentUser.id,
+          active: true,
+          started_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          created_at: new Date().toISOString()
+        });
+        navigate(`/trainer/live/${courseId}`);
+      }
+    } else {
+      // Join Class logic for Learner
+      if (isLive) {
+        localStorage.setItem("activeAttendanceCourseId", courseId);
+        setActiveAttendanceCourseId(courseId);
+        navigate(`/user/classroom/${courseId}`);
+      } else {
+        alert("This class is not live yet. Please wait for the trainer to start the session.");
+      }
+    }
   }
 
   const iosBtnStyle: React.CSSProperties = {
@@ -290,6 +330,18 @@ export default function UserDashboard() {
             </div>
           </div>
 
+          {/* Profile Chip with Profile Picture */}
+          <div style={{ display: "flex", alignItems: "center", gap: 8, background: C.purpleBg, padding: "4px 12px 4px 4px", borderRadius: 20, flexShrink: 0 }}>
+            {profilePic ? (
+              <img src={profilePic} alt="Profile" style={{ width: 28, height: 28, borderRadius: "50%", objectFit: "cover" }} />
+            ) : (
+              <div style={{ width: 28, height: 28, borderRadius: "50%", background: C.card, color: C.purple, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700 }}>
+                {currentUser?.username?.charAt(0).toUpperCase()}
+              </div>
+            )}
+            <span style={{ fontSize: 13, fontWeight: 600, color: C.purple, whiteSpace: "nowrap" }}>{currentUser?.username || "User"}</span>
+          </div>
+
           <button onClick={handleLogout} title="Logout" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 40, height: 40, borderRadius: 9, background: C.redBg, border: "none", cursor: "pointer", color: C.red, flexShrink: 0 }}>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></svg>
           </button>
@@ -323,6 +375,45 @@ export default function UserDashboard() {
             {courses.map((course) => {
               const isLive = (liveCourseIds || []).includes(course.id);
               const isAttendingThis = activeAttendanceCourseId === course.id;
+
+              // Dynamic Button Styling based on Role and Live Status
+              let btnBackground = C.bg;
+              let btnColor = C.textTertiary;
+              let btnIcon = null;
+              let btnText = "Join Class";
+
+              if (isTrainer) {
+                if (isLive) {
+                  btnBackground = C.redBg;
+                  btnColor = C.red;
+                  btnIcon = (<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>);
+                  btnText = "End Class";
+                } else {
+                  btnBackground = C.green;
+                  btnColor = "#FFFFFF";
+                  btnIcon = (<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3" /></svg>);
+                  btnText = "Start Class";
+                }
+              } else {
+                if (isAttendingThis) {
+                  btnBackground = C.medBlue;
+                  btnColor = "#FFFFFF";
+                  btnIcon = (<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3" /></svg>);
+                  btnText = "Attending";
+                } else if (isLive) {
+                  btnBackground = C.green;
+                  btnColor = "#FFFFFF";
+                  btnIcon = (
+                    <span style={{ position: "relative", width: "12px", height: "12px" }}>
+                      <span style={{ position: "absolute", inset: 0, background: "#FFFFFF", borderRadius: "50%", opacity: 0.4, animation: "pulse 1.5s infinite" }} />
+                      <span style={{ position: "absolute", inset: "3px", background: "#FFFFFF", borderRadius: "50%" }} />
+                    </span>
+                  );
+                  btnText = "Join Live";
+                } else {
+                  btnIcon = (<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M23 7l-7 5 7 5V7z" /><rect x="1" y="5" width="15" height="14" rx="2" ry="2" /></svg>);
+                }
+              }
 
               return (
                 <div key={course.id} style={courseCardStyle}>
@@ -358,30 +449,16 @@ export default function UserDashboard() {
                     </button>
 
                     <button
-                      onClick={() => handleJoinClass(course.id)}
+                      onClick={() => handleClassAction(course.id, isLive)}
                       style={{
                         ...iosBtnStyle,
-                        background: isAttendingThis ? C.medBlue : isLive ? C.green : C.bg,
-                        color: isAttendingThis ? "#FFFFFF" : isLive ? "#FFFFFF" : C.textTertiary,
-                        boxShadow: isLive && !isAttendingThis ? "0 4px 12px rgba(52, 199, 89, 0.3)" : "none",
+                        background: btnBackground,
+                        color: btnColor,
+                        boxShadow: (isTrainer ? isLive : (!isAttendingThis && isLive)) ? "0 4px 12px rgba(52, 199, 89, 0.3)" : "none",
                       }}
                     >
-                      {isAttendingThis ? (
-                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                          <polygon points="5 3 19 12 5 21 5 3" />
-                        </svg>
-                      ) : isLive ? (
-                        <span style={{ position: "relative", width: "12px", height: "12px" }}>
-                          <span style={{ position: "absolute", inset: 0, background: "#FFFFFF", borderRadius: "50%", opacity: 0.4, animation: "pulse 1.5s infinite" }} />
-                          <span style={{ position: "absolute", inset: "3px", background: "#FFFFFF", borderRadius: "50%" }} />
-                        </span>
-                      ) : (
-                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="M23 7l-7 5 7 5V7z" />
-                          <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
-                        </svg>
-                      )}
-                      <span style={{ ...TS.label, fontSize: 11, fontWeight: 600 }}>{isAttendingThis ? "Attending" : isLive ? "Join Live" : "Join Class"}</span>
+                      {btnIcon}
+                      <span style={{ ...TS.label, fontSize: 11, fontWeight: 600 }}>{btnText}</span>
                     </button>
                   </div>
                 </div>
