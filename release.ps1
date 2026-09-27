@@ -94,7 +94,12 @@ if (Test-Path $bundlePath) {
     Remove-Item $bundlePath -Recurse -Force
 }
 
- $env:TAURI_SIGNING_PRIVATE_KEY = "C:\Users\HP\.tauri\smartpages.key"
+# ✅ FIX 1: Wipe Rust cache so it rebuilds the new version properly
+Write-Host "Cleaning Rust cache to prevent version mismatch..." -ForegroundColor DarkGray
+npm run tauri -- clean
+
+# ✅ FIX 2: Use the new medstat_prime.key
+ $env:TAURI_SIGNING_PRIVATE_KEY = "C:\Users\HP\.tauri\medstat_prime.key"
  $securePassword = Read-Host "Enter your Tauri private key password (press Enter if blank)" -AsSecureString
  $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($securePassword)
  $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
@@ -131,11 +136,12 @@ if ($exePath -and $jsonPath) {
     if ($LASTEXITCODE -ne 0) {
         Write-Host "ERROR: You are not logged into GitHub CLI. Run 'gh auth login' first." -ForegroundColor Red
     } else {
-        gh release create $newVersion --repo Abdalkam/medstat --title "$newVersion" --notes "Release $newVersion" $exePath $jsonPath 2>$null
+        # ✅ FIX 3: Make sure to upload the .sig file alongside the .exe and .json
+        gh release create $newVersion --repo Abdalkam/medstat --title "$newVersion" --notes "Release $newVersion" $exePath $sigPath $jsonPath 2>$null
         
         if ($LASTEXITCODE -ne 0) {
             Write-Host "Release already exists. Uploading files to existing release..." -ForegroundColor Yellow
-            gh release upload $newVersion --repo Abdalkam/medstat $exePath $jsonPath --clobber
+            gh release upload $newVersion --repo Abdalkam/medstat $exePath $sigPath $jsonPath --clobber
         }
             
         if ($LASTEXITCODE -eq 0) {
