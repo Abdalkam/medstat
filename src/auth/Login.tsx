@@ -5,6 +5,7 @@ import AppBar from "../components/AppBar";
 import { loginTenant } from "../api/authApi";
 import { supabase } from "../auth/supabase";
 import { getVersion } from "@tauri-apps/api/app";
+import { db } from "../database/db"; // Added for offline login
 
 const MEDICAL_BLUE = "#007AFF";
 const iosFont = "-apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif";
@@ -62,14 +63,14 @@ export default function Login() {
         setMessage("Institution not found. Please check the name.");
       }
     } catch (error: unknown) {
-      const errMsg = error instanceof Error ? error.message : "Error finding institution.";
+      const errMsg = error instanceof Error ? error.message : "Error finding institution. Check connection.";
       setMessage(errMsg);
     } finally {
       setLoading(false);
     }
   }
 
-  // Step 2: Handle Login
+  // Step 2: Handle Login (Online + Offline)
   async function handleLogin() {
     setMessage("");
     if (!username.trim() || !password.trim()) {
@@ -79,13 +80,29 @@ export default function Login() {
     try {
       setLoading(true);
       isLoggingIn.current = true; 
-      const result = await loginTenant({ 
-        username, 
-        password, 
-        // ✅ FIX: Use the exact business name from the database to avoid case-sensitivity issues
-        business_name: publicSettings?.business_name || businessName.trim() 
-      });
-      processLoginResult(result);
+      
+      // 1. Try Online Backend Login
+      try {
+        const result = await loginTenant({ 
+          username, 
+          password, 
+          business_name: publicSettings?.business_name || businessName.trim() 
+        });
+        processLoginResult(result.user, result.authToken);
+        return;
+      } catch (backendError) {
+        console.warn("Backend login failed, attempting offline local DB login...", backendError);
+      }
+
+      // 2. Fallback to Offline Local DB Login
+      // Note: Requires Dexie db to be imported and users table to exist
+      const localUser = await db.users.where("username").equals(username.trim()).first();
+      
+      if (localUser && localUser.password === password) {
+        processLoginResult(localUser, "offline-mode-pending-sync");
+      } else {
+        throw new Error("Invalid credentials (Offline Mode). Connect to the internet to sync new accounts.");
+      }
     } catch (error: unknown) {
       isLoggingIn.current = false; 
       const errMsg = error instanceof Error ? error.message : "Login failed.";
@@ -95,12 +112,11 @@ export default function Login() {
     }
   }
 
-  function processLoginResult(result: { authToken: string; user: Record<string, any> }) {
-    localStorage.setItem("authToken", result.authToken);
+  function processLoginResult(apiUser: Record<string, any>, authToken: string) {
+    localStorage.setItem("authToken", authToken);
 
-    const apiUser = result.user;
     const userId = apiUser.id as string;
-    const tenantId = (apiUser.tenant_id || apiUser.tenantId) as string;
+    const tenantId = (apiUser.tenant_id || apiUser.tenantId || publicSettings?.tenant_id) as string;
     const userRole = apiUser.role as string;
 
     localStorage.setItem(
@@ -112,7 +128,7 @@ export default function Login() {
         username: apiUser.username,
         email: apiUser.email || "",
         phone: apiUser.phone || "",
-        profilePic: apiUser.profile_pic || "",
+        profilePic: apiUser.profile_pic || apiUser.profilePic || "",
         assignedCourses: apiUser.assigned_courses || apiUser.assignedCourses || [],
       })
     );
@@ -138,10 +154,9 @@ export default function Login() {
   const primaryBtn: React.CSSProperties = {
     width: "100%", padding: "16px", borderRadius: "14px", border: "none", background: MEDICAL_BLUE,
     color: "white", fontSize: "17px", fontWeight: "600", cursor: "pointer", 
-    opacity: loading ? 0.4 : 1, marginBottom: "12px",
+    opacity: loading ? 0.8 : 1, marginBottom: "12px", position: "relative", overflow: "hidden",
   };
 
-  // Step 1 uses default bg. Step 2 uses Supabase bg (or default if empty).
   const currentBg = loginStep === 2 && publicSettings?.login_background
     ? `url(${publicSettings.login_background}) center/cover no-repeat`
     : "#F2F2F7";
@@ -182,17 +197,15 @@ export default function Login() {
               <div style={{ background: "rgba(255,255,255,0.9)", borderRadius: "14px", overflow: "hidden", border: "1px solid rgba(0,0,0,0.04)", marginBottom: "16px" }}>
                 
                 {loginStep === 1 && (
-                  <>
-                    <input 
-                      type="text" 
-                      placeholder="Institution Name" 
-                      value={businessName} 
-                      onChange={(e) => setBusinessName(e.target.value)} 
-                      onKeyDown={(e) => e.key === "Enter" && handleContinue()} 
-                      style={inputStyle} 
-                      autoFocus 
-                    />
-                  </>
+                  <input 
+                    type="text" 
+                    placeholder="Institution Name" 
+                    value={businessName} 
+                    onChange={(e) => setBusinessName(e.target.value)} 
+                    onKeyDown={(e) => e.key === "Enter" && handleContinue()} 
+                    style={inputStyle} 
+                    autoFocus 
+                  />
                 )}
 
                 {loginStep === 2 && (
@@ -223,11 +236,17 @@ export default function Login() {
               {loginStep === 1 ? (
                 <button onClick={handleContinue} disabled={loading} style={primaryBtn}>
                   {loading ? "Checking..." : "Continue"}
+                  {loading && (
+                    <div style={{ position: "absolute", bottom: 0, left: 0, height: "3px", background: "#fff", animation: "slide 1s ease-in-out infinite", width: "40%" }} />
+                  )}
                 </button>
               ) : (
                 <>
                   <button onClick={handleLogin} disabled={loading} style={primaryBtn}>
-                    {loading ? "Signing in..." : "Login"}
+                    Login
+                    {loading && (
+                      <div style={{ position: "absolute", bottom: 0, left: 0, height: "3px", background: "#fff", animation: "slide 1s ease-in-out infinite", width: "40%" }} />
+                    )}
                   </button>
                   <button 
                     onClick={() => { setLoginStep(1); setMessage(""); setPublicSettings(null); }} 
@@ -253,6 +272,13 @@ export default function Login() {
           )}
         </div>
       </div>
+
+      <style>{`
+        @keyframes slide {
+          0% { transform: translateX(-100%); }
+          100% { transform: translateX(350%); }
+        }
+      `}</style>
 
       {appVersion && (
         <div style={{ 
