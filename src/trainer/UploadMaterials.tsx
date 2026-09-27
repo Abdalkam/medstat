@@ -177,12 +177,17 @@ export default function UploadMaterials() {
     } catch (error: any) { console.warn("Materials saved locally, but failed to sync to Supabase.", error.message); }
   }
 
+  // ====================================================================
+  // FIXED: Explicit Error Throwing For Diagnostics
+  // ====================================================================
   async function deleteMaterialFromSupabase(materialId: string) {
     try { 
       const { error } = await supabase.from('course_materials').delete().eq('id', materialId); 
       if (error) throw error; 
+      return true;
     } catch (error: any) { 
-      console.warn("Material deleted locally, but failed to sync deletion to Supabase.", error.message); 
+      console.error("Supabase Delete Error:", error);
+      throw new Error(error.message); 
     }
   }
 
@@ -286,20 +291,33 @@ export default function UploadMaterials() {
     } catch (err: any) { console.error("Failed to start lesson:", err); alert("Something went wrong while trying to start the live session: " + (err.message || "Unknown error")); } finally { setStartingLive(false); }
   }
 
-  // ==========================================================
-  // FIXED: Optimistic UI Deletion
-  // ==========================================================
+  // ====================================================================
+  // FIXED: Optimistic UI Deletion with explicit alerts for failures
+  // ====================================================================
   async function removeMaterial(id: string) {
     if (!confirm("Remove this page from the lesson?")) return;
     
     // 1. INSTANTLY remove from the screen (Optimistic UI)
     setMaterials(prevMaterials => prevMaterials.filter(m => m.id !== id));
     
-    // 2. Delete from local IndexedDB
-    await deleteMaterial(id);
-    
-    // 3. Attempt to delete from Supabase in the background
-    deleteMaterialFromSupabase(id);
+    try {
+      // 2. Delete from local IndexedDB
+      await deleteMaterial(id);
+    } catch (localErr) {
+      console.error("Local DB Delete Error:", localErr);
+      alert("Failed to delete from local database. Check console for details.");
+      await loadData(); // Restore UI if local delete failed
+      return;
+    }
+
+    try {
+      // 3. Delete from Supabase
+      await deleteMaterialFromSupabase(id);
+    } catch (supabaseErr: any) {
+      console.error("Supabase Delete Error:", supabaseErr);
+      alert("Failed to delete from cloud database: " + supabaseErr.message);
+      await loadData(); // Restore UI if cloud delete failed
+    }
   }
 
   useEffect(() => { return () => { if (imagePreview) URL.revokeObjectURL(imagePreview); }; }, [imagePreview]);
