@@ -25,7 +25,9 @@ export default function Classroom() {
   const [hasRaisedHand, setHasRaisedHand] = useState(false);
   const [isBlackboardMode, setIsBlackboardMode] = useState(false);
   const [dbUser, setDbUser] = useState<any>(null);
-  
+  const [isChatOpen, setIsChatOpen] = useState(true); // Chat sliding state
+  const [isVideoExpanded, setIsVideoExpanded] = useState(false);
+
   const daily = useDaily();
   const [isMicOn, setIsMicOn] = useState(false);
   const [isVoiceJoined, setIsVoiceJoined] = useState(false);
@@ -43,12 +45,9 @@ export default function Classroom() {
 
     const handleAttendance = async () => {
       if (courseId) {
-        // 1. Check Local DB
         const existing = await db.activeAttendances.where({ userId: localUser.id, courseId }).first();
         if (!existing) {
-          // Cast to any to bypass strict ActiveAttendance interface properties
           await db.activeAttendances.put({ userId: localUser.id, courseId, tenantId: localUser.tenantId, id: crypto.randomUUID() } as any);
-          // 2. Sync Supabase
           await supabase.from("active_attendances").insert({ id: crypto.randomUUID(), user_id: localUser.id, course_id: courseId, tenant_id: localUser.tenantId });
         }
       }
@@ -56,7 +55,6 @@ export default function Classroom() {
     handleAttendance();
 
     const handleBeforeUnload = () => {
-      // userId is the primary key in Dexie schema, so pass it directly
       db.activeAttendances.delete(localUser.id);
       supabase.from("active_attendances").delete().eq("user_id", localUser.id).eq("course_id", courseId || "").then(() => {});
       supabase.from("raised_hands").delete().eq("user_id", localUser.id).eq("course_id", courseId || "").then(() => {});
@@ -104,7 +102,6 @@ export default function Classroom() {
   useEffect(() => {
     if (!courseId) return;
     const fetchLiveData = async () => {
-      // 1. Load from Local DB instantly
       const localSess = await getLiveSession(courseId);
       if (localSess) setIsLive(localSess.active);
 
@@ -118,7 +115,6 @@ export default function Classroom() {
         }
       }
 
-      // 2. Fetch from Supabase
       try {
         const { data: liveSess } = await supabase.from("live_session").select("*").eq("course_id", courseId).maybeSingle();
         if (liveSess) {
@@ -131,7 +127,7 @@ export default function Classroom() {
           const mappedPres = { id: livePres.id, courseId: livePres.course_id, materialId: livePres.material_id || "", isBlackboard: livePres.is_blackboard ?? false, blackboardStrokes: (livePres.blackboard_strokes as Stroke[]) || [], blackboardLines: (livePres.blackboard_lines as string[]) || [], blackboardLabels: (livePres.blackboard_labels as any[]) || [], currentPage: livePres.current_page ?? 1, tenantId: livePres.tenant_id, startedBy: livePres.started_by, updatedAt: livePres.updated_at };
           setLiveState(mappedPres);
           setIsBlackboardMode(mappedPres.isBlackboard);
-          await updatePresentation(mappedPres); // Save to local DB
+          await updatePresentation(mappedPres);
 
           if (mappedPres.materialId) {
             const { data: mat } = await supabase.from("course_materials").select("*").eq("id", mappedPres.materialId).maybeSingle();
@@ -192,7 +188,6 @@ export default function Classroom() {
   async function exitClassroom() {
     if (daily && isVoiceJoined) { try { await daily.leave(); } catch (e) {} }
     if (dbUser?.id && courseId) {
-      // Pass primary key (userId) directly
       await db.activeAttendances.delete(dbUser.id);
       await supabase.from("active_attendances").delete().eq("user_id", dbUser.id).eq("course_id", courseId);
       await supabase.from("raised_hands").delete().eq("user_id", dbUser.id).eq("course_id", courseId);
@@ -202,34 +197,68 @@ export default function Classroom() {
 
   const btnStyle: React.CSSProperties = { width: "48px", height: "48px", borderRadius: "50%", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 4px 12px rgba(0,0,0,0.15)", transition: "transform 0.1s ease" };
 
+  const videoTileContainerStyle: React.CSSProperties = isVideoExpanded ? {
+    position: "fixed", top: 0, left: 0, width: "100vw", height: "100vh", borderRadius: 0, overflow: "hidden", border: "none", zIndex: 1000, background: "#000"
+  } : {
+    position: "absolute", bottom: "32px", left: "32px", width: "200px", height: "130px", borderRadius: "16px", overflow: "hidden", border: "3px solid #FFFFFF", boxShadow: "0 8px 24px rgba(0,0,0,0.15)", zIndex: 10, background: "#000",
+  };
+
   return (
     <div style={{ height: "100vh", display: "flex", flexDirection: "column", background: C.bg, overflow: "hidden" }}>
       <AppBar />
       <DailyAudio />
-      <div style={{ flex: 1, display: "flex", position: "relative", overflow: "hidden", margin: "16px", borderRadius: "16px", boxShadow: "0 4px 20px rgba(0,0,0,0.04)" }}>
-        <div style={{ position: "absolute", top: 0, bottom: 0, left: 0, right: 0, transition: "transform 0.2s ease", transform: isBlackboardMode ? "translateX(-100%)" : "translateX(0%)", background: C.card, display: "flex" }}>
-          {presentation ? <LiveClassView material={presentation} page={liveState?.currentPage ?? 1} /> : (
-            <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center" }}>
-               <div style={{ width: "80px", height: "80px", borderRadius: "50%", background: C.medBlueBg, margin: "0 auto 20px", display: "flex", alignItems: "center", justifyContent: "center" }}><svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke={C.medBlue} strokeWidth="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></div>
-               <p style={{ fontSize: "20px", fontWeight: "600" }}>{isLive ? "Waiting for Trainer" : "Class is not live"}</p>
-               <p style={{ color: "#8E8E93" }}>{isLive ? "The presentation will appear here once it starts." : "Please wait for the trainer to start the session."}</p>
+      
+      {/* Main Flex Row */}
+      <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
+        
+        {/* Live Class Area */}
+        <div style={{ flex: 1, display: "flex", position: "relative", overflow: "hidden", margin: "16px", borderRadius: "16px", boxShadow: "0 4px 20px rgba(0,0,0,0.04)" }}>
+          <div style={{ position: "absolute", top: 0, bottom: 0, left: 0, right: 0, transition: "transform 0.2s ease", transform: isBlackboardMode ? "translateX(-100%)" : "translateX(0%)", background: C.card, display: "flex" }}>
+            {presentation ? <LiveClassView material={presentation} page={liveState?.currentPage ?? 1} /> : (
+              <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center" }}>
+                 <div style={{ width: "80px", height: "80px", borderRadius: "50%", background: C.medBlueBg, margin: "0 auto 20px", display: "flex", alignItems: "center", justifyContent: "center" }}><svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke={C.medBlue} strokeWidth="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></div>
+                 <p style={{ fontSize: "20px", fontWeight: "600" }}>{isLive ? "Waiting for Trainer" : "Class is not live"}</p>
+                 <p style={{ color: "#8E8E93" }}>{isLive ? "The presentation will appear here once it starts." : "Please wait for the trainer to start the session."}</p>
+              </div>
+            )}
+          </div>
+          <div style={{ position: "absolute", top: 0, bottom: 0, left: 0, right: 0, transition: "transform 0.2s ease", transform: isBlackboardMode ? "translateX(0%)" : "translateX(100%)", display: "flex", background: "#1A1A1A" }}>
+            <DrawingBlackboard isTrainer={false} strokes={liveState?.blackboardStrokes || []} courseId={`${courseId}-learner`} />
+          </div>
+
+          {/* Floating Action Bar (Classroom Audio/Video) */}
+          <div style={{ position: "absolute", bottom: "24px", left: "50%", transform: "translateX(-50%)", display: "flex", gap: "16px", padding: "10px", background: "rgba(28, 28, 30, 0.8)", backdropFilter: "blur(20px)", borderRadius: "32px", border: "1px solid rgba(255,255,255,0.1)", zIndex: 10 }}>
+            <button onClick={exitClassroom} style={{ ...btnStyle, background: "#E5E5EA", color: "#1C1C1E" }} title="Exit"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="15 18 9 12 15 6"/></svg></button>
+            <button onClick={toggleMic} style={{ ...btnStyle, background: isMicOn ? C.green : "#E5E5EA", color: isMicOn ? "#fff" : "#1C1C1E" }} title="Mic">
+              {isMicOn ? <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/></svg> : <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="1" y1="1" x2="23" y2="23"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6"/></svg>}
+            </button>
+            <button onClick={toggleRaiseHand} style={{ ...btnStyle, background: hasRaisedHand ? C.orange : "#E5E5EA", color: hasRaisedHand ? "#fff" : "#1C1C1E" }} title="Raise Hand"><span style={{ fontSize: "24px" }}>✋</span></button>
+          </div>
+
+          {/* Expandable Video Area */}
+          {trainerVideoTrack && (
+            <div style={videoTileContainerStyle}>
+              <video autoPlay muted playsInline ref={(el) => { if (el && trainerVideoTrack) { const stream = new MediaStream([trainerVideoTrack]); if (el.srcObject !== stream) el.srcObject = stream; } }} style={{ width: "100%", height: "100%", objectFit: "cover", transform: "scaleX(-1)" }} />
+              <button onClick={() => setIsVideoExpanded(!isVideoExpanded)} style={{ position: "absolute", top: "8px", right: "8px", background: "rgba(0,0,0,0.5)", border: "none", color: "#fff", borderRadius: "8px", padding: "6px 10px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
+                {isVideoExpanded ? "Collapse" : "Expand"}
+              </button>
             </div>
           )}
         </div>
-        <div style={{ position: "absolute", top: 0, bottom: 0, left: 0, right: 0, transition: "transform 0.2s ease", transform: isBlackboardMode ? "translateX(0%)" : "translateX(100%)", display: "flex", background: "#1A1A1A" }}>
-          <DrawingBlackboard isTrainer={false} strokes={liveState?.blackboardStrokes || []} courseId={`${courseId}-learner`} />
+
+        {/* Sliding Chat Sidebar */}
+        <div style={{ width: isChatOpen ? "360px" : "64px", minWidth: 0, transition: "width 0.3s ease", flexShrink: 0, borderLeft: "1px solid #E5E5EA", background: "#1C1C1E" }}>
+          <ClassChat 
+            courseId={courseId || ""} 
+            isChatOpen={isChatOpen}
+            toggleChatOpen={() => setIsChatOpen(!isChatOpen)}
+            videoTrack={trainerVideoTrack} 
+            isMicOn={isMicOn} 
+            toggleMic={toggleMic} 
+            hasMicPermission={hasMicPermission}
+          />
         </div>
       </div>
-
-      <div style={{ position: "fixed", bottom: "24px", left: "50%", transform: "translateX(-50%)", display: "flex", gap: "16px", padding: "10px", background: "rgba(28, 28, 30, 0.8)", backdropFilter: "blur(20px)", borderRadius: "32px", border: "1px solid rgba(255,255,255,0.1)", zIndex: 10 }}>
-        <button onClick={exitClassroom} style={{ ...btnStyle, background: "#E5E5EA", color: "#1C1C1E" }} title="Exit"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="15 18 9 12 15 6"/></svg></button>
-        <button onClick={toggleMic} style={{ ...btnStyle, background: isMicOn ? C.green : "#E5E5EA", color: isMicOn ? "#fff" : "#1C1C1E" }} title="Mic">
-          {isMicOn ? <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/></svg> : <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="1" y1="1" x2="23" y2="23"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6"/></svg>}
-        </button>
-        <button onClick={toggleRaiseHand} style={{ ...btnStyle, background: hasRaisedHand ? C.orange : "#E5E5EA", color: hasRaisedHand ? "#fff" : "#1C1C1E" }} title="Raise Hand"><span style={{ fontSize: "24px" }}>✋</span></button>
-      </div>
-
-      <ClassChat courseId={courseId || ""} videoTrack={trainerVideoTrack} isMicOn={isMicOn} toggleMic={toggleMic} hasMicPermission={hasMicPermission} />
     </div>
   );
 }

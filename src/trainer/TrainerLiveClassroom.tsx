@@ -47,6 +47,9 @@ export default function TrainerLiveClassroom() {
 
   const [isBlackboardMode, setIsBlackboardMode] = useState(false);
   const [isLeftCollapsed, setIsLeftCollapsed] = useState(false);
+  const [isChatOpen, setIsChatOpen] = useState(true); // Chat sliding state
+  const [isVideoExpanded, setIsVideoExpanded] = useState(false);
+  
   const [bbInput, setBbInput] = useState("");
   const [activeTool, setActiveTool] = useState<ToolType | "label">("pen");
   const [penColor, setPenColor] = useState("#FFFFFF");
@@ -85,7 +88,6 @@ export default function TrainerLiveClassroom() {
   const fetchLiveData = useCallback(async () => {
     if (!courseId || !tenantId || !currentUser.id) return;
 
-    // 1. Load from Local DB Instantly
     const localSess = await getLiveSession(courseId);
     if (localSess) setSessionActive(localSess.active);
 
@@ -102,7 +104,6 @@ export default function TrainerLiveClassroom() {
     const localMats = await getCourseMaterials(courseId);
     if (localMats.length > 0) setMaterials(localMats.sort((a, b) => (a.presentationOrder ?? 0) - (b.presentationOrder ?? 0)));
 
-    // 2. Fetch from Supabase
     try {
       const { data: liveSess } = await supabase.from("live_session").select("*").eq("course_id", courseId).maybeSingle();
       if (liveSess) {
@@ -139,13 +140,10 @@ export default function TrainerLiveClassroom() {
         const userIds = hands.map((h: any) => h.user_id as string);
         const { data: handUsers } = await supabase.from("users").select("id, username").in("id", userIds);
         const userMap = new Map((handUsers || []).map((u: any) => [u.id as string, u.username as string]));
-        
-        // ✅ FIX: Use `any` explicitly to resolve TS property inference issues
         const mappedHands = hands
           .filter((h: any) => userMap.has(h.user_id as string))
           .map((h: any) => ({ ...h, username: userMap.get(h.user_id as string)! }))
           .sort((a: any, b: any) => new Date(a.created_at as string).getTime() - new Date(b.created_at as string).getTime());
-        
         setRaisedHands(mappedHands);
       } else setRaisedHands([]);
 
@@ -198,27 +196,20 @@ export default function TrainerLiveClassroom() {
     if (liveState?.id) {
       const updated = { ...liveState, isBlackboard: newMode, updatedAt: new Date().toISOString() };
       setLiveState(updated);
-      await updatePresentation(updated); // Local Save
+      await updatePresentation(updated);
       await supabase.from("live_presentations").update({ is_blackboard: newMode, updated_at: new Date().toISOString() }).eq("id", liveState.id);
     } else {
       const newPres = { id: crypto.randomUUID(), tenant_id: tenantId, course_id: courseId, started_by: currentUser.id, material_id: "", current_page: 1, is_blackboard: newMode, blackboard_strokes: [], blackboard_lines: [], blackboard_labels: [], updated_at: new Date().toISOString() };
       await supabase.from("live_presentations").delete().eq("course_id", courseId);
       await supabase.from("live_presentations").insert(newPres);
-      await startPresentation(courseId, "", currentUser.id); // Local Save
+      await startPresentation(courseId, "", currentUser.id);
       fetchLiveData();
     }
   }
 
   async function handleStrokeEnd(points: { x: number; y: number }[], tool: ToolType, color?: string, width?: number) {
     if (!liveState?.id) return; const newStroke = { id: crypto.randomUUID(), points, color: color || "#FFFFFF", width: width || 4, tool: tool || "pen" };
-    setLiveState(prev => {
-      if (!prev) return prev;
-      const updatedStrokes = [...(prev.blackboardStrokes || []), newStroke];
-      const updatedPres = { ...prev, blackboardStrokes: updatedStrokes };
-      updatePresentation(updatedPres); // Local Save
-      supabase.from("live_presentations").update({ blackboard_strokes: updatedStrokes }).eq("id", prev.id).then(() => {});
-      return updatedPres;
-    });
+    setLiveState(prev => { if (!prev) return prev; const updatedStrokes = [...(prev.blackboardStrokes || []), newStroke]; const updatedPres = { ...prev, blackboardStrokes: updatedStrokes }; updatePresentation(updatedPres); supabase.from("live_presentations").update({ blackboard_strokes: updatedStrokes }).eq("id", prev.id).then(() => {}); return updatedPres; });
   }
 
   async function handleErase(eraserPos: { x: number; y: number }, radius: number) {
@@ -230,7 +221,7 @@ export default function TrainerLiveClassroom() {
   async function clearBlackboard() {
     if (!liveState?.id) return;
     setLiveState(prev => prev ? { ...prev, blackboardStrokes: [], blackboardLines: [], blackboardLabels: [] } : null);
-    await updatePresentation({ ...liveState, blackboardStrokes: [], blackboardLines: [], blackboardLabels: [] }); // Local Save
+    await updatePresentation({ ...liveState, blackboardStrokes: [], blackboardLines: [], blackboardLabels: [] });
     await supabase.from("live_presentations").update({ blackboard_strokes: [], blackboard_lines: [], blackboard_labels: [] }).eq("id", liveState.id);
   }
 
@@ -251,7 +242,7 @@ export default function TrainerLiveClassroom() {
     if (!liveState?.id || !courseId || materials.length === 0) return; const currentMatId = liveState.materialId; const currentIndex = materials.findIndex(m => m.id === currentMatId); const safeIndex = currentIndex === -1 ? 0 : currentIndex; let nextIndex = safeIndex + delta; if (nextIndex < 0) nextIndex = 0; if (nextIndex >= materials.length) nextIndex = materials.length - 1; if (nextIndex === safeIndex && delta !== 0) return; const nextMat = materials[nextIndex]; if (!nextMat) return;
     const updatedPres = { ...liveState, materialId: nextMat.id, currentPage: 1, isBlackboard: false, updatedAt: new Date().toISOString() };
     setLiveState(updatedPres); setPresentation(nextMat); setIsBlackboardMode(false);
-    await updatePresentation(updatedPres); // Local Save
+    await updatePresentation(updatedPres);
     await supabase.from("live_presentations").update({ material_id: nextMat.id, current_page: 1, updated_at: new Date().toISOString() }).eq("id", liveState.id);
   }
 
@@ -265,7 +256,7 @@ export default function TrainerLiveClassroom() {
 
   async function startSession() {
     if (!courseId || !tenantId) return;
-    await startLiveSession(courseId, currentUser.id); // Local Save
+    await startLiveSession(courseId, currentUser.id);
     const { data: existing } = await supabase.from("live_session").select("id").eq("course_id", courseId).maybeSingle();
     if (existing) { await supabase.from("live_session").update({ active: true, updated_at: new Date().toISOString() }).eq("id", existing.id); } 
     else { await supabase.from("live_session").insert({ id: crypto.randomUUID(), tenant_id: tenantId, course_id: courseId, trainer_id: currentUser.id, active: true, started_at: new Date().toISOString(), updated_at: new Date().toISOString(), created_at: new Date().toISOString() }); }
@@ -273,7 +264,7 @@ export default function TrainerLiveClassroom() {
 
     if (materials.length > 0 && !presentation) {
       const firstMat = materials[0]; setPresentation(firstMat); setIsBlackboardMode(false);
-      await startPresentation(courseId, firstMat.id, currentUser.id); // Local Save
+      await startPresentation(courseId, firstMat.id, currentUser.id);
       await supabase.from("live_presentations").delete().eq("course_id", courseId);
       await supabase.from("live_presentations").insert({ id: crypto.randomUUID(), tenant_id: tenantId, course_id: courseId, started_by: currentUser.id, material_id: firstMat.id, current_page: 1, is_blackboard: false, blackboard_strokes: [], blackboard_lines: [], blackboard_labels: [], updated_at: new Date().toISOString() });
     }
@@ -283,8 +274,8 @@ export default function TrainerLiveClassroom() {
 
   async function stopSession() {
     if (!courseId) return;
-    await endLiveSession(courseId); // Local Save
-    await clearPresentation(courseId); // Local Save
+    await endLiveSession(courseId);
+    await clearPresentation(courseId);
     await supabase.from("live_session").update({ active: false, updated_at: new Date().toISOString() }).eq("course_id", courseId);
     await supabase.from("live_presentations").delete().eq("course_id", courseId);
     if (daily && isVoiceJoined) { daily.leave(); setIsVoiceJoined(false); setIsMicOn(false); setIsCamOn(false); setVideoTrack(null); } navigate("/trainer");
@@ -295,10 +286,10 @@ export default function TrainerLiveClassroom() {
     if (liveState?.id) {
       const updatedPres = { ...liveState, materialId, isBlackboard: false, currentPage: 1, updatedAt: new Date().toISOString() };
       setLiveState(updatedPres);
-      await updatePresentation(updatedPres); // Local Save
+      await updatePresentation(updatedPres);
       await supabase.from("live_presentations").update({ material_id: materialId, is_blackboard: false, current_page: 1, updated_at: new Date().toISOString() }).eq("id", liveState.id);
     } else {
-      await startPresentation(courseId, materialId, currentUser.id); // Local Save
+      await startPresentation(courseId, materialId, currentUser.id);
       await supabase.from("live_presentations").delete().eq("course_id", courseId);
       await supabase.from("live_presentations").insert({ id: crypto.randomUUID(), tenant_id: tenantId, course_id: courseId, started_by: currentUser.id, material_id: materialId, current_page: 1, is_blackboard: false, blackboard_strokes: [], blackboard_lines: [], blackboard_labels: [], updated_at: new Date().toISOString() });
     }
@@ -313,6 +304,12 @@ export default function TrainerLiveClassroom() {
   const toolBtnStyle = (isActive: boolean): React.CSSProperties => ({ width: "44px", height: "44px", borderRadius: "12px", border: "none", background: isActive ? "rgba(0, 165, 244, 0.2)" : "transparent", color: isActive ? "#00A5F4" : "#8E8E93", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.2s ease", flexShrink: 0 });
   const drawingActiveTool = activeTool === "label" ? "pen" as ToolType : activeTool;
 
+  const videoTileContainerStyle: React.CSSProperties = isVideoExpanded ? {
+    position: "fixed", top: 0, left: 0, width: "100vw", height: "100vh", borderRadius: 0, overflow: "hidden", border: "none", zIndex: 1000, background: "#000"
+  } : {
+    position: "absolute", bottom: "32px", left: "32px", width: "200px", height: "130px", borderRadius: "16px", overflow: "hidden", border: "3px solid #FFFFFF", boxShadow: "0 8px 24px rgba(0,0,0,0.15)", zIndex: 10, background: "#000",
+  };
+
   return (
     <div style={{ height: "100vh", width: "100vw", display: "flex", flexDirection: "column", background: C.bg, overflow: "hidden" }}>
       <DailyAudio />
@@ -325,7 +322,6 @@ export default function TrainerLiveClassroom() {
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 }}>
-          {/* Restored Trainer UI Block */}
           <div style={{ display: "flex", alignItems: "center", gap: "8px", background: C.purpleBg, padding: "4px 12px 4px 4px", borderRadius: "20px" }}>
             <div style={{ width: "28px", height: "28px", borderRadius: "50%", background: C.card, color: C.purple, display: "flex", alignItems: "center", justifyContent: "center", fontSize: "12px", fontWeight: "700" }}>{(trainer?.username as string)?.charAt(0).toUpperCase()}</div>
             <span style={{ fontSize: "13px", fontWeight: "600", color: C.purple }}>{(trainer?.username as string) || "Trainer"}</span>
@@ -354,7 +350,6 @@ export default function TrainerLiveClassroom() {
             </div>
           </div>
 
-          {/* Restored Active Learners UI Block */}
           <div style={{ padding: "0 12px 12px 12px" }}>
             <p style={{ fontSize: "13px", color: C.textTertiary, textTransform: "uppercase", fontWeight: "600", letterSpacing: "0.5px", margin: "0 0 8px 0" }}>Attending Now ({activeLearners.length})</p>
             <div style={{ display: "flex", flexDirection: "column", gap: "6px", marginBottom: "20px" }}>
@@ -397,9 +392,31 @@ export default function TrainerLiveClassroom() {
               </div>
             </div>
           </div>
+
+          {/* Expandable Video Area */}
+          {videoTrack && (
+            <div style={videoTileContainerStyle}>
+              <video autoPlay muted playsInline ref={(el) => { if (el && videoTrack) { const stream = new MediaStream([videoTrack]); if (el.srcObject !== stream) el.srcObject = stream; } }} style={{ width: "100%", height: "100%", objectFit: "cover", transform: "scaleX(-1)" }} />
+              <button onClick={() => setIsVideoExpanded(!isVideoExpanded)} style={{ position: "absolute", top: "8px", right: "8px", background: "rgba(0,0,0,0.5)", border: "none", color: "#fff", borderRadius: "8px", padding: "6px 10px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
+                {isVideoExpanded ? "Collapse" : "Expand"}
+              </button>
+            </div>
+          )}
         </div>
 
-        <ClassChat courseId={courseId || ""} videoTrack={videoTrack} isMicOn={isMicOn} toggleMic={toggleMic} isCamOn={isCamOn} toggleCam={toggleCam} />
+        {/* Sliding Chat Sidebar */}
+        <div style={{ width: isChatOpen ? "360px" : "64px", minWidth: 0, transition: "width 0.3s ease", flexShrink: 0, borderLeft: "1px solid #E5E5EA", background: "#1C1C1E" }}>
+          <ClassChat 
+            courseId={courseId || ""} 
+            isChatOpen={isChatOpen}
+            toggleChatOpen={() => setIsChatOpen(!isChatOpen)}
+            videoTrack={videoTrack} 
+            isMicOn={isMicOn} 
+            toggleMic={toggleMic}
+            isCamOn={isCamOn}
+            toggleCam={toggleCam}
+          />
+        </div>
       </div>
     </div>
   );

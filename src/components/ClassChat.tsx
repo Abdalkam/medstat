@@ -6,8 +6,8 @@ import { db } from "../database/db";
 import { sendChatMessage, getChatMessages } from "../database/chatDB";
 
 const C = {
-  bg: "rgba(28, 28, 30, 0.85)",
-  card: "rgba(44, 44, 46, 0.8)",
+  bg: "#1C1C1E",
+  card: "#2C2C2E",
   textPrimary: "#FFFFFF",
   textSecondary: "#AEAEB2",
   separator: "rgba(255,255,255,0.08)",
@@ -15,8 +15,9 @@ const C = {
   green: "#34C759",
   red: "#FF3B30",
   orange: "#FF9F0A",
-  bubbleOut: "#0A84FF",
-  bubbleIn: "rgba(255,255,255,0.1)",
+  bubbleOut: "#D9FDD3", // WhatsApp Outgoing
+  bubbleIn: "#FFFFFF",  // WhatsApp Incoming
+  whatsappBg: "#0B141A" // WhatsApp Dark Background
 };
 
 function VideoTile({ videoTrack }: { videoTrack: MediaStreamTrack | null }) {
@@ -32,6 +33,8 @@ function VideoTile({ videoTrack }: { videoTrack: MediaStreamTrack | null }) {
 
 interface Props {
   courseId: string;
+  isChatOpen: boolean;
+  toggleChatOpen: () => void;
   videoTrack?: MediaStreamTrack | null;
   isMicOn?: boolean;
   toggleMic?: () => void;
@@ -40,7 +43,7 @@ interface Props {
   hasMicPermission?: boolean;
 }
 
-export default function ClassChat({ courseId, videoTrack, isMicOn, toggleMic, isCamOn, toggleCam }: Props) {
+export default function ClassChat({ courseId, isChatOpen, toggleChatOpen, videoTrack, isMicOn, toggleMic, isCamOn, toggleCam }: Props) {
   const currentUser = JSON.parse(localStorage.getItem("currentUser") || "{}");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [message, setMessage] = useState("");
@@ -49,63 +52,16 @@ export default function ClassChat({ courseId, videoTrack, isMicOn, toggleMic, is
   const [avatarMap, setAvatarMap] = useState<Record<string, string>>({});
   const [mediaPreview, setMediaPreview] = useState<string | null>(null);
   const [mediaBase64, setMediaBase64] = useState<string | null>(null);
-  const [isVideo, setIsVideo] = useState(false);
-  
-  const [isMinimized, setIsMinimized] = useState(false);
-  const [pos, setPos] = useState({ x: 20, y: 20 });
-  const dragRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(null);
+  const [mediaName, setMediaName] = useState<string>("file");
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const fetchedAvatars = useRef<Set<string>>(new Set());
 
-  // Drag logic
-  const handleStart = (clientX: number, clientY: number) => {
-    if (isMinimized) return;
-    dragRef.current = { startX: clientX, startY: clientY, origX: pos.x, origY: pos.y };
-  };
-
-  const handleMove = (clientX: number, clientY: number) => {
-    if (!dragRef.current) return;
-    const dx = clientX - dragRef.current.startX;
-    const dy = clientY - dragRef.current.startY;
-    setPos({
-      x: Math.max(10, Math.min(window.innerWidth - 360, dragRef.current.origX + dx)),
-      y: Math.max(10, Math.min(window.innerHeight - 100, dragRef.current.origY + dy))
-    });
-  };
-
-  useEffect(() => {
-    const mouseMove = (e: MouseEvent) => handleMove(e.clientX, e.clientY);
-    const mouseUp = () => { dragRef.current = null; };
-    const touchMove = (e: TouchEvent) => { if(e.touches[0]) handleMove(e.touches[0].clientX, e.touches[0].clientY); };
-    const touchEnd = () => { dragRef.current = null; };
-    
-    window.addEventListener("mousemove", mouseMove);
-    window.addEventListener("mouseup", mouseUp);
-    window.addEventListener("touchmove", touchMove);
-    window.addEventListener("touchend", touchEnd);
-    return () => {
-      window.removeEventListener("mousemove", mouseMove);
-      window.removeEventListener("mouseup", mouseUp);
-      window.removeEventListener("touchmove", touchMove);
-      window.removeEventListener("touchend", touchEnd);
-    };
-  }, []);
-
-  const handleMouseDown = (e: React.MouseEvent) => handleStart(e.clientX, e.clientY);
-  const handleTouchStart = (e: React.TouchEvent) => { if(e.touches[0]) handleStart(e.touches[0].clientX, e.touches[0].clientY); };
-
   function normalize(raw: any): ChatMessage {
     return {
-      id: raw.id,
-      courseId: raw.course_id ?? raw.courseId ?? courseId,
-      userId: raw.user_id ?? raw.userId ?? "",
-      username: raw.username ?? "",
-      message: raw.message ?? "",
-      createdAt: raw.created_at ?? raw.createdAt ?? "",
-      imageUrl: raw.image_url ?? raw.imageUrl ?? null,
+      id: raw.id, courseId: raw.course_id ?? raw.courseId ?? courseId, userId: raw.user_id ?? raw.userId ?? "", username: raw.username ?? "", message: raw.message ?? "", createdAt: raw.created_at ?? raw.createdAt ?? "", imageUrl: raw.image_url ?? raw.imageUrl ?? null,
     };
   }
 
@@ -131,17 +87,13 @@ export default function ClassChat({ courseId, videoTrack, isMicOn, toggleMic, is
   useEffect(() => {
     if (!courseId) return;
     const fetchMessages = async () => {
-      // 1. Load from Local DB instantly
       const localMsgs = await getChatMessages(courseId);
       if (localMsgs.length > 0) setMessages(localMsgs);
-
-      // 2. Fetch from Supabase
       try {
         const { data } = await supabase.from("chat_messages").select("*").eq("course_id", courseId).order("created_at", { ascending: true });
         if (data) {
           const mapped = data.map(normalize);
           setMessages(mapped);
-          // Sync to local DB
           await db.chatMessages.bulkPut(mapped);
         }
       } catch (err) { console.warn("Offline: Using local chat messages"); }
@@ -156,33 +108,31 @@ export default function ClassChat({ courseId, videoTrack, isMicOn, toggleMic, is
       })
       .on("postgres_changes", { event: "DELETE", schema: "public", table: "chat_messages", filter: `course_id=eq.${courseId}` }, (payload) => {
         const deletedId = payload.old.id;
-        // 1. Remove from UI instantly
         setMessages((prev) => prev.filter((m) => m.id !== deletedId));
-        // 2. Remove from local IndexedDB
         db.chatMessages.delete(deletedId);
       })
       .subscribe();
-
     return () => { supabase.removeChannel(channel); };
   }, [courseId]);
 
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
-  const handleMediaUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const isImg = file.type.startsWith("image/");
-    const isVid = file.type.startsWith("video/");
-    if (!isImg && !isVid) return alert("Please select an image or video file.");
-    if (file.size > (isImg ? 5 : 15) * 1024 * 1024) return alert("File too large!");
+    if (file.size > 20 * 1024 * 1024) return alert("File too large! Max size is 20MB.");
     
     const reader = new FileReader();
-    reader.onload = () => { setMediaPreview(reader.result as string); setMediaBase64(reader.result as string); setIsVideo(isVid); };
+    reader.onload = () => {
+      setMediaPreview(reader.result as string);
+      setMediaBase64(reader.result as string);
+      setMediaName(file.name);
+    };
     reader.readAsDataURL(file);
     e.target.value = "";
   };
 
-  const clearMediaPreview = () => { setMediaPreview(null); setMediaBase64(null); setIsVideo(false); };
+  const clearMediaPreview = () => { setMediaPreview(null); setMediaBase64(null); setMediaName("file"); };
 
   async function handleSend(e: React.FormEvent) {
     e.preventDefault();
@@ -192,11 +142,8 @@ export default function ClassChat({ courseId, videoTrack, isMicOn, toggleMic, is
     
     setMessages((prev) => [...prev, optimistic]);
     setMessage(""); inputRef.current?.focus(); setSending(true);
-
-    // 1. Save to Local DB
     await sendChatMessage(optimistic);
 
-    // 2. Push to Supabase
     try {
       const { error } = await supabase.from("chat_messages").insert({ id: tempId, course_id: courseId, user_id: currentUser.id, username: currentUser.username || "You", message: message.trim(), image_url: mediaBase64 });
       if (error) throw error;
@@ -211,11 +158,7 @@ export default function ClassChat({ courseId, videoTrack, isMicOn, toggleMic, is
     const originalMessages = [...messages];
     setMessages(prev => prev.filter(m => m.id !== msgId));
     setDeletingId(msgId);
-    
-    // 1. Delete from Local DB
     await db.chatMessages.delete(msgId);
-
-    // 2. Delete from Supabase
     try {
       const { error } = await supabase.from("chat_messages").delete().eq("id", msgId).eq("user_id", currentUser.id);
       if (error) throw error;
@@ -245,21 +188,37 @@ export default function ClassChat({ courseId, videoTrack, isMicOn, toggleMic, is
 
   const msgGroups = getMsgGroups();
 
-  if (isMinimized) {
+  // Collapsed State (Thin Sidebar)
+  if (!isChatOpen) {
     return (
-      <button onClick={() => setIsMinimized(false)} style={{ position: "fixed", bottom: "24px", right: "24px", width: "56px", height: "56px", borderRadius: "50%", background: C.accent, color: "#fff", border: "none", cursor: "pointer", boxShadow: "0 8px 24px rgba(0,0,0,0.3)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}>
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-        {messages.length > 0 && <span style={{ position: "absolute", top: "-4px", right: "-4px", width: "22px", height: "22px", borderRadius: "50%", background: C.red, color: "#fff", fontSize: "11px", fontWeight: "bold", display: "flex", alignItems: "center", justifyContent: "center" }}>{messages.length}</span>}
-      </button>
+      <div style={{ width: "100%", height: "100%", background: C.bg, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "space-between", padding: "16px 0" }}>
+        <button onClick={toggleChatOpen} style={{ background: "rgba(118, 118, 128, 0.12)", border: "none", cursor: "pointer", borderRadius: "8px", width: "36px", height: "36px", display: "flex", alignItems: "center", justifyContent: "center", color: C.textPrimary }} title="Open Chat">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="11 17 6 12 11 7"/><polyline points="18 17 13 12 18 7"/></svg>
+        </button>
+        
+        <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+          {toggleMic && (
+            <button onClick={toggleMic} style={{ width: "36px", height: "36px", borderRadius: "50%", border: "none", background: isMicOn ? C.green : "rgba(255,255,255,0.1)", color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }} title="Mic">
+              {isMicOn ? <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/></svg> : <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="1" y1="1" x2="23" y2="23"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6"/></svg>}
+            </button>
+          )}
+          {toggleCam && (
+            <button onClick={toggleCam} style={{ width: "36px", height: "36px", borderRadius: "50%", border: "none", background: isCamOn ? C.accent : "rgba(255,255,255,0.1)", color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }} title="Cam">
+              {isCamOn ? <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg> : <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="1" y1="1" x2="23" y2="23"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6"/></svg>}
+            </button>
+          )}
+        </div>
+      </div>
     );
   }
 
+  // Expanded State (Full Chat)
   return (
-    <div style={{ position: "fixed", top: `${pos.y}px`, left: `${pos.x}px`, width: "340px", height: "500px", background: C.bg, borderRadius: "20px", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", border: `1px solid ${C.separator}`, boxShadow: "0 24px 48px rgba(0,0,0,0.4)", zIndex: 1000, display: "flex", flexDirection: "column", overflow: "hidden", color: C.textPrimary, fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" }}>
-      <div onMouseDown={handleMouseDown} onTouchStart={handleTouchStart} style={{ padding: "12px 16px", background: "rgba(0,0,0,0.3)", display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "move", borderBottom: `1px solid ${C.separator}` }}>
+    <div style={{ width: "100%", height: "100%", background: C.bg, display: "flex", flexDirection: "column", overflow: "hidden", color: C.textPrimary, fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" }}>
+      <div style={{ padding: "12px 16px", background: "rgba(0,0,0,0.3)", display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: `1px solid ${C.separator}` }}>
         <span style={{ color: C.textPrimary, fontWeight: "600", fontSize: "14px" }}>Live Chat & Call</span>
-        <button onClick={() => setIsMinimized(true)} style={{ background: "none", border: "none", color: C.textSecondary, cursor: "pointer", padding: "4px", borderRadius: "6px" }}>
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        <button onClick={toggleChatOpen} style={{ background: "none", border: "none", color: C.textSecondary, cursor: "pointer", padding: "4px", borderRadius: "6px" }} title="Close Chat">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="13 17 18 12 13 7"/><polyline points="6 17 11 12 6 7"/></svg>
         </button>
       </div>
 
@@ -283,32 +242,44 @@ export default function ClassChat({ courseId, videoTrack, isMicOn, toggleMic, is
         </div>
       </div>
 
-      <div style={{ flex: 1, overflowY: "auto", padding: "12px", display: "flex", flexDirection: "column", gap: "6px", background: "rgba(0,0,0,0.1)" }}>
-        {messages.length === 0 && <div style={{ textAlign: "center", color: C.textSecondary, fontSize: "13px", marginTop: "20px" }}>No messages yet. Say hello! 👋</div>}
+      <div style={{ flex: 1, overflowY: "auto", padding: "12px", display: "flex", flexDirection: "column", gap: "6px", background: C.whatsappBg }}>
+        {messages.length === 0 && <div style={{ textAlign: "center", color: "#667781", fontSize: "13px", marginTop: "20px" }}>No messages yet. Say hello! 👋</div>}
         {msgGroups.map((group, gi) => {
           const isOwn = group.userId === currentUser.id;
           return (
             <div key={`${group.userId}-${gi}`} style={{ display: "flex", justifyContent: isOwn ? "flex-end" : "flex-start" }}>
               <div style={{ display: "flex", flexDirection: "column", maxWidth: "85%", gap: "2px", alignItems: isOwn ? "flex-end" : "flex-start" }}>
-                {!isOwn && <span style={{ fontSize: "11px", color: C.accent, fontWeight: "600", marginLeft: "8px" }}>{group.username}</span>}
+                {!isOwn && <span style={{ fontSize: "11px", color: "#53BDEB", fontWeight: "600", marginLeft: "8px" }}>{group.username}</span>}
                 {group.msgs.map((msg, idx) => {
                   const isLast = idx === group.msgs.length - 1;
                   return (
                     <div key={msg.id} style={{ display: "flex", alignItems: "center", gap: "4px", flexDirection: isOwn ? "row-reverse" : "row" }}>
-                      <div style={{ background: isOwn ? C.bubbleOut : C.bubbleIn, color: "#fff", padding: msg.imageUrl ? "4px" : "8px 12px", borderRadius: isOwn ? "16px 16px 4px 16px" : "16px 16px 16px 4px", marginBottom: isLast ? "4px" : "0px", maxWidth: "100%", boxShadow: "0 1px 2px rgba(0,0,0,0.2)" }}>
+                      <div style={{ background: isOwn ? C.bubbleOut : C.bubbleIn, color: "#111B21", padding: msg.imageUrl ? "4px" : "6px 8px 6px 10px", borderRadius: isOwn ? "8px 0px 8px 8px" : "0px 8px 8px 8px", marginBottom: isLast ? "4px" : "0px", maxWidth: "100%", boxShadow: "0 1px 0.5px rgba(11,20,26,0.13)" }}>
                         {msg.imageUrl ? (
-                          <div style={{ position: "relative" }}>
-                            {msg.imageUrl.startsWith("data:video") ? <video src={msg.imageUrl} controls style={{ width: "100%", maxWidth: "200px", borderRadius: "12px", display: "block" }} /> : <img src={msg.imageUrl} alt="Uploaded" style={{ width: "100%", maxWidth: "200px", borderRadius: "12px", display: "block" }} />}
+                          <div style={{ position: "relative", minWidth: "180px" }}>
+                            {msg.imageUrl.startsWith("data:video") ? (
+                              <video src={msg.imageUrl} controls style={{ width: "100%", maxWidth: "200px", borderRadius: "6px", display: "block" }} />
+                            ) : msg.imageUrl.startsWith("data:image") ? (
+                              <img src={msg.imageUrl} alt="Uploaded" style={{ width: "100%", maxWidth: "200px", borderRadius: "6px", display: "block" }} />
+                            ) : (
+                              <a href={msg.imageUrl} download={"file_" + msg.id} style={{ display: "flex", alignItems: "center", gap: "8px", padding: "10px", background: "rgba(0,0,0,0.05)", borderRadius: "6px", textDecoration: "none", color: "#111B21" }}>
+                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>
+                                <div style={{ fontSize: "13px", fontWeight: 600 }}>Download File</div>
+                              </a>
+                            )}
                             <span style={{ position: "absolute", bottom: "4px", right: "4px", background: "rgba(0,0,0,0.6)", color: "#fff", fontSize: "10px", padding: "2px 6px", borderRadius: "4px" }}>{formatTime(msg.createdAt)}</span>
                           </div>
                         ) : (
-                          <div style={{ fontSize: "14px", lineHeight: "1.4", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                          <div style={{ fontSize: "14.2px", lineHeight: "1.35", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
                             {msg.message}
-                            <span style={{ fontSize: "10px", color: isOwn ? "rgba(255,255,255,0.7)" : C.textSecondary, marginLeft: "8px", float: "right", marginTop: "4px" }}>{formatTime(msg.createdAt)}</span>
+                            <span style={{ fontSize: "11px", color: isOwn ? "#667781" : "#667781", textAlign: "right", marginTop: "1px", display: "flex", justifyContent: "flex-end", alignItems: "center", gap: "4px", fontWeight: "500" }}>
+                              {formatTime(msg.createdAt)}
+                              {isOwn && <svg width="16" height="11" viewBox="0 0 16 11" fill="none"><path d="M11.071 0.929L4.5 7.5L1.929 4.929" stroke="#53BDEB" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/><path d="M14.071 0.929L7.5 7.5" stroke="#53BDEB" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                            </span>
                           </div>
                         )}
                       </div>
-                      {isOwn && <button onClick={() => handleDeleteMessage(msg.id)} disabled={deletingId === msg.id} style={{ background: "none", border: "none", color: C.red, cursor: "pointer", padding: "4px", opacity: deletingId === msg.id ? 0.5 : 1 }}><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button>}
+                      {isOwn && <button onClick={() => handleDeleteMessage(msg.id)} disabled={deletingId === msg.id} style={{ background: "none", border: "none", color: C.red, cursor: "pointer", padding: "4px", opacity: deletingId === msg.id ? 0.5 : 1 }}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button>}
                     </div>
                   );
                 })}
@@ -319,24 +290,26 @@ export default function ClassChat({ courseId, videoTrack, isMicOn, toggleMic, is
         <div ref={messagesEndRef} />
       </div>
 
-      <div style={{ padding: "8px", display: "flex", gap: "6px", alignItems: "center", borderTop: `1px solid ${C.separator}`, background: "rgba(0,0,0,0.2)" }}>
-        <button onClick={() => fileInputRef.current?.click()} style={{ background: "none", border: "none", color: C.textSecondary, cursor: "pointer", padding: "8px" }}>
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg>
-        </button>
-        <input ref={fileInputRef} type="file" accept="image/*,video/*" style={{ display: "none" }} onChange={handleMediaUpload} />
-        
-        {mediaPreview && (
-          <div style={{ position: "relative", width: "40px", height: "40px", borderRadius: "8px", overflow: "hidden" }}>
-            {isVideo ? <video src={mediaPreview} style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : <img src={mediaPreview} style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
-            <button onClick={clearMediaPreview} style={{ position: "absolute", top: "0", right: "0", background: "rgba(0,0,0,0.5)", color: "#fff", border: "none", cursor: "pointer" }}>X</button>
-          </div>
-        )}
+      {mediaPreview && (
+        <div style={{ padding: "10px 16px", background: "#F0F2F5", display: "flex", alignItems: "center", gap: "12px", borderTop: "1px solid #E9EDEF" }}>
+          {mediaPreview.startsWith("data:video") ? <video src={mediaPreview} style={{ width: "60px", height: "60px", borderRadius: "8px", objectFit: "cover" }} /> : mediaPreview.startsWith("data:image") ? <img src={mediaPreview} alt="Preview" style={{ width: "60px", height: "60px", borderRadius: "8px", objectFit: "cover" }} /> : <div style={{width: "60px", height: "60px", display: "flex", alignItems: "center", justifyContent: "center", background: "#e9edef", borderRadius: "8px"}}>📄</div>}
+          <span style={{ fontSize: "14px", color: "#111B21", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{mediaName}</span>
+          <button onClick={clearMediaPreview} style={{ background: "transparent", border: "none", cursor: "pointer", color: C.red, padding: "8px" }}>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+          </button>
+        </div>
+      )}
 
-        <input ref={inputRef} type="text" placeholder="Type a message" value={message} onChange={(e) => setMessage(e.target.value)} disabled={sending} style={{ flex: 1, background: "rgba(255,255,255,0.1)", border: "none", outline: "none", color: "#fff", padding: "10px 14px", borderRadius: "20px", fontSize: "14px" }} />
-        <button onClick={handleSend} disabled={(!message.trim() && !mediaBase64) || sending} style={{ width: "36px", height: "36px", borderRadius: "50%", border: "none", background: (message.trim() || mediaBase64) ? C.accent : "rgba(255,255,255,0.1)", color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" /></svg>
+      <form onSubmit={handleSend} style={{ display: "flex", padding: "8px 12px", background: "#F0F2F5", gap: "8px", alignItems: "flex-end", flexShrink: 0, borderTop: mediaPreview ? "none" : "1px solid #E9EDEF" }}>
+        <button type="button" onClick={() => fileInputRef.current?.click()} style={{ width: "42px", height: "42px", borderRadius: "50%", border: "none", background: "transparent", color: "#667781", cursor: "pointer", flexShrink: 0 }}>
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg>
         </button>
-      </div>
+        <input ref={fileInputRef} type="file" style={{ display: "none" }} onChange={handleFileUpload} />
+        <input ref={inputRef} type="text" placeholder="Type a message" value={message} onChange={(e) => setMessage(e.target.value)} disabled={sending} style={{ flex: 1, border: "none", outline: "none", padding: "10px 16px", borderRadius: "20px", fontSize: "15px", background: "#FFFFFF", fontFamily: "inherit", boxShadow: "0 1px 2px rgba(0,0,0,0.1)", opacity: sending ? 0.7 : 1, color: "#111B21" }} />
+        <button type="submit" disabled={(!message.trim() && !mediaBase64) || sending} style={{ width: "42px", height: "42px", borderRadius: "50%", border: "none", background: (message.trim() || mediaBase64) && !sending ? "#00A884" : "#C7C7CC", color: "#fff", cursor: (message.trim() || mediaBase64) && !sending ? "pointer" : "not-allowed", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" /></svg>
+        </button>
+      </form>
     </div>
   );
 }
