@@ -24,6 +24,9 @@ export default function SMSsettings() {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState(false);
+  
+  // New state for custom phone numbers
+  const [manualPhone, setManualPhone] = useState("");
 
   useEffect(() => {
     async function loadUsers() {
@@ -49,6 +52,20 @@ export default function SMSsettings() {
     } else {
       setSelectedPhones(users.map((u: any) => u.phone));
     }
+  };
+
+  const addManualPhone = () => {
+    const cleanManual = manualPhone.replace(/\s/g, "").trim();
+    if (!cleanManual) return;
+    
+    if (selectedPhones.includes(cleanManual)) {
+      setError("This number is already in the recipient list.");
+      return;
+    }
+    
+    setSelectedPhones(prev => [...prev, cleanManual]);
+    setManualPhone("");
+    setError("");
   };
 
   const handleSendSms = async () => {
@@ -124,11 +141,51 @@ export default function SMSsettings() {
           </div>
         )}
 
+        {/* Custom Number Input Card */}
+        <div style={{ background: C.card, borderRadius: "14px", padding: "16px", marginBottom: "16px", boxShadow: "0 4px 12px rgba(0,0,0,0.05)" }}>
+          <p style={{ margin: "0 0 8px 4px", fontSize: "13px", color: C.textTertiary, fontWeight: "600", textTransform: "uppercase", letterSpacing: "0.5px" }}>Add Custom Number</p>
+          <div style={{ display: "flex", gap: "8px" }}>
+            <input 
+              type="tel"
+              placeholder="+256712345678"
+              value={manualPhone}
+              onChange={(e) => setManualPhone(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addManualPhone(); } }}
+              style={{
+                flex: 1, height: "46px", padding: "0 12px", borderRadius: "10px", 
+                border: `1px solid ${C.separator}`, fontSize: "15px", outline: "none",
+                boxSizing: "border-box", color: C.textPrimary
+              }}
+            />
+            <button 
+              onClick={addManualPhone} 
+              style={{ background: C.blue, color: "white", border: "none", borderRadius: "10px", padding: "0 16px", fontWeight: "600", cursor: "pointer", fontSize: "15px" }}
+            >
+              Add
+            </button>
+          </div>
+          
+          {/* Render custom number chips */}
+          {selectedPhones.filter(p => !users.some(u => u.phone === p)).length > 0 && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", marginTop: "12px" }}>
+              {selectedPhones.filter(p => !users.some(u => u.phone === p)).map(phone => (
+                <div key={phone} style={{ display: "flex", alignItems: "center", background: `${C.blue}20`, color: C.blue, padding: "4px 8px 4px 12px", borderRadius: "20px", fontSize: "13px", fontWeight: "600" }}>
+                  {phone}
+                  <button onClick={() => toggleSelect(phone)} style={{ background: "transparent", border: "none", color: C.blue, cursor: "pointer", marginLeft: "6px", padding: 0, display: "flex", alignItems: "center" }}>✕</button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
         {/* Recipient List Card */}
         <div style={{ background: C.card, borderRadius: "14px", overflow: "hidden", marginBottom: "24px", boxShadow: "0 4px 12px rgba(0,0,0,0.05)" }}>
+          <div style={{ padding: "12px 16px 4px 16px", fontSize: "13px", color: C.textTertiary, fontWeight: "600", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+            Registered Users
+          </div>
           {users.length === 0 ? (
-            <div style={{ padding: "40px 20px", textAlign: "center", color: C.textTertiary, fontSize: "15px" }}>
-              No users with phone numbers found.
+            <div style={{ padding: "20px", textAlign: "center", color: C.textTertiary, fontSize: "15px" }}>
+              No registered users found.
             </div>
           ) : (
             users.map((user, index) => (
