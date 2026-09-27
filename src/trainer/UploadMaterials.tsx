@@ -114,14 +114,11 @@ export default function UploadMaterials() {
     let cancelled = false;
     const fetchBusiness = async () => {
       try {
-        // 1. Load from Local Storage INSTANTLY (with mapping fix)
         const localSettings = localStorage.getItem("localBusinessSettings");
         if (localSettings) {
           const parsed = JSON.parse(localSettings);
           setBusiness({ business_name: parsed.businessName || null, phone: parsed.phone || null, logo: parsed.logo || null });
         }
-
-        // 2. Try Supabase
         const { data } = await supabase.from("business_settings").select("business_name, phone, logo").eq("tenant_id", currentUser.tenantId).maybeSingle();
         if (!cancelled && data) setBusiness(data as any);
       } catch (err: unknown) { console.error("Business fetch failed:", err); }
@@ -137,7 +134,6 @@ export default function UploadMaterials() {
     const loggedInUser = JSON.parse(localStorage.getItem("currentUser") || "{}");
     const tenantId = loggedInUser.tenantId;
 
-    // 1. Load Local Data INSTANTLY
     try {
       const c = await getCourseById(courseId);
       if (c) setCourse(c);
@@ -146,7 +142,6 @@ export default function UploadMaterials() {
       setMaterials(localMats);
     } catch (e) { console.error("Local load failed", e); }
 
-    // 2. Try Supabase to update
     if (tenantId) {
       try {
         const { data, error } = await supabase.from('course_materials').select('*').eq('tenant_id', tenantId).eq('course_id', courseId).order('presentation_order', { ascending: true });
@@ -183,14 +178,16 @@ export default function UploadMaterials() {
   }
 
   async function deleteMaterialFromSupabase(materialId: string) {
-    try { const { error } = await supabase.from('course_materials').delete().eq('id', materialId); if (error) throw error; } catch (error: any) { console.warn("Material deleted locally, but failed to sync deletion to Supabase.", error.message); }
+    try { 
+      const { error } = await supabase.from('course_materials').delete().eq('id', materialId); 
+      if (error) throw error; 
+    } catch (error: any) { 
+      console.warn("Material deleted locally, but failed to sync deletion to Supabase.", error.message); 
+    }
   }
 
   function handleFileSelect(selectedFile: File | null) {
     if (!selectedFile) return; setError("");
-    
-    // ✅ REMOVED: The block that blocked .ppt and .pptx files so trainers can upload them
-    
     if (selectedFile.size > MAX_FILE_SIZE) { setError(`File is too large (${formatBytes(selectedFile.size)}). Maximum allowed is ${formatBytes(MAX_FILE_SIZE)}.`); return; }
     setFile(selectedFile);
     if (selectedFile.type.startsWith("image/")) setImagePreview(URL.createObjectURL(selectedFile)); else setImagePreview(null);
@@ -214,7 +211,6 @@ export default function UploadMaterials() {
       if (file.type.startsWith("image/")) { setUploadProgress(10); fileUrl = await compressImage(file); storedFileType = "image/jpeg"; setUploadProgress(100); }
       else { fileUrl = await readFileWithProgress(file, (p) => setUploadProgress(p)); }
       
-      // Ensure PPT files retain their specific type for rendering logic
       if (file.name.endsWith(".ppt") || file.name.endsWith(".pptx")) {
         storedFileType = "application/vnd.ms-powerpoint";
       }
@@ -228,6 +224,7 @@ export default function UploadMaterials() {
 
   function handleItemDragStart(e: React.DragEvent, id: string) { setDraggedItemId(id); e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", id); }
   function handleItemDragOver(e: React.DragEvent, id: string) { e.preventDefault(); if (draggedItemId && draggedItemId !== id) setDragOverItemId(id); }
+  
   function handleItemDrop(e: React.DragEvent, targetId: string) {
     e.preventDefault();
     if (!draggedItemId || draggedItemId === targetId) { resetDragState(); return; }
@@ -235,16 +232,49 @@ export default function UploadMaterials() {
     const draggedIndex = newMaterials.findIndex(m => m.id === draggedItemId);
     const targetIndex = newMaterials.findIndex(m => m.id === targetId);
     if (draggedIndex === -1 || targetIndex === -1) { resetDragState(); return; }
+    
     const [reorderedItem] = newMaterials.splice(draggedIndex, 1);
     newMaterials.splice(targetIndex, 0, reorderedItem);
-    const loggedInUser = JSON.parse(localStorage.getItem("currentUser") || "{}");
-    const tenantId = loggedInUser.tenantId;
-    const updatedMaterials = newMaterials.map((m, idx) => ({ ...m, presentationOrder: idx }));
-    setMaterials(updatedMaterials);
-    updatedMaterials.forEach(m => updateMaterial(m));
-    if (tenantId) syncMultipleMaterialsToSupabase(updatedMaterials, tenantId);
+    
+    saveNewOrder(newMaterials);
     resetDragState();
   }
+
+  // ==========================================================
+  // NEW: Explicit Move Up/Down Logic
+  // ==========================================================
+  function moveItem(id: string, direction: 'up' | 'down') {
+    const currentIndex = materials.findIndex(m => m.id === id);
+    if (currentIndex === -1) return;
+
+    const newIndex = direction === 'up' ? currentIndex - 1 : currentIndex + 1;
+    if (newIndex < 0 || newIndex >= materials.length) return; // Prevent moving out of bounds
+
+    const newMaterials = [...materials];
+    // Remove the item and insert it at the new index
+    const [movedItem] = newMaterials.splice(currentIndex, 1);
+    newMaterials.splice(newIndex, 0, movedItem);
+    
+    saveNewOrder(newMaterials);
+  }
+
+  function saveNewOrder(newMaterials: CourseMaterial[]) {
+    const loggedInUser = JSON.parse(localStorage.getItem("currentUser") || "{}");
+    const tenantId = loggedInUser.tenantId;
+    
+    // Re-assign presentationOrder sequentially from 0 to N
+    const updatedMaterials = newMaterials.map((m, idx) => ({ ...m, presentationOrder: idx }));
+    
+    // Update state instantly for responsive UI
+    setMaterials(updatedMaterials);
+    
+    // Save to local DB
+    updatedMaterials.forEach(m => updateMaterial(m));
+    
+    // Sync the newly ordered list to Supabase
+    if (tenantId) syncMultipleMaterialsToSupabase(updatedMaterials, tenantId);
+  }
+
   function resetDragState() { setDraggedItemId(null); setDragOverItemId(null); }
 
   async function startLesson() {
@@ -270,7 +300,9 @@ export default function UploadMaterials() {
 
   async function removeMaterial(id: string) {
     if (!confirm("Remove this page from the lesson?")) return;
-    await deleteMaterial(id); loadData(); deleteMaterialFromSupabase(id);
+    await deleteMaterialFromSupabase(id);
+    await deleteMaterial(id);
+    await loadData();
   }
 
   useEffect(() => { return () => { if (imagePreview) URL.revokeObjectURL(imagePreview); }; }, [imagePreview]);
@@ -304,7 +336,6 @@ export default function UploadMaterials() {
             <input style={{ ...TS.input, flex: 1, border: "none", outline: "none", background: "transparent" }} placeholder="Page Title (e.g. Introduction Video)" value={title} onChange={e => setTitle(e.target.value)} disabled={uploading} />
           </div>
           <div onDrop={handleDrop} onDragOver={handleDragOver} onDragLeave={handleDragLeave} onClick={() => !uploading && fileInputRef.current?.click()} style={{ display: "flex", padding: 24, gap: 14, cursor: uploading ? "not-allowed" : "pointer", background: dragOver ? C.medBlueBg : "transparent", transition: "background 0.2s", flexDirection: "column", alignItems: "stretch" }}>
-            {/* ✅ UPDATED: Added .ppt and .pptx to the accept attribute */}
             <input ref={fileInputRef} type="file" style={{ display: "none" }} onChange={handleFileInputChange} accept=".pdf,.mp4,.mov,.webm,.mp3,.wav,.png,.jpg,.jpeg,.gif,.webp,.ppt,.pptx" disabled={uploading} />
             {file ? (
               <div style={{ display: "flex", alignItems: "center", gap: 14, width: "100%" }}>
@@ -316,7 +347,6 @@ export default function UploadMaterials() {
               <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 16, textAlign: "center" }}>
                 <div style={{ width: 48, height: 48, borderRadius: 12, background: dragOver ? C.medBlue : C.medBlueBg, color: dragOver ? "#fff" : C.medBlue, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 12, transition: "background 0.2s" }}><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></div>
                 <div style={{ ...TS.body, fontWeight: 600, color: dragOver ? C.medBlue : C.textPrimary }}>{dragOver ? "Drop file here" : "Tap to browse or drag a file"}</div>
-                {/* ✅ UPDATED: Helper text to include PPT */}
                 <div style={{ ...TS.label, fontSize: 12, marginTop: 4, color: C.textTertiary }}>PDF, Video, Audio, Image, or PPT • Max {formatBytes(MAX_FILE_SIZE)}</div>
               </div>
             )}
@@ -330,7 +360,7 @@ export default function UploadMaterials() {
           <button onClick={handleUpload} disabled={!canUpload} style={{ ...TS.input, width: "100%", padding: 16, background: canUpload ? C.medBlue : "#D1D1D6", color: "#fff", border: "none", borderRadius: 12, fontSize: 16, fontWeight: 600, cursor: canUpload ? "pointer" : "not-allowed", transition: "background 0.2s", boxShadow: canUpload ? `0 4px 12px ${C.medBlue}33` : "none" }}>{uploading ? "Processing..." : "+ Add to Lesson"}</button>
         </div>
 
-        <div style={{ ...TS.caption, margin: "0 0 12px 0", color: C.textTertiary }}>LESSON PAGES ({materials.length}) - DRAG TO REORDER</div>
+        <div style={{ ...TS.caption, margin: "0 0 12px 0", color: C.textTertiary }}>LESSON PAGES ({materials.length}) - REORDER</div>
         {materials.length === 0 ? (
           <div style={{ background: C.card, borderRadius: 16, padding: 48, textAlign: "center", ...TS.bodySm, fontSize: 15, color: C.textTertiary, border: `1px solid ${C.separatorLight}`, boxShadow: "0 4px 24px rgba(0,0,0,0.04)" }}>No files added yet. Add your first page above.</div>
         ) : (
@@ -341,13 +371,32 @@ export default function UploadMaterials() {
               const isDragOver = dragOverItemId === mat.id;
               return (
                 <div key={mat.id} draggable onDragStart={(e) => handleItemDragStart(e, mat.id)} onDragOver={(e) => handleItemDragOver(e, mat.id)} onDrop={(e) => handleItemDrop(e, mat.id)} onDragEnd={resetDragState} style={{ display: "flex", alignItems: "center", padding: "16px 20px", borderBottom: index === materials.length - 1 ? "none" : `1px solid ${C.separatorLight}`, opacity: isDragging ? 0.4 : 1, background: isDragOver ? C.medBlueBg : "transparent", transition: "background 0.15s, opacity 0.15s" }}>
-                  <div style={{ cursor: "grab", display: "flex", alignItems: "center", marginRight: 16, color: C.textTertiary }}><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.5"/><circle cx="15" cy="6" r="1.5"/><circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/><circle cx="9" cy="18" r="1.5"/><circle cx="15" cy="18" r="1.5"/></svg></div>
+                  
+                  {/* Up/Down Arrows Group */}
+                  <div style={{ display: "flex", flexDirection: "column", marginRight: 12, flexShrink: 0 }}>
+                    <button 
+                      onClick={() => moveItem(mat.id, 'up')} 
+                      disabled={index === 0} 
+                      style={{ background: "transparent", border: "none", padding: 0, cursor: index === 0 ? "not-allowed" : "pointer", color: index === 0 ? C.separator : C.textTertiary, height: 14, display: "flex", alignItems: "center", justifyContent: "center" }}
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="18 15 12 9 6 15"/></svg>
+                    </button>
+                    <button 
+                      onClick={() => moveItem(mat.id, 'down')} 
+                      disabled={index === materials.length - 1} 
+                      style={{ background: "transparent", border: "none", padding: 0, cursor: index === materials.length - 1 ? "not-allowed" : "pointer", color: index === materials.length - 1 ? C.separator : C.textTertiary, height: 14, display: "flex", alignItems: "center", justifyContent: "center", marginTop: 2 }}
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+                    </button>
+                  </div>
+
                   <div style={{ display: "flex", alignItems: "center", gap: 14, flex: 1, minWidth: 0 }}>
                     <span style={{ ...TS.label, fontSize: 12, fontWeight: 600, width: 20, textAlign: "center", color: C.textTertiary }}>{index + 1}</span>
                     <div style={{ width: 40, height: 40, borderRadius: 10, background: meta.bg, color: meta.color, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, flexShrink: 0 }}>{meta.icon}</div>
                     <div style={{ flex: 1, minWidth: 0 }}><div style={{ ...TS.input, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{mat.title}</div><div style={{ ...TS.label, fontSize: 12, marginTop: 2, color: C.textTertiary }}>{meta.label} • {mat.fileName}</div></div>
                   </div>
-                  <button onClick={() => removeMaterial(mat.id)} style={{ width: 32, height: 32, background: "transparent", border: "none", color: C.red, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", opacity: 0.7, transition: "opacity 0.2s" }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
+                  
+                  <button onClick={() => removeMaterial(mat.id)} style={{ width: 32, height: 32, background: "transparent", border: "none", color: C.red, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", opacity: 0.7, transition: "opacity 0.2s", flexShrink: 0 }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
                 </div>
               );
             })}
