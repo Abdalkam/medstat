@@ -177,9 +177,6 @@ export default function UploadMaterials() {
     } catch (error: any) { console.warn("Materials saved locally, but failed to sync to Supabase.", error.message); }
   }
 
-  // ====================================================================
-  // FIXED: Explicit Error Throwing For Diagnostics
-  // ====================================================================
   async function deleteMaterialFromSupabase(materialId: string, tenantId: string) {
     try { 
       const { error } = await supabase.from('course_materials').delete().eq('id', materialId).eq('tenant_id', tenantId); 
@@ -292,11 +289,9 @@ export default function UploadMaterials() {
   }
 
   // ====================================================================
-  // FIXED: Optimistic UI Deletion with explicit alerts for failures
+  // FIXED: Optimistic UI Deletion without blocking browser dialogs
   // ====================================================================
   async function removeMaterial(id: string) {
-    if (!confirm("Remove this page from the lesson?")) return;
-    
     const loggedInUser = JSON.parse(localStorage.getItem("currentUser") || "{}");
     const tenantId = loggedInUser.tenantId;
 
@@ -308,7 +303,6 @@ export default function UploadMaterials() {
       await deleteMaterial(id);
     } catch (localErr) {
       console.error("Local DB Delete Error:", localErr);
-      alert("Failed to delete from local database. Check console for details.");
       await loadData(); // Restore UI if local delete failed
       return;
     }
@@ -320,7 +314,6 @@ export default function UploadMaterials() {
       }
     } catch (supabaseErr: any) {
       console.error("Supabase Delete Error:", supabaseErr);
-      alert("Failed to delete from cloud database: " + supabaseErr.message);
       await loadData(); // Restore UI if cloud delete failed
     }
   }
@@ -330,7 +323,6 @@ export default function UploadMaterials() {
   const canUpload = !uploading && file !== null && title.trim() !== "";
 
   return (
-    // ✅ FIXED: MozOsxFontSmoothing typo
     <div style={{ minHeight: "100vh", background: C.bg, fontFamily: FONT, WebkitFontSmoothing: "antialiased", MozOsxFontSmoothing: "grayscale" }}>
       {/* SINGLE APP BAR */}
       <div style={{ borderBottom: `1px solid ${C.separator}`, padding: "12px 24px", position: "sticky", top: 0, zIndex: 10, width: "100%", boxSizing: "border-box", background: "rgba(255,255,255,0.85)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)" }}>
@@ -418,9 +410,10 @@ export default function UploadMaterials() {
                   </div>
                   
                   {/* ========================================================== */}
-                  {/* FIXED: Delete button with draggable={false} and stopPropagation */}
+                  {/* FIXED: Delete button prevents drag events and removed dialogs */}
                   {/* ========================================================== */}
                   <button 
+                    onDragStart={(e) => e.preventDefault()}
                     draggable={false}
                     onMouseDown={(e) => e.stopPropagation()}
                     onClick={(e) => { 

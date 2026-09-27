@@ -1,7 +1,7 @@
 // src/database/materialDB.ts
 import { db } from "./db";
 import type { CourseMaterial } from "../types";
-import { pushMaterialToSupabase, deleteMaterialFromSupabase } from "./supabaseCourseSync";
+import { pushMaterialToSupabase } from "./supabaseCourseSync";
 
 // ✅ FIX: Changed "authUser" to "currentUser"
 function getTenantId(): string {
@@ -34,11 +34,6 @@ export async function getMaterialById(id: string): Promise<CourseMaterial | unde
 }
 
 export async function deleteMaterial(id: string): Promise<void> {
+  // Only delete from local DB here. Supabase deletion is handled by the component.
   await db.materials.delete(id);
-  
-  // ✅ FIX: Fetch tenantId and pass it to Supabase to bypass RLS policies
-  const tenantId = getTenantId();
-  if (tenantId) {
-    deleteMaterialFromSupabase(id, tenantId);
-  }
 }
