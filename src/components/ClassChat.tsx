@@ -43,6 +43,46 @@ function getFileIcon(fileName: string) {
   return { icon: '📁', color: '#8E8E93' };
 }
 
+// ---- Real file names for attachments ----
+// The file name is embedded in the data URL header as a ;name= parameter:
+//   data:application/pdf;name=Abdallah.pdf;base64,...
+// This needs no schema change, syncs through Supabase, and survives offline.
+
+function withFileName(dataUrl: string, fileName: string) {
+  const idx = dataUrl.indexOf(";base64,");
+  if (idx === -1) return dataUrl;
+  const name = encodeURIComponent(fileName);
+  // Avoid embedding twice
+  if (dataUrl.slice(0, idx).includes(";name=")) return dataUrl;
+  return `${dataUrl.slice(0, idx)};name=${name}${dataUrl.slice(idx)}`;
+}
+
+function getEmbeddedFileName(dataUrl: string): string {
+  try {
+    const header = dataUrl.split(",")[0] || "";
+    const m = header.match(/;name=([^;]+)/);
+    return m ? decodeURIComponent(m[1]) : "";
+  } catch { return ""; }
+}
+
+function defaultNameFromMime(dataUrl: string): string {
+  const mime = dataUrl.split(",")[0].split(":")[1]?.split(";")[0] || "";
+  const map: Record<string, string> = {
+    "application/pdf": "Document.pdf",
+    "application/msword": "Document.doc",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "Document.docx",
+    "application/vnd.ms-excel": "Sheet.xls",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "Sheet.xlsx",
+    "application/vnd.ms-powerpoint": "Slides.ppt",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": "Slides.pptx",
+    "application/zip": "Archive.zip",
+    "text/plain": "Document.txt",
+  };
+  if (map[mime]) return map[mime];
+  const ext = mime.split("/")[1]?.split("+")[0] || "dat";
+  return `Document.${ext}`;
+}
+
 function VideoTile({ videoTrack }: { videoTrack: MediaStreamTrack | null }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   useEffect(() => {
@@ -54,6 +94,8 @@ function VideoTile({ videoTrack }: { videoTrack: MediaStreamTrack | null }) {
   return <video ref={videoRef} autoPlay muted playsInline style={{ width: "100%", height: "100%", objectFit: "cover", transform: "scaleX(-1)" }} />;
 }
 
+interface MaterialFile { id: string; fileName: string; fileType: string; }
+
 interface Props {
   courseId: string;
   isChatOpen: boolean;
@@ -64,9 +106,10 @@ interface Props {
   isCamOn?: boolean;
   toggleCam?: () => void;
   hasMicPermission?: boolean;
+  files?: MaterialFile[];
 }
 
-export default function ClassChat({ courseId, isChatOpen, toggleChatOpen, videoTrack, isMicOn, toggleMic, isCamOn, toggleCam }: Props) {
+export default function ClassChat({ courseId, isChatOpen, toggleChatOpen, videoTrack, isMicOn, toggleMic, isCamOn, toggleCam, files = [] }: Props) {
   const currentUser = JSON.parse(localStorage.getItem("currentUser") || "{}");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [message, setMessage] = useState("");
@@ -106,10 +149,12 @@ export default function ClassChat({ courseId, isChatOpen, toggleChatOpen, videoT
       }
       const byteArray = new Uint8Array(byteNumbers);
 
-      const ext = mime.split('/')[1]?.split(';')[0] || 'bin';
+      const embeddedName = getEmbeddedFileName(base64Data);
+      const ext = embeddedName ? (embeddedName.split('.').pop() || 'bin') : (mime.split('/')[1]?.split(';')[0] || 'bin');
+      const baseName = embeddedName ? embeddedName.replace(/\.[^.]+$/, "") : `file_${fileId.slice(0, 8)}`;
       
       const filePath = await save({
-        defaultPath: `file_${fileId}.${ext}`,
+        defaultPath: `${baseName}.${ext}`,
       });
       
       if (filePath) {
@@ -117,9 +162,10 @@ export default function ClassChat({ courseId, isChatOpen, toggleChatOpen, videoT
       }
     } catch (error) {
       console.error("Native save failed, falling back to web download:", error);
+      const embeddedName = getEmbeddedFileName(base64Data);
       const link = document.createElement('a');
       link.href = base64Data;
-      link.download = `file_${fileId}`;
+      link.download = embeddedName || `file_${fileId}`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -185,8 +231,10 @@ export default function ClassChat({ courseId, isChatOpen, toggleChatOpen, videoT
     
     const reader = new FileReader();
     reader.onload = () => {
-      setMediaPreview(reader.result as string);
-      setMediaBase64(reader.result as string);
+      // Embed the real file name into the data URL so receivers see "Abdallah.pdf", not "Document.dat"
+      const dataUrl = withFileName(reader.result as string, file.name);
+      setMediaPreview(dataUrl);
+      setMediaBase64(dataUrl);
       setMediaName(file.name);
     };
     reader.readAsDataURL(file);
@@ -212,9 +260,11 @@ export default function ClassChat({ courseId, isChatOpen, toggleChatOpen, videoT
         const blob = new Blob(chunksRef.current, { type: type === 'video' ? 'video/webm' : 'audio/webm' });
         const reader = new FileReader();
         reader.onload = () => {
-          setMediaPreview(reader.result as string);
-          setMediaBase64(reader.result as string);
-          setMediaName(type === 'video' ? 'video_message.webm' : 'voice_message.webm');
+          const fileName = type === 'video' ? 'video_message.webm' : 'voice_message.webm';
+          const dataUrl = withFileName(reader.result as string, fileName);
+          setMediaPreview(dataUrl);
+          setMediaBase64(dataUrl);
+          setMediaName(fileName);
         };
         reader.readAsDataURL(blob);
         stream.getTracks().forEach(track => track.stop());
@@ -350,6 +400,20 @@ export default function ClassChat({ courseId, isChatOpen, toggleChatOpen, videoT
         </div>
       </div>
 
+      {files.length > 0 && (
+        <div style={{ padding: "10px 12px", borderBottom: `1px solid ${C.separator}`, background: C.bg }}>
+          <div style={{ fontSize: "11px", fontWeight: "700", letterSpacing: "0.06em", textTransform: "uppercase", color: C.textSecondary, marginBottom: "8px" }}>Class Files</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: "6px", maxHeight: "132px", overflowY: "auto" }}>
+            {files.map((f) => (
+              <div key={f.id} style={{ display: "flex", alignItems: "center", gap: "8px", background: C.card, border: `1px solid ${C.separator}`, borderRadius: "10px", padding: "7px 10px", minWidth: 0 }}>
+                <span style={{ fontSize: "16px", lineHeight: 1, flexShrink: 0 }}>{getFileIcon(f.fileName || f.fileType).icon}</span>
+                <span style={{ fontSize: "13px", fontWeight: "600", color: C.textPrimary, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{f.fileName}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div style={{ flex: 1, overflowY: "auto", padding: "12px", display: "flex", flexDirection: "column", gap: "6px", background: C.whatsappBg }}>
         {messages.length === 0 && <div style={{ textAlign: "center", color: C.textGrey, fontSize: "13px", marginTop: "20px" }}>No messages yet. Say hello! 👋</div>}
         {msgGroups.map((group, gi) => {
@@ -360,6 +424,7 @@ export default function ClassChat({ courseId, isChatOpen, toggleChatOpen, videoT
                 {!isOwn && <span style={{ fontSize: "11px", color: C.whatsappDarkGreen, fontWeight: "600", marginLeft: "8px" }}>{group.username}</span>}
                 {group.msgs.map((msg, idx) => {
                   const isLast = idx === group.msgs.length - 1;
+                  const attachedName = msg.imageUrl ? (getEmbeddedFileName(msg.imageUrl) || defaultNameFromMime(msg.imageUrl)) : "";
                   return (
                     <div key={msg.id} style={{ display: "flex", alignItems: "center", gap: "4px", flexDirection: isOwn ? "row-reverse" : "row" }}>
                       <div style={{ background: isOwn ? C.bubbleOut : C.bubbleIn, color: C.textDark, padding: msg.imageUrl ? "4px" : "6px 8px 6px 10px", borderRadius: "12px", marginBottom: isLast ? "4px" : "0px", maxWidth: "100%", boxShadow: "0 1px 0.5px rgba(11,20,26,0.13)" }}>
@@ -388,10 +453,10 @@ export default function ClassChat({ courseId, isChatOpen, toggleChatOpen, videoT
                                 }}
                               >
                                 <div style={{ fontSize: "28px", flexShrink: 0, lineHeight: 1 }}>
-                                  {getFileIcon("file").icon}
+                                  {getFileIcon(attachedName).icon}
                                 </div>
-                                <span style={{ fontSize: "14px", fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", flex: 1 }}>
-                                  {msg.imageUrl.split(";")[0].split("/")[1] || "Document"}.dat
+                                <span style={{ fontSize: "14px", fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", flex: 1 }} title={attachedName}>
+                                  {attachedName}
                                 </span>
                                 <div style={{ color: C.textGrey, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
                                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>

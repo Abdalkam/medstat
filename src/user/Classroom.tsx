@@ -14,6 +14,8 @@ import { getLiveSession } from "../database/liveSessionDB";
 
 const C = { bg: "#F2F2F7", card: "#FFFFFF", separator: "#E5E5EA", medBlue: "#030303", medBlueBg: "#E8F2FF", red: "#FF3B30", redBg: "#FFEFEE", orange: "#FF9F0A", orangeBg: "#FFF6EB", green: "#34C759", purple: "#AF52DE", purpleBg: "#F5F0FF" };
 
+interface MaterialFile { id: string; fileName: string; fileType: string; }
+
 export default function Classroom() {
   const { courseId } = useParams();
   const navigate = useNavigate();
@@ -27,6 +29,7 @@ export default function Classroom() {
   const [dbUserAvatar, setDbUserAvatar] = useState<string | null>(null);
   const [isChatOpen, setIsChatOpen] = useState(true);
   const [isVideoExpanded, setIsVideoExpanded] = useState(false);
+  const [courseFiles, setCourseFiles] = useState<MaterialFile[]>([]);
 
   const daily = useDaily();
   const [isMicOn, setIsMicOn] = useState(false);
@@ -75,6 +78,37 @@ export default function Classroom() {
       supabase.from("active_attendances").delete().eq("user_id", localUser.id).eq("course_id", courseId || "").then(() => {});
       supabase.from("raised_hands").delete().eq("user_id", localUser.id).eq("course_id", courseId || "").then(() => {});
     };
+  }, [courseId]);
+
+  // ---- Course material file names for the chat panel (offline-first) ----
+  useEffect(() => {
+    if (!courseId) return;
+    let cancelled = false;
+
+    const fetchCourseFiles = async () => {
+      // 1. Hydrate instantly from cache
+      try {
+        const cached = JSON.parse(localStorage.getItem(`localClassroomFiles_${courseId}`) || "[]");
+        if (!cancelled && Array.isArray(cached) && cached.length > 0) setCourseFiles(cached);
+      } catch {}
+
+      // 2. Refresh from Supabase
+      try {
+        const { data } = await supabase
+          .from("course_materials")
+          .select("id, file_name, file_type")
+          .eq("course_id", courseId)
+          .order("presentation_order", { ascending: true });
+        if (!cancelled && data) {
+          const files: MaterialFile[] = data.map((m: any) => ({ id: m.id, fileName: m.file_name || "File", fileType: m.file_type || "" }));
+          setCourseFiles(files);
+          localStorage.setItem(`localClassroomFiles_${courseId}`, JSON.stringify(files));
+        }
+      } catch (e) { /* offline — cached list already applied */ }
+    };
+
+    fetchCourseFiles();
+    return () => { cancelled = true; };
   }, [courseId]);
 
   async function getDailyRoomUrl() {
@@ -291,6 +325,7 @@ export default function Classroom() {
             isMicOn={isMicOn} 
             toggleMic={toggleMic} 
             hasMicPermission={hasMicPermission}
+            files={courseFiles}
           />
         </div>
       </div>

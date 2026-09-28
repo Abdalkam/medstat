@@ -10,6 +10,12 @@ interface CourseData {
   category: string;
 }
 
+interface MaterialFile {
+  id: string;
+  fileName: string;
+  fileType: string;
+}
+
 const C = {
   textPrimary: "#1C1C1E",
   textTertiary: "#8E8E93",
@@ -40,6 +46,41 @@ const TS = {
 };
 
 interface BusinessData { business_name: string | null; phone: string | null; logo: string | null; }
+
+function getFileMeta(fileType: string, fileName: string) {
+  const t = (fileType || "").toLowerCase();
+  const ext = fileName.includes(".") ? fileName.split(".").pop()!.toLowerCase() : "";
+
+  const isPdf = t.includes("pdf") || ext === "pdf";
+  const isDoc = t.includes("word") || t.includes("document") || ["doc", "docx", "rtf", "odt"].includes(ext);
+  const isSheet = t.includes("sheet") || t.includes("excel") || ["xls", "xlsx", "csv"].includes(ext);
+  const isSlide = t.includes("presentation") || t.includes("powerpoint") || ["ppt", "pptx"].includes(ext);
+  const isImg = t.startsWith("image") || ["png", "jpg", "jpeg", "gif", "webp", "svg"].includes(ext);
+  const isVideo = t.startsWith("video") || ["mp4", "mov", "webm", "avi"].includes(ext);
+  const isAudio = t.startsWith("audio") || ["mp3", "wav", "m4a"].includes(ext);
+
+  const color = isPdf ? "#FF3B30"
+    : isDoc ? "#2D6CDF"
+    : isSheet ? "#1F7A3D"
+    : isSlide ? "#E8710A"
+    : isVideo ? "#AF52DE"
+    : isImg ? "#0A84FF"
+    : isAudio ? "#FF9F0A"
+    : "#8E8E93";
+
+  return { color, isPdf };
+}
+
+function FileIcon({ fileType, fileName }: { fileType: string; fileName: string }) {
+  const { color, isPdf } = getFileMeta(fileType, fileName);
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <polyline points="14 2 14 8 20 8" />
+      {isPdf && <path d="M8 13h8M8 17h5" />}
+    </svg>
+  );
+}
 
 function SkeletonCourseCard() {
   const shimmerStyle: React.CSSProperties = {
@@ -75,6 +116,7 @@ export default function UserDashboard() {
   const [liveCourseIds, setLiveCourseIds] = useState<string[]>([]);
   const [activeAttendanceCourseId, setActiveAttendanceCourseId] = useState<string | null>(null);
   const [business, setBusiness] = useState<BusinessData | null>(null);
+  const [courseFiles, setCourseFiles] = useState<Record<string, MaterialFile[]>>({});
 
   const isTrainer = currentUser?.role === "trainer" || currentUser?.role === "admin";
 
@@ -161,6 +203,43 @@ export default function UserDashboard() {
       }
 
       if (!cancelled) setCourses(fetchedCourses);
+
+      // ---- Material file names for the course cards ----
+      if (fetchedCourses.length > 0) {
+        const ids = fetchedCourses.map((c) => c.id);
+
+        // 1. Offline-first: hydrate from cached file names instantly
+        try {
+          const cached = JSON.parse(localStorage.getItem("localCourseFiles") || "{}");
+          const cachedForCourses: Record<string, MaterialFile[]> = {};
+          ids.forEach((id) => { if (Array.isArray(cached[id]) && cached[id].length > 0) cachedForCourses[id] = cached[id]; });
+          if (!cancelled && Object.keys(cachedForCourses).length > 0) setCourseFiles(cachedForCourses);
+        } catch {}
+
+        // 2. Refresh from Supabase
+        try {
+          const { data: mats } = await supabase
+            .from("course_materials")
+            .select("id, course_id, file_name, file_type")
+            .in("course_id", ids)
+            .order("presentation_order", { ascending: true });
+
+          if (!cancelled && mats) {
+            const grouped: Record<string, MaterialFile[]> = {};
+            const cacheObj: Record<string, MaterialFile[]> = {};
+            (mats as any[]).forEach((m) => {
+              const entry: MaterialFile = { id: m.id, fileName: m.file_name || "File", fileType: m.file_type || "" };
+              if (!grouped[m.course_id]) { grouped[m.course_id] = []; cacheObj[m.course_id] = []; }
+              grouped[m.course_id].push(entry);
+              cacheObj[m.course_id].push(entry);
+            });
+            setCourseFiles(grouped);
+            localStorage.setItem("localCourseFiles", JSON.stringify(cacheObj));
+          }
+        } catch (e) {
+          console.warn("Material file names fetch failed, using cached list.");
+        }
+      }
 
       const activeSession = localStorage.getItem("activeAttendanceCourseId");
       if (!cancelled) setActiveAttendanceCourseId(activeSession);
@@ -319,6 +398,20 @@ export default function UserDashboard() {
     border: `1px solid ${C.separator}`,
   };
 
+  const fileChipStyle: React.CSSProperties = {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "5px",
+    background: C.bg,
+    border: `1px solid ${C.separator}`,
+    borderRadius: "8px",
+    padding: "4px 8px",
+    fontSize: "12px",
+    fontWeight: "600",
+    color: C.textPrimary,
+    maxWidth: "100%",
+  };
+
   return (
     <div style={{ minHeight: "100vh", background: C.card, fontFamily: FONT, WebkitFontSmoothing: "antialiased", MozOsxFontSmoothing: "grayscale" }}>
       <div style={{ borderBottom: `1px solid ${C.separator}`, padding: "12px 24px", position: "sticky", top: 0, zIndex: 10, width: "100%", boxSizing: "border-box", background: C.card }}>
@@ -387,6 +480,7 @@ export default function UserDashboard() {
             {courses.map((course) => {
               const isLive = (liveCourseIds || []).includes(course.id);
               const isAttendingThis = activeAttendanceCourseId === course.id;
+              const files = courseFiles[course.id] || [];
 
               // Dynamic Button Styling based on Role and Live Status
               let btnBackground = C.bg;
@@ -439,9 +533,24 @@ export default function UserDashboard() {
 
                   <div style={{ padding: "20px", borderBottom: `1px solid ${C.separator}`, flex: 1, display: "flex", flexDirection: "column" }}>
                     <h3 style={{ ...TS.h3, margin: "0 0 6px 0" }}>{course.name}</h3>
-                    <p style={{ ...TS.bodySm, margin: 0, flex: 1, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
-                      {course.description || "No description provided."}
-                    </p>
+
+                    {files.length > 0 ? (
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", flex: 1, alignContent: "flex-start" }}>
+                        {files.slice(0, 6).map((f) => (
+                          <span key={f.id} style={fileChipStyle}>
+                            <FileIcon fileType={f.fileType} fileName={f.fileName} />
+                            <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{f.fileName}</span>
+                          </span>
+                        ))}
+                        {files.length > 6 && (
+                          <span style={{ ...fileChipStyle, color: C.textTertiary, fontWeight: "500" }}>+{files.length - 6} more</span>
+                        )}
+                      </div>
+                    ) : (
+                      <p style={{ ...TS.bodySm, margin: 0, flex: 1, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+                        {course.description || "No description provided."}
+                      </p>
+                    )}
                   </div>
 
                   <div style={{ padding: "16px 12px", display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "12px" }}>
