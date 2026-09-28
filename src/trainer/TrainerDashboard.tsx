@@ -12,6 +12,36 @@ const C = {
   purple: "#AF52DE", purpleBg: "#F5F0FF", shadow: "0 4px 24px rgba(0,0,0,0.06)", shadowHover: "0 8px 32px rgba(0,0,0,0.1)",
 };
 
+// Cache the avatar as a base64 data URL so it renders even fully offline.
+// Same keys as AppBar.tsx / UserDashboard.tsx — all views stay in sync.
+async function cacheAvatarImage(userId: string, url: string) {
+  try {
+    if (url.startsWith("data:")) {
+      localStorage.setItem(`cachedAvatar_${userId}`, url);
+      localStorage.setItem(`cachedAvatarUrl_${userId}`, url);
+      return;
+    }
+    if (localStorage.getItem(`cachedAvatarUrl_${userId}`) === url) return;
+
+    const res = await fetch(url, { cache: "force-cache" });
+    if (!res.ok) return;
+    const blob = await res.blob();
+    if (blob.size > 1_000_000) return; // protect localStorage quota
+
+    const dataUrl = await new Promise<string | null>((resolve) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result as string);
+      reader.onerror = () => resolve(null);
+      reader.readAsDataURL(blob);
+    });
+
+    if (dataUrl) {
+      localStorage.setItem(`cachedAvatar_${userId}`, dataUrl);
+      localStorage.setItem(`cachedAvatarUrl_${userId}`, url);
+    }
+  } catch { /* offline or quota exceeded — ignore */ }
+}
+
 function mapCourseFromSupabase(c: Record<string, unknown>): Course {
   return {
     id: c.id as string, name: (c.name as string) || "", description: (c.description as string) || "",
@@ -26,6 +56,8 @@ export default function TrainerDashboard() {
   const navigate = useNavigate();
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [settings, setSettings] = useState<BusinessSettings | null>(null);
+  const [profilePic, setProfilePic] = useState<string | null>(null);
+  const [profilePicError, setProfilePicError] = useState(false);
   const [courses, setCourses] = useState<Course[]>([]);
   const [courseStats, setCourseStats] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
@@ -62,6 +94,42 @@ export default function TrainerDashboard() {
     };
     loadData();
   }, [navigate]);
+
+  // ---- Trainer avatar for the app bar (offline-first) ----
+  useEffect(() => {
+    const fetchTrainerAvatar = async () => {
+      if (!currentUser?.id) return;
+      setProfilePicError(false);
+
+      // 1. Hydrate instantly from cache / localStorage so it renders even offline
+      const cached = localStorage.getItem(`cachedAvatar_${currentUser.id}`);
+      let cachedProfile: any = null;
+      try { cachedProfile = JSON.parse(localStorage.getItem(`cachedProfile_${currentUser.id}`) || "null"); } catch {}
+      if (cached || cachedProfile?.avatar_url || currentUser.profilePic) {
+        setProfilePic(cached || cachedProfile?.avatar_url || currentUser.profilePic);
+      }
+
+      // 2. Refresh from Supabase + write back to cache
+      try {
+        const { data } = await supabase.from("profile_settings").select("avatar_url").eq("user_id", currentUser.id).maybeSingle();
+        if (data?.avatar_url) {
+          setProfilePic(data.avatar_url);
+          localStorage.setItem(`cachedProfile_${currentUser.id}`, JSON.stringify({ id: currentUser.id, username: currentUser.username, role: currentUser.role, avatar_url: data.avatar_url }));
+          cacheAvatarImage(currentUser.id, data.avatar_url);
+          return;
+        }
+        // Fallback: some accounts keep the pic on the users table
+        const { data: u } = await supabase.from("users").select("profile_pic").eq("id", currentUser.id).maybeSingle();
+        if (u?.profile_pic) {
+          setProfilePic(u.profile_pic);
+          cacheAvatarImage(currentUser.id, u.profile_pic);
+        } else {
+          setProfilePic(currentUser.profilePic || null);
+        }
+      } catch { /* offline — cached avatar already shown */ }
+    };
+    fetchTrainerAvatar();
+  }, [currentUser?.id]);
 
   const fetchCourses = useCallback(async () => {
     if (!currentUser?.id || !currentUser?.tenantId) return;
@@ -165,7 +233,11 @@ export default function TrainerDashboard() {
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, background: C.purpleBg, padding: "4px 14px 4px 4px", borderRadius: 20 }}>
-            {currentUser?.profilePic ? <img src={currentUser.profilePic} alt="Trainer" style={{ width: 28, height: 28, borderRadius: "50%", objectFit: "cover" }} /> : <div style={{ width: 28, height: 28, borderRadius: "50%", background: C.card, color: C.purple, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700 }}>{currentUser?.username?.charAt(0).toUpperCase()}</div>}
+            {profilePic && !profilePicError ? (
+              <img src={profilePic} alt="Trainer" onError={() => setProfilePicError(true)} style={{ width: 28, height: 28, borderRadius: "50%", objectFit: "cover" }} />
+            ) : (
+              <div style={{ width: 28, height: 28, borderRadius: "50%", background: C.card, color: C.purple, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700 }}>{currentUser?.username?.charAt(0).toUpperCase()}</div>
+            )}
             <span style={{ fontSize: 13, fontWeight: 600, color: C.purple }}>{currentUser?.username}</span>
           </div>
           <button onClick={() => navigate("/trainer/settings")} style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 36, height: 36, borderRadius: 9, background: "rgba(118, 118, 128, 0.12)", border: "none", cursor: "pointer", color: C.textPrimary, transition: "background 0.2s" }} title="Settings"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>

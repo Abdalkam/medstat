@@ -47,6 +47,36 @@ const TS = {
 
 interface BusinessData { business_name: string | null; phone: string | null; logo: string | null; }
 
+// Cache the avatar as a base64 data URL so it renders even fully offline.
+// Same keys as AppBar.tsx / TrainerDashboard.tsx — all views stay in sync.
+async function cacheAvatarImage(userId: string, url: string) {
+  try {
+    if (url.startsWith("data:")) {
+      localStorage.setItem(`cachedAvatar_${userId}`, url);
+      localStorage.setItem(`cachedAvatarUrl_${userId}`, url);
+      return;
+    }
+    if (localStorage.getItem(`cachedAvatarUrl_${userId}`) === url) return;
+
+    const res = await fetch(url, { cache: "force-cache" });
+    if (!res.ok) return;
+    const blob = await res.blob();
+    if (blob.size > 1_000_000) return; // protect localStorage quota
+
+    const dataUrl = await new Promise<string | null>((resolve) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result as string);
+      reader.onerror = () => resolve(null);
+      reader.readAsDataURL(blob);
+    });
+
+    if (dataUrl) {
+      localStorage.setItem(`cachedAvatar_${userId}`, dataUrl);
+      localStorage.setItem(`cachedAvatarUrl_${userId}`, url);
+    }
+  } catch { /* offline or quota exceeded — ignore */ }
+}
+
 function getFileMeta(fileType: string, fileName: string) {
   const t = (fileType || "").toLowerCase();
   const ext = fileName.includes(".") ? fileName.split(".").pop()!.toLowerCase() : "";
@@ -111,6 +141,7 @@ export default function UserDashboard() {
   const navigate = useNavigate();
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [profilePic, setProfilePic] = useState<string | null>(null);
+  const [profilePicError, setProfilePicError] = useState(false);
   const [courses, setCourses] = useState<CourseData[]>([]);
   const [loading, setLoading] = useState(true);
   const [liveCourseIds, setLiveCourseIds] = useState<string[]>([]);
@@ -145,11 +176,29 @@ export default function UserDashboard() {
   useEffect(() => {
     const fetchProfilePic = async () => {
       if (!currentUser?.id) return;
+      setProfilePicError(false);
+
+      // 1. Offline-first hydration: render cached avatar instantly
+      const cached = localStorage.getItem(`cachedAvatar_${currentUser.id}`);
+      let cachedProfile: any = null;
+      try { cachedProfile = JSON.parse(localStorage.getItem(`cachedProfile_${currentUser.id}`) || "null"); } catch {}
+      if (cached || cachedProfile?.avatar_url || currentUser.profilePic) {
+        setProfilePic(cached || cachedProfile?.avatar_url || currentUser.profilePic);
+      }
+
+      // 2. Refresh from Supabase + write back to cache
       try {
         const { data } = await supabase.from("profile_settings").select("avatar_url").eq("user_id", currentUser.id).maybeSingle();
-        if (data?.avatar_url) setProfilePic(data.avatar_url);
-        else if (currentUser.profilePic) setProfilePic(currentUser.profilePic);
-      } catch (e) {}
+        if (data?.avatar_url) {
+          setProfilePic(data.avatar_url);
+          localStorage.setItem(`cachedProfile_${currentUser.id}`, JSON.stringify({ id: currentUser.id, username: currentUser.username, role: currentUser.role, avatar_url: data.avatar_url }));
+          cacheAvatarImage(currentUser.id, data.avatar_url);
+        } else if (currentUser.profilePic) {
+          setProfilePic(currentUser.profilePic);
+        } else {
+          setProfilePic(null);
+        }
+      } catch (e) { /* offline — cached avatar already shown */ }
     };
     fetchProfilePic();
   }, [currentUser?.id]);
@@ -437,8 +486,8 @@ export default function UserDashboard() {
 
           {/* Profile Chip with Profile Picture */}
           <div style={{ display: "flex", alignItems: "center", gap: 8, background: C.purpleBg, padding: "4px 12px 4px 4px", borderRadius: 20, flexShrink: 0 }}>
-            {profilePic ? (
-              <img src={profilePic} alt="Profile" style={{ width: 28, height: 28, borderRadius: "50%", objectFit: "cover" }} />
+            {profilePic && !profilePicError ? (
+              <img src={profilePic} alt="Profile" onError={() => setProfilePicError(true)} style={{ width: 28, height: 28, borderRadius: "50%", objectFit: "cover" }} />
             ) : (
               <div style={{ width: 28, height: 28, borderRadius: "50%", background: C.card, color: C.purple, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700 }}>
                 {currentUser?.username?.charAt(0).toUpperCase()}
