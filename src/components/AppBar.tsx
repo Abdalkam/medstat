@@ -31,11 +31,46 @@ function mapSettingsFromSupabase(row: Record<string, any>): BusinessSettings {
   };
 }
 
+// Cache the avatar image itself as a base64 data URL so it renders even with no network.
+async function cacheAvatarImage(userId: string, url: string) {
+    try {
+        // Already a data URL — cache directly
+        if (url.startsWith("data:")) {
+            localStorage.setItem(`cachedAvatar_${userId}`, url);
+            localStorage.setItem(`cachedAvatarUrl_${userId}`, url);
+            return;
+        }
+
+        // Skip if we already cached this exact image
+        if (localStorage.getItem(`cachedAvatarUrl_${userId}`) === url) return;
+
+        const res = await fetch(url, { cache: "force-cache" });
+        if (!res.ok) return;
+        const blob = await res.blob();
+        if (blob.size > 1_000_000) return; // skip oversized files to protect localStorage
+
+        const dataUrl = await new Promise<string | null>((resolve) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result as string);
+            reader.onerror = () => resolve(null);
+            reader.readAsDataURL(blob);
+        });
+
+        if (dataUrl) {
+            localStorage.setItem(`cachedAvatar_${userId}`, dataUrl);
+            localStorage.setItem(`cachedAvatarUrl_${userId}`, url);
+        }
+    } catch {
+        /* offline or quota exceeded — ignore, remote URL fallback still applies */
+    }
+}
+
 export default function AppBar() {
     const navigate = useNavigate();
     const [windowWidth, setWindowWidth] = useState(window.innerWidth);
     const [settings, setSettings] = useState<BusinessSettings | null>(null);
     const [currentUser, setCurrentUser] = useState<SupabaseUser | null>(null);
+    const [avatarError, setAvatarError] = useState(false);
     const [menuOpen, setMenuOpen] = useState(false);
     const menuRef = useRef<HTMLDivElement>(null);
 
@@ -44,6 +79,9 @@ export default function AppBar() {
         window.addEventListener("resize", handleResize);
         return () => window.removeEventListener("resize", handleResize);
     }, []);
+
+    // Reset image-error fallback whenever the avatar source changes
+    useEffect(() => { setAvatarError(false); }, [currentUser?.avatar_url]);
 
     useEffect(() => {
         const fetchSettings = async () => {
@@ -103,14 +141,21 @@ export default function AppBar() {
             const parsedUser = savedUserStr ? JSON.parse(savedUserStr) : null;
             if (!parsedUser?.id) { setCurrentUser(null); return; }
 
+            // 1. OFFLINE-FIRST: hydrate instantly from local caches so the avatar
+            //    (plus name/role) renders even when Supabase is unreachable.
+            let cachedProfile: any = null;
+            try { cachedProfile = JSON.parse(localStorage.getItem(`cachedProfile_${parsedUser.id}`) || "null"); } catch { cachedProfile = null; }
+            const cachedAvatar = localStorage.getItem(`cachedAvatar_${parsedUser.id}`);
+
             setCurrentUser({
-                id: parsedUser.id, 
-                username: parsedUser.username,
-                role: parsedUser.role, 
-                avatar_url: parsedUser.profilePic || parsedUser.avatar_url,
+                id: parsedUser.id,
+                username: cachedProfile?.username || parsedUser.username,
+                role: cachedProfile?.role || parsedUser.role,
+                avatar_url: cachedAvatar || cachedProfile?.avatar_url || parsedUser.profilePic || parsedUser.avatar_url || null,
                 tenant_id: parsedUser.tenantId,
             });
 
+            // 2. Refresh from Supabase in the background (also refreshes the offline caches)
             try {
                 const { data: profileData } = await supabase
                     .from("profile_settings")
@@ -119,14 +164,36 @@ export default function AppBar() {
                     .maybeSingle();
 
                 if (profileData) {
+                    const freshAvatar = profileData.avatar_url || parsedUser.profilePic || null;
+
                     setCurrentUser({
-                        id: parsedUser.id, username: profileData.username || parsedUser.username,
-                        role: profileData.role || parsedUser.role, avatar_url: profileData.avatar_url || parsedUser.profilePic,
+                        id: parsedUser.id,
+                        username: profileData.username || parsedUser.username,
+                        role: profileData.role || parsedUser.role,
+                        avatar_url: freshAvatar,
                         tenant_id: parsedUser.tenantId,
                     });
+
+                    // Cache profile metadata for the next offline launch
+                    localStorage.setItem(`cachedProfile_${parsedUser.id}`, JSON.stringify({
+                        id: parsedUser.id,
+                        username: profileData.username || parsedUser.username,
+                        role: profileData.role || parsedUser.role,
+                        avatar_url: freshAvatar,
+                    }));
+
+                    // Cache the avatar image itself as a data URL (works fully offline)
+                    if (freshAvatar) {
+                        cacheAvatarImage(parsedUser.id, freshAvatar);
+                    } else {
+                        // User removed their avatar — clear stale cache
+                        localStorage.removeItem(`cachedAvatar_${parsedUser.id}`);
+                        localStorage.removeItem(`cachedAvatarUrl_${parsedUser.id}`);
+                    }
                 }
             } catch (err) {
                 console.warn("Profile fetch error (Offline):", err);
+                // Keep showing the cached/offline user — do nothing.
             }
         };
 
@@ -213,8 +280,8 @@ export default function AppBar() {
                 {currentUser && (
                     <div ref={menuRef} style={{ position: "relative", flexShrink: 0 }}>
                         <div onClick={() => setMenuOpen(!menuOpen)} style={{ display: "flex", alignItems: "center", gap: "10px", cursor: "pointer", padding: "4px 8px 4px 4px", borderRadius: "20px", background: menuOpen ? "rgba(118, 118, 128, 0.12)" : "transparent", transition: "background 0.2s ease" }}>
-                            {currentUser.avatar_url ? (
-                                <img src={currentUser.avatar_url} alt="Profile" style={{ width: "32px", height: "32px", borderRadius: "50%", objectFit: "cover", flexShrink: 0, border: "1px solid rgba(0,0,0,0.05)" }} />
+                            {currentUser.avatar_url && !avatarError ? (
+                                <img src={currentUser.avatar_url} alt="Profile" onError={() => setAvatarError(true)} style={{ width: "32px", height: "32px", borderRadius: "50%", objectFit: "cover", flexShrink: 0, border: "1px solid rgba(0,0,0,0.05)" }} />
                             ) : userInitial ? (
                                 <div style={{ width: "32px", height: "32px", borderRadius: "50%", background: "#0A84FF", color: "white", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: "700", fontSize: "14px", flexShrink: 0 }}>{userInitial}</div>
                             ) : null}
