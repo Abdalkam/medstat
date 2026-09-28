@@ -63,6 +63,7 @@ export default function Classroom() {
     handleAttendance();
 
     const handleBeforeUnload = () => {
+      localStorage.removeItem("activeAttendanceCourseId");
       db.activeAttendances.delete(localUser.id);
       supabase.from("active_attendances").delete().eq("user_id", localUser.id).eq("course_id", courseId || "").then(() => {});
       supabase.from("raised_hands").delete().eq("user_id", localUser.id).eq("course_id", courseId || "").then(() => {});
@@ -195,10 +196,11 @@ export default function Classroom() {
 
   async function exitClassroom() {
     if (daily && isVoiceJoined) { try { await daily.leave(); } catch (e) {} }
+    localStorage.removeItem("activeAttendanceCourseId");
     if (dbUser?.id && courseId) {
-      await db.activeAttendances.delete(dbUser.id);
-      await supabase.from("active_attendances").delete().eq("user_id", dbUser.id).eq("course_id", courseId);
-      await supabase.from("raised_hands").delete().eq("user_id", dbUser.id).eq("course_id", courseId);
+      db.activeAttendances.delete(dbUser.id).catch(() => {});
+      supabase.from("active_attendances").delete().eq("user_id", dbUser.id).eq("course_id", courseId).then(() => {}, () => {});
+      supabase.from("raised_hands").delete().eq("user_id", dbUser.id).eq("course_id", courseId).then(() => {}, () => {});
     }
     navigate("/user");
   }
@@ -216,10 +218,10 @@ export default function Classroom() {
       {/* Custom AppBar to include Profile Chip */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 16px", background: "rgba(249, 249, 249, 0.8)", backdropFilter: "blur(20px)", borderBottom: `0.33px solid ${C.separator}`, flexShrink: 0, zIndex: 10 }}>
         <div style={{ display: "flex", alignItems: "center", gap: "10px", flex: 1 }}>
-          <button onClick={() => navigate("/user")} style={{ background: "none", border: "none", cursor: "pointer", display: "flex", alignItems: "center", color: C.medBlue, padding: 0 }}>
+          <button onClick={exitClassroom} style={{ background: "none", border: "none", cursor: "pointer", display: "flex", alignItems: "center", color: C.medBlue, padding: 0 }}>
              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="15 18 9 12 15 6"/></svg>
           </button>
-          <h1 style={{ margin: 0, fontSize: "16px", fontWeight: "700", color: "#1C1C1E" }}>SmartPages Classroom</h1>
+          <h1 style={{ margin: 0, fontSize: "16px", fontWeight: "700", color: "#1C1C1E" }}>Classroom</h1>
         </div>
         
         <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>

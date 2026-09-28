@@ -271,8 +271,20 @@ export default function UserDashboard() {
         navigate(`/trainer/live/${courseId}`);
       }
     } else {
-      // Join Class logic for Learner
-      if (isLive) {
+      // ---- Learner ----
+      if (activeAttendanceCourseId === courseId) {
+        // EXIT the live classroom (same button)
+        const savedUser = JSON.parse(localStorage.getItem("currentUser") || "{}");
+        localStorage.removeItem("activeAttendanceCourseId");
+        setActiveAttendanceCourseId(null);
+        try {
+          const { db } = await import("../database/db");
+          await db.activeAttendances.delete(savedUser.id);
+        } catch (e) { /* offline — ignore */ }
+        supabase.from("active_attendances").delete().eq("user_id", savedUser.id).eq("course_id", courseId).then(() => {}, () => {});
+        supabase.from("raised_hands").delete().eq("user_id", savedUser.id).eq("course_id", courseId).then(() => {}, () => {});
+      } else if (isLive) {
+        // ENTER the live classroom
         localStorage.setItem("activeAttendanceCourseId", courseId);
         setActiveAttendanceCourseId(courseId);
         navigate(`/user/classroom/${courseId}`);
@@ -396,10 +408,11 @@ export default function UserDashboard() {
                 }
               } else {
                 if (isAttendingThis) {
-                  btnBackground = C.medBlue;
-                  btnColor = "#FFFFFF";
-                  btnIcon = (<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3" /></svg>);
-                  btnText = "Attending";
+                  // Currently in class → tapping leaves
+                  btnBackground = C.redBg;
+                  btnColor = C.red;
+                  btnIcon = (<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>);
+                  btnText = "Leave Class";
                 } else if (isLive) {
                   btnBackground = C.green;
                   btnColor = "#FFFFFF";
@@ -454,7 +467,9 @@ export default function UserDashboard() {
                         ...iosBtnStyle,
                         background: btnBackground,
                         color: btnColor,
-                        boxShadow: (isTrainer ? isLive : (!isAttendingThis && isLive)) ? "0 4px 12px rgba(52, 199, 89, 0.3)" : "none",
+                        boxShadow: (isTrainer ? isLive : (!isAttendingThis && isLive))
+                          ? "0 4px 12px rgba(52, 199, 89, 0.3)"
+                          : (!isTrainer && isAttendingThis) ? "0 4px 12px rgba(255, 59, 48, 0.25)" : "none",
                       }}
                     >
                       {btnIcon}
