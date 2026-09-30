@@ -1,6 +1,6 @@
 {
     "productName":  "SmartPages",
-    "version":  "1.0.140",
+    "version":  "1.0.141",
     "identifier":  "com.medstat.smartpages",
     "build":  {
                   "frontendDist":  "../dist",
