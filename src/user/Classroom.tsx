@@ -1,4 +1,7 @@
 // src/user/Classroom.tsx
+// TRAINEE live classroom: auto-joins the Daily room when the class is live
+// (always muted, camera off), mirrors the trainer's presentation/blackboard,
+// raise-hand flow, trainer-granted mic/cam activation, and course file downloads.
 import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import type { CourseMaterial, LivePresentation, Stroke } from "../types";
@@ -6,6 +9,8 @@ import LiveClassView from "../components/LiveClassView";
 import DrawingBlackboard from "../components/DrawingBlackboard";
 import ClassChat from "../components/ClassChat";
 import DownloadCenter, { type DownloadFileMeta, type ResolvedMaterial } from "../components/DownloadCenter";
+import MediaHelpModal, { type MediaProblem } from "../components/MediaHelpModal";
+import { probeDevice } from "../utils/mediaPermissions";
 import { useDaily, useDailyEvent, DailyAudio } from "@daily-co/daily-react";
 import { supabase } from "../auth/supabase";
 import { db } from "../database/db";
@@ -16,6 +21,38 @@ import { getLiveSession } from "../database/liveSessionDB";
 const C = { bg: "#F2F2F7", card: "#FFFFFF", separator: "#E5E5EA", medBlue: "#030303", medBlueBg: "#E8F2FF", red: "#FF3B30", redBg: "#FFEFEE", orange: "#FF9F0A", orangeBg: "#FFF6EB", green: "#34C759", purple: "#AF52DE", purpleBg: "#F5F0FF" };
 
 interface MaterialFile { id: string; fileName: string; fileType: string; }
+
+// Cache the avatar as a base64 data URL so the app-bar pic renders even
+// fully offline. Same keys as UserDashboard.tsx / TrainerDashboard.tsx — all
+// views stay in sync.
+async function cacheAvatarImage(userId: string, url: string) {
+  try {
+    if (!url) return;
+    if (url.startsWith("data:")) {
+      localStorage.setItem(`cachedAvatar_${userId}`, url);
+      localStorage.setItem(`cachedAvatarUrl_${userId}`, url);
+      return;
+    }
+    if (localStorage.getItem(`cachedAvatarUrl_${userId}`) === url) return;
+
+    const res = await fetch(url, { cache: "force-cache" });
+    if (!res.ok) return;
+    const blob = await res.blob();
+    if (blob.size > 1_000_000) return; // protect localStorage quota
+
+    const dataUrl = await new Promise<string | null>((resolve) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result as string);
+      reader.onerror = () => resolve(null);
+      reader.readAsDataURL(blob);
+    });
+
+    if (dataUrl) {
+      localStorage.setItem(`cachedAvatar_${userId}`, dataUrl);
+      localStorage.setItem(`cachedAvatarUrl_${userId}`, url);
+    }
+  } catch { /* offline or quota exceeded — ignore */ }
+}
 
 export default function Classroom() {
   const { courseId } = useParams();
@@ -42,6 +79,9 @@ export default function Classroom() {
   const [trainerVideoTrack, setTrainerVideoTrack] = useState<MediaStreamTrack | null>(null);
   const [localVideoTrack, setLocalVideoTrack] = useState<MediaStreamTrack | null>(null);
 
+  // In-app media problem modal (replaces suppressed window.alert)
+  const [mediaProblem, setMediaProblem] = useState<MediaProblem | null>(null);
+
   const [downloadOpen, setDownloadOpen] = useState(false);
   const [autoDownloadId, setAutoDownloadId] = useState<string | null>(null);
 
@@ -59,10 +99,39 @@ export default function Classroom() {
     if (!localUser.id || localUser.role !== "trainee") { return; }
     setDbUser(localUser);
 
+    // Offline-first avatar — hydrate instantly from the shared cache,
+    // then refresh from Supabase and write back to the caches so the pic
+    // renders even with zero network.
     const fetchUserAvatar = async () => {
-      const { data } = await supabase.from("profile_settings").select("avatar_url").eq("user_id", localUser.id).maybeSingle();
-      if (data?.avatar_url) setDbUserAvatar(data.avatar_url);
-      else if (localUser.profilePic) setDbUserAvatar(localUser.profilePic);
+      // 1. Offline-first hydration: render cached avatar instantly (base64 wins)
+      const cached = localStorage.getItem(`cachedAvatar_${localUser.id}`);
+      let cachedProfile: any = null;
+      try { cachedProfile = JSON.parse(localStorage.getItem(`cachedProfile_${localUser.id}`) || "null"); } catch {}
+      if (cached || cachedProfile?.avatar_url || localUser.profilePic) {
+        setDbUserAvatar(cached || cachedProfile?.avatar_url || localUser.profilePic);
+      }
+
+      // 2. Refresh from Supabase + write back to cache
+      try {
+        const { data } = await supabase.from("profile_settings").select("avatar_url").eq("user_id", localUser.id).maybeSingle();
+        if (data?.avatar_url) {
+          setDbUserAvatar(data.avatar_url);
+          localStorage.setItem(`cachedProfile_${localUser.id}`, JSON.stringify({ id: localUser.id, username: localUser.username, role: localUser.role, avatar_url: data.avatar_url }));
+          cacheAvatarImage(localUser.id, data.avatar_url);
+        } else {
+          // Fallback: some accounts keep the pic on the users table
+          const { data: u } = await supabase.from("users").select("profile_pic").eq("id", localUser.id).maybeSingle();
+          if (u?.profile_pic) {
+            setDbUserAvatar(u.profile_pic);
+            cacheAvatarImage(localUser.id, u.profile_pic);
+          } else if (localUser.profilePic) {
+            setDbUserAvatar(localUser.profilePic);
+            cacheAvatarImage(localUser.id, localUser.profilePic);
+          } else if (!cached) {
+            setDbUserAvatar(null);
+          }
+        }
+      } catch { /* offline — cached avatar already shown */ }
     };
     fetchUserAvatar();
 
@@ -160,6 +229,7 @@ export default function Classroom() {
     } catch (e) { setAudioError(true); }
   }
 
+  // Auto-join as soon as the class goes live
   useEffect(() => {
     if (isLive && daily && !isVoiceJoined && !audioError) {
       const autoJoinRoom = async () => {
@@ -261,6 +331,7 @@ export default function Classroom() {
         setHasMicPermission(canAudio);
         setHasCamPermission(canVideo);
         if (!canAudio) setHasRaisedHand(false);
+        // Trainer revoked mid-session — force-stop my tracks and reset the buttons
         if (!canAudio && daily && isVoiceJoined) { try { daily.setLocalAudio(false); } catch (e) {} setIsMicOn(false); }
         if (!canVideo && daily && isVoiceJoined) { try { daily.setLocalVideo(false); } catch (e) {} setIsCamOn(false); }
       })
@@ -268,16 +339,26 @@ export default function Classroom() {
     return () => { supabase.removeChannel(channel); };
   }, [courseId, dbUser?.id]);
 
-  // Classroom AV (learner) — locked until the trainer activates
+  // Classroom AV (learner) — locked until the trainer activates.
+  // Order of checks: app-level lock (allowed_speakers) -> OS device probe -> Daily toggle.
+  // window.alert was replaced with the in-app MediaHelpModal (alerts are suppressed in App.tsx).
   async function toggleMic() {
     if (!daily) return;
     if (!isVoiceJoined) {
       await joinAudio();
-      if (!hasMicPermission) { alert("🔒 Your mic is locked. Raise your hand 🖐️ and wait for the trainer to allow speaking."); return; }
+      if (!hasMicPermission) { setMediaProblem({ kind: "locked", device: "mic" }); return; }
+      // OS-level check (Windows privacy toggle / device busy / no device)
+      const probe = await probeDevice("audio");
+      if (probe !== "ok") { setMediaProblem({ kind: probe, device: "mic" }); return; }
       try { await daily.setLocalAudio(true); setIsMicOn(true); } catch (e) {}
       return;
     }
-    if (!hasMicPermission && !isMicOn) { alert("🔒 Your mic is locked. Raise your hand 🖐️ and wait for the trainer to allow speaking."); return; }
+    if (!hasMicPermission && !isMicOn) { setMediaProblem({ kind: "locked", device: "mic" }); return; }
+    // Only probe when switching ON (turning OFF needs no device access)
+    if (!isMicOn) {
+      const probe = await probeDevice("audio");
+      if (probe !== "ok") { setMediaProblem({ kind: probe, device: "mic" }); return; }
+    }
     try { const n = !isMicOn; await daily.setLocalAudio(n); setIsMicOn(n); } catch (e) {}
   }
 
@@ -285,11 +366,17 @@ export default function Classroom() {
     if (!daily) return;
     if (!isVoiceJoined) {
       await joinAudio();
-      if (!hasCamPermission) { alert("🔒 Your camera is locked. Raise your hand 🖐️ and wait for the trainer to allow video."); return; }
+      if (!hasCamPermission) { setMediaProblem({ kind: "locked", device: "cam" }); return; }
+      const probe = await probeDevice("video");
+      if (probe !== "ok") { setMediaProblem({ kind: probe, device: "cam" }); return; }
       try { await daily.setLocalVideo(true); setIsCamOn(true); } catch (e) {}
       return;
     }
-    if (!hasCamPermission && !isCamOn) { alert("🔒 Your camera is locked. Raise your hand 🖐️ and wait for the trainer to allow video."); return; }
+    if (!hasCamPermission && !isCamOn) { setMediaProblem({ kind: "locked", device: "cam" }); return; }
+    if (!isCamOn) {
+      const probe = await probeDevice("video");
+      if (probe !== "ok") { setMediaProblem({ kind: probe, device: "cam" }); return; }
+    }
     try { const n = !isCamOn; await daily.setLocalVideo(n); setIsCamOn(n); } catch (e) {}
   }
 
@@ -340,7 +427,21 @@ export default function Classroom() {
           </button>
           <div style={{ display: "flex", alignItems: "center", gap: "8px", background: C.purpleBg, padding: "4px 12px 4px 4px", borderRadius: "20px" }}>
             {dbUserAvatar ? (
-              <img src={dbUserAvatar} alt="Profile" style={{ width: "28px", height: "28px", borderRadius: "50%", objectFit: "cover" }} />
+              <img
+                src={dbUserAvatar}
+                alt="Profile"
+                style={{ width: "28px", height: "28px", borderRadius: "50%", objectFit: "cover" }}
+                // On error (e.g. remote URL while offline) swap to the cached
+                // base64 copy; only drop to the initial letter if there is none.
+                onError={() => {
+                  const cached = dbUser?.id ? localStorage.getItem(`cachedAvatar_${dbUser.id}`) : null;
+                  if (cached && dbUserAvatar !== cached) {
+                    setDbUserAvatar(cached);
+                  } else {
+                    setDbUserAvatar(null);
+                  }
+                }}
+              />
             ) : (
               <div style={{ width: "28px", height: "28px", borderRadius: "50%", background: C.card, color: C.purple, display: "flex", alignItems: "center", justifyContent: "center", fontSize: "12px", fontWeight: "700" }}>
                 {dbUser?.username?.charAt(0).toUpperCase()}
@@ -355,6 +456,7 @@ export default function Classroom() {
 
       <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
         <div style={{ flex: 1, display: "flex", position: "relative", overflow: "hidden", margin: "16px", borderRadius: "16px", boxShadow: "0 4px 20px rgba(0,0,0,0.04)" }}>
+          {/* Presentation view (slides slides out when blackboard is on) */}
           <div style={{ position: "absolute", top: 0, bottom: 0, left: 0, right: 0, transition: "transform 0.2s ease", transform: isBlackboardMode ? "translateX(-100%)" : "translateX(0%)", background: C.card, display: "flex" }}>
             {presentation ? <LiveClassView material={presentation} page={liveState?.currentPage ?? 1} /> : (
               <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center" }}>
@@ -366,6 +468,7 @@ export default function Classroom() {
               </div>
             )}
           </div>
+          {/* Blackboard mirror (read-only for the learner) */}
           <div style={{ position: "absolute", top: 0, bottom: 0, left: 0, right: 0, transition: "transform 0.2s ease", transform: isBlackboardMode ? "translateX(0%)" : "translateX(100%)", display: "flex", background: "#1A1A1A" }}>
             <DrawingBlackboard isTrainer={false} strokes={liveState?.blackboardStrokes || []} courseId={`${courseId}-learner`} />
           </div>
@@ -376,6 +479,7 @@ export default function Classroom() {
             </div>
           )}
 
+          {/* Bottom control bar: Exit / Mic / Cam / Raise Hand */}
           <div style={{ position: "absolute", bottom: "24px", left: "50%", transform: "translateX(-50%)", display: "flex", gap: "16px", padding: "10px", background: "rgba(28, 28, 30, 0.8)", backdropFilter: "blur(20px)", borderRadius: "32px", border: "1px solid rgba(255,255,255,0.1)", zIndex: 10 }}>
             <button onClick={exitClassroom} style={{ ...btnStyle, background: "#E5E5EA", color: "#1C1C1E" }} title="Exit">
               <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M13 3a4 4 0 1 1 0 8 4 4 0 0 1 0-8z"/><path d="M19 12l-4 4-4-4-4 4V3h12v9z" fill="none" stroke="currentColor" strokeWidth="2"/></svg>
@@ -404,12 +508,14 @@ export default function Classroom() {
             </button>
           </div>
 
+          {/* My self-view — only while my camera is on */}
           {isCamOn && localVideoTrack && (
             <div style={{ position: "absolute", bottom: "32px", right: "32px", width: "160px", height: "110px", borderRadius: "16px", overflow: "hidden", border: `3px solid ${C.green}`, boxShadow: "0 8px 24px rgba(0,0,0,0.15)", zIndex: 10, background: "#000" }}>
               <video autoPlay muted playsInline ref={(el) => { if (el && localVideoTrack) { const stream = new MediaStream([localVideoTrack]); if (el.srcObject !== stream) el.srcObject = stream; } }} style={{ width: "100%", height: "100%", objectFit: "cover", transform: "scaleX(-1)" }} />
             </div>
           )}
 
+          {/* Trainer video tile — appears when the trainer's cam is on */}
           {trainerVideoTrack && (
             <div style={videoTileContainerStyle}>
               <video autoPlay muted playsInline ref={(el) => { if (el && trainerVideoTrack) { const stream = new MediaStream([trainerVideoTrack]); if (el.srcObject !== stream) el.srcObject = stream; } }} style={{ width: "100%", height: "100%", objectFit: "cover", transform: "scaleX(-1)" }} />
@@ -420,6 +526,7 @@ export default function Classroom() {
           )}
         </div>
 
+        {/* Chat sidebar — text + files */}
         <div style={{ width: isChatOpen ? "360px" : "64px", minWidth: 0, transition: "width 0.3s ease", flexShrink: 0, borderLeft: "1px solid #E5E5EA", background: "#1C1C1E" }}>
           <ClassChat
             courseId={courseId || ""}
@@ -437,6 +544,9 @@ export default function Classroom() {
         autoStartId={autoDownloadId}
         onClose={() => { setDownloadOpen(false); setAutoDownloadId(null); }}
       />
+
+      {/* Media help modal (locked / Windows privacy toggle / device busy / missing) */}
+      <MediaHelpModal problem={mediaProblem} onClose={() => setMediaProblem(null)} />
     </div>
   );
 }

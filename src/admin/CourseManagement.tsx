@@ -1,3 +1,4 @@
+// src/admin/CourseManagement.tsx
 import { useEffect, useState, useRef } from "react";
 import type { Course, User } from "../types";
 import { addCourse, getCourses, updateCourse, deleteCourse } from "../database/courseDB";
@@ -99,32 +100,27 @@ async function apiFetch(path: string, body: any, method: string = "POST") {
   return res.json();
 }
 
-async function pushUnsyncedCourses() {
-  const unsynced = await db.courses.filter(c => !c.synced).toArray();
-  if (unsynced.length === 0) return alert("All courses are already synced.");
-  let pushed = 0;
-  let failed = 0;
-  for (const course of unsynced) {
-    try {
-      await apiFetch("/api/courses/create", {
-        id: course.id,
-        name: course.name,
-        description: course.description || "",
-        logo: course.logo || null,
-        tuition_type: course.tuitionType || "free",
-        amount: parseFloat(String(course.amount || 0).replace(/,/g, "")) || 0,
-        start_date: course.startDate || null,
-        period: course.period || null,
-      });
-      await db.courses.update(course.id, { synced: true });
-      pushed++;
-    } catch (e: any) {
-      failed++;
-      console.error("Push failed for", course.name, e.message);
+// SILENT sync — pushes offline-created courses to the cloud with no UI, no alerts.
+// Failed items stay unsynced and are retried on the next load / reconnect.
+async function pushUnsyncedCoursesSilently() {
+  try {
+    const unsynced = await db.courses.filter((c) => !c.synced).toArray();
+    for (const course of unsynced) {
+      try {
+        await apiFetch("/api/courses/create", {
+          id: course.id,
+          name: course.name,
+          description: course.description || "",
+          logo: course.logo || null,
+          tuition_type: course.tuitionType || "free",
+          amount: parseFloat(String(course.amount || 0).replace(/,/g, "")) || 0,
+          start_date: course.startDate || null,
+          period: course.period || null,
+        });
+        await db.courses.update(course.id, { synced: true });
+      } catch { /* keep unsynced — retried next time */ }
     }
-  }
-  alert(`Pushed ${pushed} courses.${failed > 0 ? ` ${failed} failed.` : ""}`);
-  window.location.reload();
+  } catch { /* local db unavailable — ignore */ }
 }
 
 const C = {
@@ -138,31 +134,65 @@ const C = {
   skeletonBase: "#E5E5EA",
 };
 
+const iosFont = "-apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif";
+const gutter = "clamp(12px, 3vw, 24px)";
+const PAGE_MAX = 1440;
+
 const INITIAL_FORM = { name: "", description: "", tuitionType: "free" as "free" | "paid", paidValue: "", startDate: "", endDate: "", logo: "" };
+
+const panelBase: React.CSSProperties = {
+  backgroundColor: C.card, borderRadius: 14, overflow: "hidden",
+  boxShadow: "0 1px 4px rgba(0,0,0,0.04)", border: "1px solid rgba(17,24,39,0.05)",
+  boxSizing: "border-box", minWidth: 0,
+};
+
+function Stat({ icon, bg, fg, label, value }: { icon: React.ReactNode; bg: string; fg: string; label: string; value: string | number }) {
+  return (
+    <div style={{ flex: "1 1 min(180px, 100%)", ...panelBase, padding: 16, display: "flex", alignItems: "center", gap: 12 }}>
+      <div style={{ width: 40, height: 40, borderRadius: 10, background: bg, color: fg, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{icon}</div>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontSize: 13, color: C.textTertiary, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{label}</div>
+        <div style={{ fontSize: 22, color: C.textPrimary, fontWeight: 700, lineHeight: 1.2 }}>{value}</div>
+      </div>
+    </div>
+  );
+}
+
+function SkeletonStat() {
+  return (
+    <div style={{ flex: "1 1 min(180px, 100%)", ...panelBase, padding: 16, display: "flex", alignItems: "center", gap: 12 }}>
+      <div style={{ width: 40, height: 40, borderRadius: 10, background: C.skeletonBase, animation: "pulse 1.5s infinite", flexShrink: 0 }} />
+      <div style={{ display: "flex", flexDirection: "column", gap: 6, flex: 1, minWidth: 0 }}>
+        <div style={{ width: "60%", height: 12, borderRadius: 4, background: C.skeletonBase, animation: "pulse 1.5s infinite 0.1s" }} />
+        <div style={{ width: "40%", height: 22, borderRadius: 6, background: C.skeletonBase, animation: "pulse 1.5s infinite 0.2s" }} />
+      </div>
+    </div>
+  );
+}
 
 function SkeletonCardGrid() {
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(340px, 1fr))", gap: "16px", padding: "0 16px", marginBottom: "20px", width: "100%", boxSizing: "border-box" }}>
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(360px, 100%), 1fr))", gap: 16, width: "100%", boxSizing: "border-box" }}>
       {Array.from({ length: 3 }).map((_, i) => (
-        <div key={i} style={{ backgroundColor: C.card, borderRadius: "16px", overflow: "hidden", boxShadow: "0 1px 4px rgba(0,0,0,0.04)", display: "flex", flexDirection: "column" }}>
-          <div style={{ display: "flex", alignItems: "center", padding: "16px", borderBottom: `0.5px solid ${C.separator}` }}>
-            <div style={{ width: "52px", height: "52px", borderRadius: "14px", background: C.skeletonBase, animation: "pulse 1.5s infinite", flexShrink: 0 }}></div>
-            <div style={{ flex: 1, marginLeft: "14px", display: "flex", flexDirection: "column", gap: "8px" }}>
-              <div style={{ width: "60%", height: "16px", borderRadius: "6px", background: C.skeletonBase, animation: "pulse 1.5s infinite 0.1s" }}></div>
-              <div style={{ width: "30%", height: "12px", borderRadius: "4px", background: C.skeletonBase, animation: "pulse 1.5s infinite 0.2s" }}></div>
+        <div key={i} style={{ ...panelBase, display: "flex", flexDirection: "column" }}>
+          <div style={{ display: "flex", alignItems: "center", padding: 16, borderBottom: `0.5px solid ${C.separator}` }}>
+            <div style={{ width: 52, height: 52, borderRadius: 14, background: C.skeletonBase, animation: "pulse 1.5s infinite", flexShrink: 0 }} />
+            <div style={{ flex: 1, marginLeft: 14, display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
+              <div style={{ width: "60%", height: 16, borderRadius: 6, background: C.skeletonBase, animation: "pulse 1.5s infinite 0.1s" }} />
+              <div style={{ width: "30%", height: 12, borderRadius: 4, background: C.skeletonBase, animation: "pulse 1.5s infinite 0.2s" }} />
             </div>
           </div>
-          <div style={{ padding: "16px", display: "flex", flexDirection: "column", gap: "12px" }}>
-            <div style={{ width: "80%", height: "40px", borderRadius: "12px", background: C.skeletonBase, animation: "pulse 1.5s infinite 0.1s" }}></div>
-            <div style={{ display: "flex", gap: "12px" }}>
-              <div style={{ flex: 1, height: "60px", borderRadius: "12px", background: C.skeletonBase, animation: "pulse 1.5s infinite 0.2s" }}></div>
-              <div style={{ flex: 1, height: "60px", borderRadius: "12px", background: C.skeletonBase, animation: "pulse 1.5s infinite 0.3s" }}></div>
-              <div style={{ flex: 1, height: "60px", borderRadius: "12px", background: C.skeletonBase, animation: "pulse 1.5s infinite 0.15s" }}></div>
+          <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ width: "80%", height: 40, borderRadius: 12, background: C.skeletonBase, animation: "pulse 1.5s infinite 0.1s" }} />
+            <div style={{ display: "flex", gap: 12 }}>
+              <div style={{ flex: 1, height: 60, borderRadius: 12, background: C.skeletonBase, animation: "pulse 1.5s infinite 0.2s" }} />
+              <div style={{ flex: 1, height: 60, borderRadius: 12, background: C.skeletonBase, animation: "pulse 1.5s infinite 0.3s" }} />
+              <div style={{ flex: 1, height: 60, borderRadius: 12, background: C.skeletonBase, animation: "pulse 1.5s infinite 0.15s" }} />
             </div>
-            <div style={{ width: "100%", height: "80px", borderRadius: "12px", background: C.skeletonBase, animation: "pulse 1.5s infinite 0.25s" }}></div>
-            <div style={{ display: "flex", gap: "12px", marginTop: "8px" }}>
-              <div style={{ flex: 1, height: "44px", borderRadius: "10px", background: C.skeletonBase, animation: "pulse 1.5s infinite 0.2s" }}></div>
-              <div style={{ flex: 1, height: "44px", borderRadius: "10px", background: C.skeletonBase, animation: "pulse 1.5s infinite 0.3s" }}></div>
+            <div style={{ width: "100%", height: 80, borderRadius: 12, background: C.skeletonBase, animation: "pulse 1.5s infinite 0.25s" }} />
+            <div style={{ display: "flex", gap: 12, marginTop: 8 }}>
+              <div style={{ flex: 1, height: 44, borderRadius: 10, background: C.skeletonBase, animation: "pulse 1.5s infinite 0.2s" }} />
+              <div style={{ flex: 1, height: 44, borderRadius: 10, background: C.skeletonBase, animation: "pulse 1.5s infinite 0.3s" }} />
             </div>
           </div>
         </div>
@@ -184,17 +214,16 @@ export default function CourseManagement() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  useEffect(() => {
-    loadCourses();
-  }, []);
+  useEffect(() => { loadCourses(); }, []);
 
+  // SILENT SYNC — retry whenever the device comes back online
   useEffect(() => {
-    const handleBackgroundSync = () => loadCourses();
-    window.addEventListener("coursesChanged", handleBackgroundSync);
-    window.addEventListener("dataSynced", handleBackgroundSync);
+    const onOnline = () => loadCourses();
+    window.addEventListener("online", onOnline);
+    window.addEventListener("dataSynced", onOnline as EventListener);
     return () => {
-      window.removeEventListener("coursesChanged", handleBackgroundSync);
-      window.removeEventListener("dataSynced", handleBackgroundSync);
+      window.removeEventListener("online", onOnline);
+      window.removeEventListener("dataSynced", onOnline as EventListener);
     };
   }, []);
 
@@ -219,9 +248,11 @@ export default function CourseManagement() {
       buildCourseDetails(coursesData, usersData, schedulesData);
       setIsLoading(false);
 
-      // STEP 2: Try Supabase to update in background
-      if (tenantId) {
+      // STEP 2: Background push of offline-created records, then pull fresh from Supabase
+      if (tenantId && navigator.onLine) {
         try {
+          await pushUnsyncedCoursesSilently();
+
           const [coursesRes, usersRes] = await Promise.all([
             supabase.from("courses").select("*").eq("tenant_id", tenantId),
             supabase.from("users").select("*").eq("tenant_id", tenantId),
@@ -250,19 +281,16 @@ export default function CourseManagement() {
             }
           } catch (e) { /* schedules table may not exist */ }
 
-          // Save remote data to local DB for offline support
           for (const course of remoteCourses) {
             await db.courses.put(course);
           }
 
-          // Use remote data if available, otherwise keep local
           const finalCourses = remoteCourses.length > 0 ? remoteCourses : coursesData;
           const finalUsers = remoteUsers.length > 0 ? remoteUsers : usersData;
           const finalSchedules = remoteSchedules.length > 0 ? remoteSchedules : schedulesData;
 
           setCourses(finalCourses);
           buildCourseDetails(finalCourses, finalUsers, finalSchedules);
-
         } catch (onlineError) {
           console.warn("Supabase fetch failed, using local DB", onlineError);
         }
@@ -320,7 +348,7 @@ export default function CourseManagement() {
       });
       await db.courses.update(courseId, { synced: true });
     } catch (e: any) {
-      console.warn("Course cloud sync failed:", e.message);
+      console.warn("Course cloud sync failed:", e.message); // stays unsynced — retried silently in background
     }
 
     closeForm();
@@ -381,15 +409,17 @@ export default function CourseManagement() {
     loadCourses();
   }
 
-  const iosInput: React.CSSProperties = { width: "100%", padding: "12px 16px", backgroundColor: "transparent", border: "none", fontSize: "17px", color: C.textPrimary, outline: "none", fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif", boxSizing: "border-box" as const };
-  const iosGroupHeader: React.CSSProperties = { fontSize: "13px", color: C.textTertiary, paddingLeft: "16px", paddingRight: "16px", paddingTop: "24px", paddingBottom: "8px", textTransform: "uppercase" as const, letterSpacing: "-0.08px", fontWeight: "400" };
-  const toggleWrap: React.CSSProperties = { display: "flex", padding: "3px", borderRadius: "10px", background: C.separator, margin: "0 16px 16px 16px", width: "calc(100% - 32px)", boxSizing: "border-box" };
-  const toggleBtn = (active: boolean, color: string): React.CSSProperties => ({ flex: 1, padding: "10px 0", border: "none", borderRadius: "8px", background: active ? color : "transparent", color: active ? "#FFFFFF" : C.textTertiary, fontSize: "15px", fontWeight: "600", fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif", cursor: "pointer", transition: "all 0.25s cubic-bezier(0.4, 0, 0.2, 1)", boxShadow: active ? `0 1px 6px ${color}44` : "none" });
-  const paidInputVisible: React.CSSProperties = { maxHeight: "80px", opacity: 1, overflow: "hidden", transition: "max-height 0.35s cubic-bezier(0.4,0,0.2,1), opacity 0.25s ease, margin 0.3s ease", margin: "0 16px 16px 16px", width: "calc(100% - 32px)", boxSizing: "border-box" };
-  const paidInputHidden: React.CSSProperties = { maxHeight: "0", opacity: 0, overflow: "hidden", margin: "0 16px 0 16px", transition: "max-height 0.35s cubic-bezier(0.4,0,0.2,1), opacity 0.25s ease, margin 0.3s ease", width: "calc(100% - 32px)", boxSizing: "border-box" };
-  const dateRowStyle = (borderRight?: boolean): React.CSSProperties => ({ display: "flex", flexDirection: "column", flex: "1 1 45%", borderRight: borderRight ? `0.5px solid ${C.separator}` : "none", minWidth: "150px" });
-  const dateLabelStyle: React.CSSProperties = { fontSize: "13px", color: C.textTertiary, textTransform: "uppercase", fontWeight: "600", paddingLeft: "16px", paddingTop: "12px", paddingBottom: "2px" };
-  const dateInputStyle: React.CSSProperties = { width: "100%", padding: "6px 16px 12px 16px", backgroundColor: "transparent", border: "none", fontSize: "15px", color: C.textPrimary, outline: "none", fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif", boxSizing: "border-box" as const };
+  // ---- shared styles ----
+  const iosInput: React.CSSProperties = { width: "100%", padding: "12px 16px", backgroundColor: "transparent", border: "none", fontSize: 17, color: C.textPrimary, outline: "none", fontFamily: iosFont, boxSizing: "border-box" as const };
+  const groupHeader: React.CSSProperties = { fontSize: 13, color: C.textTertiary, padding: "22px 4px 8px", textTransform: "uppercase" as const, letterSpacing: "0.04em", fontWeight: 600 };
+  const borderedPanel: React.CSSProperties = { ...panelBase, border: `1px solid ${C.separator}`, boxShadow: "none" };
+  const toggleWrap: React.CSSProperties = { display: "flex", padding: 3, borderRadius: 10, background: C.separator, marginBottom: 16 };
+  const toggleBtn = (active: boolean, color: string): React.CSSProperties => ({ flex: 1, padding: "10px 0", border: "none", borderRadius: 8, background: active ? color : "transparent", color: active ? "#FFFFFF" : C.textTertiary, fontSize: 15, fontWeight: 600, fontFamily: iosFont, cursor: "pointer", transition: "all 0.25s cubic-bezier(0.4, 0, 0.2, 1)", boxShadow: active ? `0 1px 6px ${color}44` : "none" });
+  const paidInputVisible: React.CSSProperties = { maxHeight: 90, opacity: 1, overflow: "hidden", transition: "max-height 0.35s cubic-bezier(0.4,0,0.2,1), opacity 0.25s ease, margin 0.3s ease", marginBottom: 16 };
+  const paidInputHidden: React.CSSProperties = { maxHeight: 0, opacity: 0, overflow: "hidden", transition: "max-height 0.35s cubic-bezier(0.4,0,0.2,1), opacity 0.25s ease, margin 0.3s ease", marginBottom: 0 };
+  const dateRowStyle = (borderRight?: boolean): React.CSSProperties => ({ display: "flex", flexDirection: "column", flex: "1 1 min(150px, 100%)", borderRight: borderRight ? `0.5px solid ${C.separator}` : "none", minWidth: 0 });
+  const dateLabelStyle: React.CSSProperties = { fontSize: 13, color: C.textTertiary, textTransform: "uppercase", fontWeight: 600, paddingLeft: 16, paddingTop: 12, paddingBottom: 2 };
+  const dateInputStyle: React.CSSProperties = { width: "100%", padding: "6px 16px 12px 16px", backgroundColor: "transparent", border: "none", fontSize: 15, color: C.textPrimary, outline: "none", fontFamily: iosFont, boxSizing: "border-box" as const };
 
   function displayTuition(course: Course) { return course.tuitionType === "paid" ? formatCurrency(course.amount) : "Free"; }
 
@@ -406,221 +436,200 @@ export default function CourseManagement() {
   }
 
   const tuitionPill = (course: Course): React.CSSProperties => course.tuitionType === "paid"
-    ? { display: "inline-flex", alignItems: "center", gap: "4px", padding: "2px 8px", borderRadius: "6px", background: C.paidBg, color: C.paidText, fontSize: "12px", fontWeight: "700", letterSpacing: "0.2px" }
-    : { display: "inline-flex", alignItems: "center", gap: "4px", padding: "2px 8px", borderRadius: "6px", background: C.freeBg, color: C.freeText, fontSize: "12px", fontWeight: "700", letterSpacing: "0.2px" };
-  const metaChip: React.CSSProperties = { display: "inline-flex", alignItems: "center", gap: "4px", fontSize: "13px", color: C.metaText, fontWeight: "500" };
+    ? { display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 8px", borderRadius: 6, background: C.paidBg, color: C.paidText, fontSize: 12, fontWeight: 700, letterSpacing: "0.2px" }
+    : { display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 8px", borderRadius: 6, background: C.freeBg, color: C.freeText, fontSize: 12, fontWeight: 700, letterSpacing: "0.2px" };
+  const metaChip: React.CSSProperties = { display: "inline-flex", alignItems: "center", gap: 4, fontSize: 13, color: C.metaText, fontWeight: 500 };
   const freeCount = courses.filter(c => c.tuitionType === "free").length;
   const paidCount = courses.filter(c => c.tuitionType === "paid").length;
 
   return (
-    <div style={{ width: "100%", minHeight: "100%", background: C.bg, fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif", display: "flex", flexDirection: "column", boxSizing: "border-box", paddingBottom: "40px" }}>
+    <div style={{ width: "100%", minHeight: "100%", background: C.bg, fontFamily: iosFont, boxSizing: "border-box", overflowX: "hidden" }}>
       <style>{`@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }`}</style>
       <input ref={fileInputRef} type="file" accept="image/*" style={{ display: "none" }} onChange={uploadLogo} />
       <input ref={inlinePicRef} type="file" accept="image/*" style={{ display: "none" }} onChange={handleInlinePicUpload} />
-      <div style={{ width: "100%", display: "flex", flexDirection: "column", boxSizing: "border-box" }}>
 
-        <div style={{ padding: "24px 16px 16px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0, width: "100%", boxSizing: "border-box" }}>
-          <div style={{ minWidth: 0 }}>
-            <h1 style={{ margin: 0, color: C.textPrimary, fontSize: "28px", fontWeight: "700", letterSpacing: "0.37px", lineHeight: 1.1 }}>Course Management</h1>
-            <p style={{ margin: "4px 0 0 0", color: C.textTertiary, fontSize: "15px", fontWeight: "400" }}>Manage modules, schedules, and trainees</p>
+      <div style={{ width: "100%", maxWidth: PAGE_MAX, margin: "0 auto", padding: `20px ${gutter} 48px`, boxSizing: "border-box" }}>
+
+        {/* PAGE HEADER — single action button, no Sync */}
+        <div style={{ display: "flex", alignItems: "center", gap: 12, width: "100%" }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <h1 style={{ margin: 0, color: C.textPrimary, fontSize: "clamp(22px, 4vw, 28px)", fontWeight: 700, letterSpacing: "0.37px", lineHeight: 1.15, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>Course Management</h1>
+            <p style={{ margin: "4px 0 0 0", color: C.textTertiary, fontSize: 15, fontWeight: 400, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>Manage modules, schedules, and trainees</p>
           </div>
-          <div style={{ display: "flex", gap: "8px", flexShrink: 0 }}>
-            <button onClick={pushUnsyncedCourses} title="Push unsynced courses to cloud" style={{ height: "40px", borderRadius: "10px", border: `1px solid ${C.greenBg}`, background: C.greenBg, color: C.green, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: "6px", padding: "0 12px", fontSize: "14px", fontWeight: "600", transition: "all 0.25s ease" }}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" /></svg>
-              Sync
-            </button>
-            <button onClick={handleToggleForm} style={{ height: "40px", borderRadius: "10px", border: "none", background: showForm ? C.red : C.blue, color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: "8px", padding: "0 16px", fontSize: "15px", fontWeight: "600", transition: "all 0.25s ease", boxShadow: `0 2px 8px ${showForm ? C.red + "33" : C.blue + "33"}` }}>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
-              {showForm ? "Close" : "New Course"}
-            </button>
-          </div>
+          <button onClick={handleToggleForm} style={{ height: 40, borderRadius: 10, border: "none", background: showForm ? C.red : C.blue, color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: "0 16px", fontSize: 15, fontWeight: 600, transition: "all 0.25s ease", boxShadow: `0 2px 8px ${showForm ? C.red + "33" : C.blue + "33"}`, flexShrink: 0 }}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
+            {showForm ? "Close" : "New Course"}
+          </button>
         </div>
 
-        <div style={{ display: "flex", gap: "16px", padding: "0 16px 24px 16px", width: "100%", boxSizing: "border-box", flexWrap: "wrap" }}>
+        {/* STATS */}
+        <div style={{ display: "flex", gap: 16, flexWrap: "wrap", paddingTop: 20, paddingBottom: 24 }}>
           {isLoading ? (
-            <>
-              {Array.from({ length: 3 }).map((_, i) => (
-                <div key={i} style={{ flex: "1 1 180px", background: C.card, borderRadius: "16px", padding: "16px", display: "flex", alignItems: "center", gap: "12px", boxShadow: "0 1px 4px rgba(0,0,0,0.04)" }}>
-                  <div style={{ width: "40px", height: "40px", borderRadius: "10px", background: C.skeletonBase, animation: "pulse 1.5s infinite", flexShrink: 0 }}></div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: "6px", flex: 1 }}>
-                    <div style={{ width: "60%", height: "12px", borderRadius: "4px", background: C.skeletonBase, animation: "pulse 1.5s infinite 0.1s" }}></div>
-                    <div style={{ width: "40%", height: "22px", borderRadius: "6px", background: C.skeletonBase, animation: "pulse 1.5s infinite 0.2s" }}></div>
-                  </div>
-                </div>
-              ))}
-            </>
+            <><SkeletonStat /><SkeletonStat /><SkeletonStat /></>
           ) : (
             <>
-              <div style={{ flex: "1 1 180px", background: C.card, borderRadius: "16px", padding: "16px", display: "flex", alignItems: "center", gap: "12px", boxShadow: "0 1px 4px rgba(0,0,0,0.04)" }}>
-                <div style={{ width: "40px", height: "40px", borderRadius: "10px", background: C.medBlueBg, color: C.medBlue, display: "flex", alignItems: "center", justifyContent: "center" }}><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" /></svg></div>
-                <div><div style={{ fontSize: "13px", color: C.textTertiary, fontWeight: "500" }}>Total Modules</div><div style={{ fontSize: "22px", color: C.textPrimary, fontWeight: "700" }}>{courses.length}</div></div>
-              </div>
-              <div style={{ flex: "1 1 180px", background: C.card, borderRadius: "16px", padding: "16px", display: "flex", alignItems: "center", gap: "12px", boxShadow: "0 1px 4px rgba(0,0,0,0.04)" }}>
-                <div style={{ width: "40px", height: "40px", borderRadius: "10px", background: C.freeBg, color: C.freeText, display: "flex", alignItems: "center", justifyContent: "center" }}><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20 6 9 17 4 12" /></svg></div>
-                <div><div style={{ fontSize: "13px", color: C.textTertiary, fontWeight: "500" }}>Free Courses</div><div style={{ fontSize: "22px", color: C.textPrimary, fontWeight: "700" }}>{freeCount}</div></div>
-              </div>
-              <div style={{ flex: "1 1 180px", background: C.card, borderRadius: "16px", padding: "16px", display: "flex", alignItems: "center", gap: "12px", boxShadow: "0 1px 4px rgba(0,0,0,0.04)" }}>
-                <div style={{ width: "40px", height: "40px", borderRadius: "10px", background: C.paidBg, color: C.paidText, display: "flex", alignItems: "center", justifyContent: "center" }}><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="1" y="4" width="22" height="16" rx="2" ry="2" /><line x1="1" y1="10" x2="23" y2="10" /></svg></div>
-                <div><div style={{ fontSize: "13px", color: C.textTertiary, fontWeight: "500" }}>Paid Courses</div><div style={{ fontSize: "22px", color: C.textPrimary, fontWeight: "700" }}>{paidCount}</div></div>
-              </div>
+              <Stat icon={<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" /></svg>} bg={C.medBlueBg} fg={C.medBlue} label="Total Modules" value={courses.length} />
+              <Stat icon={<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20 6 9 17 4 12" /></svg>} bg={C.freeBg} fg={C.freeText} label="Free Courses" value={freeCount} />
+              <Stat icon={<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="1" y="4" width="22" height="16" rx="2" ry="2" /><line x1="1" y1="10" x2="23" y2="10" /></svg>} bg={C.paidBg} fg={C.paidText} label="Paid Courses" value={paidCount} />
             </>
           )}
         </div>
 
-        <div style={{ width: "100%", boxSizing: "border-box" }}>
-          <div style={{ maxHeight: showForm ? "2000px" : "0", overflow: "hidden", transition: "max-height 0.4s cubic-bezier(0.4, 0, 0.2, 1)", opacity: showForm ? 1 : 0, width: "100%" }}>
-            <div style={iosGroupHeader}>NEW MODULE</div>
-            <div style={{ backgroundColor: C.card, marginLeft: "16px", marginRight: "16px", borderRadius: "12px", overflow: "hidden", marginBottom: "16px", boxShadow: "0 1px 4px rgba(0,0,0,0.04)", width: "calc(100% - 32px)", boxSizing: "border-box" }}>
-              <div style={{ borderBottom: `0.5px solid ${C.separator}` }}><input style={iosInput} placeholder="Course Name" value={form.name} onChange={e => updateForm("name", e.target.value)} /></div>
-              <div><textarea style={{ ...iosInput, resize: "none", minHeight: "80px" }} placeholder="Description (Optional)" value={form.description} onChange={e => updateForm("description", e.target.value)} /></div>
-            </div>
-            <div style={iosGroupHeader}>PRICING</div>
-            <div style={toggleWrap}>
-              <button type="button" style={toggleBtn(form.tuitionType === "free", C.green)} onClick={() => updateForm("tuitionType", "free")}>&#10003; Free</button>
-              <button type="button" style={toggleBtn(form.tuitionType === "paid", C.orange)} onClick={() => updateForm("tuitionType", "paid")}>Paid</button>
-            </div>
-            <div style={form.tuitionType === "paid" ? paidInputVisible : paidInputHidden}>
-              <div style={{ backgroundColor: C.card, borderRadius: "12px", overflow: "hidden", boxShadow: "0 1px 4px rgba(0,0,0,0.04)" }}>
-                <input style={{ ...iosInput, color: C.paidText, fontWeight: "500" }} type="text" inputMode="decimal" placeholder="Enter price (e.g. 2,000,000)" value={form.paidValue} onChange={e => { updateForm("paidValue", e.target.value.replace(/[^0-9,\.]/g, '')); }} />
-              </div>
-            </div>
-            <div style={iosGroupHeader}>SCHEDULE</div>
-            <div style={{ backgroundColor: C.card, marginLeft: "16px", marginRight: "16px", borderRadius: "12px", overflow: "hidden", marginBottom: "16px", boxShadow: "0 1px 4px rgba(0,0,0,0.04)", display: "flex", flexWrap: "wrap", width: "calc(100% - 32px)", boxSizing: "border-box" }}>
-              <div style={dateRowStyle(true)}><div style={dateLabelStyle}>Start date</div><input style={dateInputStyle} type="date" value={form.startDate} onChange={e => updateForm("startDate", e.target.value)} /></div>
-              <div style={dateRowStyle()}><div style={dateLabelStyle}>End date</div><input style={dateInputStyle} type="date" value={form.endDate} onChange={e => updateForm("endDate", e.target.value)} /></div>
-            </div>
-            <div style={{ ...iosGroupHeader, paddingTop: "8px" }}>THUMBNAIL</div>
-            <div style={{ backgroundColor: C.card, marginLeft: "16px", marginRight: "16px", borderRadius: "12px", overflow: "hidden", marginBottom: "24px", boxShadow: "0 1px 4px rgba(0,0,0,0.04)", width: "calc(100% - 32px)", boxSizing: "border-box" }}>
-              <button onClick={() => fileInputRef.current?.click()} style={{ width: "100%", padding: "16px", background: "transparent", border: "none", display: "flex", alignItems: "center", gap: "14px", cursor: "pointer", textAlign: "left", boxSizing: "border-box" }}>
-                <div style={{ width: "50px", height: "50px", borderRadius: "12px", background: C.inset, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", flexShrink: 0 }}>
-                  {form.logo ? <img src={form.logo} alt="Logo" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke={C.textQuaternary} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2" /><circle cx="8.5" cy="8.5" r="1.5" /><polyline points="21 15 16 10 5 21" /></svg>}
-                </div>
-                <div style={{ fontSize: "17px", color: C.blue }}>Upload Thumbnail</div>
-              </button>
-            </div>
-            <div style={{ padding: "0 16px", width: "100%", boxSizing: "border-box" }}>
-              <button onClick={saveCourse} style={{ width: "100%", background: C.blue, color: "#fff", border: "none", padding: "16px", borderRadius: "12px", fontSize: "17px", fontWeight: "600", cursor: "pointer", boxShadow: `0 1px 4px ${C.blue}33` }}>Create Module</button>
+        {/* CREATE FORM (animated) */}
+        <div style={{ maxHeight: showForm ? 2600 : 0, overflow: "hidden", transition: "max-height 0.4s cubic-bezier(0.4, 0, 0.2, 1)", opacity: showForm ? 1 : 0, width: "100%" }}>
+          <div style={groupHeader}>New Module</div>
+          <div style={{ ...panelBase, marginBottom: 16 }}>
+            <div style={{ borderBottom: `0.5px solid ${C.separator}` }}><input style={iosInput} placeholder="Course Name" value={form.name} onChange={e => updateForm("name", e.target.value)} /></div>
+            <div><textarea style={{ ...iosInput, resize: "none", minHeight: 80 }} placeholder="Description (Optional)" value={form.description} onChange={e => updateForm("description", e.target.value)} /></div>
+          </div>
+
+          <div style={groupHeader}>Pricing</div>
+          <div style={toggleWrap}>
+            <button type="button" style={toggleBtn(form.tuitionType === "free", C.green)} onClick={() => updateForm("tuitionType", "free")}>&#10003; Free</button>
+            <button type="button" style={toggleBtn(form.tuitionType === "paid", C.orange)} onClick={() => updateForm("tuitionType", "paid")}>Paid</button>
+          </div>
+          <div style={form.tuitionType === "paid" ? paidInputVisible : paidInputHidden}>
+            <div style={panelBase}>
+              <input style={{ ...iosInput, color: C.paidText, fontWeight: 500 }} type="text" inputMode="decimal" placeholder="Enter price (e.g. 2,000,000)" value={form.paidValue} onChange={e => { updateForm("paidValue", e.target.value.replace(/[^0-9,\.]/g, '')); }} />
             </div>
           </div>
 
-          <div style={{ ...iosGroupHeader, paddingTop: showForm ? "0px" : "24px" }}>ALL COURSES</div>
+          <div style={groupHeader}>Schedule</div>
+          <div style={{ ...panelBase, marginBottom: 16, display: "flex", flexWrap: "wrap" }}>
+            <div style={dateRowStyle(true)}><div style={dateLabelStyle}>Start date</div><input style={dateInputStyle} type="date" value={form.startDate} onChange={e => updateForm("startDate", e.target.value)} /></div>
+            <div style={dateRowStyle()}><div style={dateLabelStyle}>End date</div><input style={dateInputStyle} type="date" value={form.endDate} onChange={e => updateForm("endDate", e.target.value)} /></div>
+          </div>
 
-          {isLoading ? (
-            <SkeletonCardGrid />
-          ) : courses.length === 0 ? (
-            <div style={{ backgroundColor: C.card, marginLeft: "16px", marginRight: "16px", borderRadius: "12px", padding: "40px 16px", textAlign: "center", boxShadow: "0 1px 4px rgba(0,0,0,0.04)", width: "calc(100% - 32px)", boxSizing: "border-box" }}><div style={{ color: C.textTertiary, fontSize: "15px" }}>No Courses Yet</div></div>
-          ) : (
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(340px, 1fr))", gap: "16px", padding: "0 16px", marginBottom: "20px", width: "100%", boxSizing: "border-box" }}>
-              {courses.map((course: any) => {
-                const details = courseDetails[course.id] || { trainer: null, trainees: [], schedules: [] };
-                return (
-                  <div key={course.id} style={{ backgroundColor: C.card, borderRadius: "16px", overflow: "hidden", boxShadow: "0 1px 4px rgba(0,0,0,0.04)", display: "flex", flexDirection: "column" }}>
-                    <div style={{ display: "flex", alignItems: "center", padding: "16px", borderBottom: `0.5px solid ${C.separator}` }}>
-                      <div style={{ width: "52px", height: "52px", borderRadius: "14px", background: course.logo || course.mediaUrl ? "transparent" : C.medBlueBg, flexShrink: 0, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: course.logo || course.mediaUrl ? "0 2px 8px rgba(0,0,0,0.06)" : "none" }}>
-                        {course.logo || course.mediaUrl ? <img src={course.logo ?? course.mediaUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke={C.medBlue} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M6 2v6a6 6 0 0 0 12 0V2" /><path d="M6 5a2 2 0 0 1 2-2" /><path d="M18 5a2 2 0 0 0-2-2" /><circle cx="12" cy="14" r="2" /><path d="M10 16v2a4 4 0 0 0 8 0v-2" /></svg>}
-                      </div>
-                      <div style={{ flex: 1, marginLeft: "14px", minWidth: 0 }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                          <div style={{ fontSize: "17px", fontWeight: "600", color: C.textPrimary, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", lineHeight: 1.3 }}>{course.name}</div>
-                          {course.synced === false && <span title="Not synced" style={{ width: "8px", height: "8px", borderRadius: "50%", background: C.orange, flexShrink: 0 }}></span>}
-                        </div>
-                        <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "6px", marginTop: "5px" }}>
-                          <span style={tuitionPill(course)}>{course.tuitionType === "paid" ? <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"></rect><line x1="1" y1="10" x2="23" y2="10"></line></svg> : <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12" /></svg>} {displayTuition(course)}</span>
-                          {course.startDate && <span style={metaChip}><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={C.medBlue} strokeWidth="2.5"><rect x="3" y="4" width="18" height="18" rx="2" ry="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" /></svg> {course.startDate}</span>}
-                        </div>
-                      </div>
+          <div style={{ ...groupHeader, paddingTop: 8 }}>Thumbnail</div>
+          <div style={{ ...panelBase, marginBottom: 24 }}>
+            <button onClick={() => fileInputRef.current?.click()} style={{ width: "100%", padding: 16, background: "transparent", border: "none", display: "flex", alignItems: "center", gap: 14, cursor: "pointer", textAlign: "left", boxSizing: "border-box" }}>
+              <div style={{ width: 50, height: 50, borderRadius: 12, background: C.inset, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", flexShrink: 0 }}>
+                {form.logo ? <img src={form.logo} alt="Logo" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke={C.textQuaternary} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2" /><circle cx="8.5" cy="8.5" r="1.5" /><polyline points="21 15 16 10 5 21" /></svg>}
+              </div>
+              <div style={{ fontSize: 17, color: C.blue }}>Upload Thumbnail</div>
+            </button>
+          </div>
+
+          <button onClick={saveCourse} style={{ width: "100%", background: C.blue, color: "#fff", border: "none", padding: 16, borderRadius: 12, fontSize: 17, fontWeight: 600, cursor: "pointer", boxShadow: `0 1px 4px ${C.blue}33` }}>Create Module</button>
+        </div>
+
+        {/* LIST */}
+        <div style={{ ...groupHeader, paddingTop: showForm ? 0 : 24 }}>All Courses</div>
+
+        {isLoading ? (
+          <SkeletonCardGrid />
+        ) : courses.length === 0 ? (
+          <div style={{ ...panelBase, padding: "40px 16px", textAlign: "center" }}><div style={{ color: C.textTertiary, fontSize: 15 }}>No Courses Yet</div></div>
+        ) : (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(360px, 100%), 1fr))", gap: 16, width: "100%", boxSizing: "border-box" }}>
+            {courses.map((course: any) => {
+              const details = courseDetails[course.id] || { trainer: null, trainees: [], schedules: [] };
+              return (
+                <div key={course.id} style={{ ...panelBase, display: "flex", flexDirection: "column" }}>
+                  <div style={{ display: "flex", alignItems: "center", padding: 16, borderBottom: `0.5px solid ${C.separator}` }}>
+                    <div style={{ width: 52, height: 52, borderRadius: 14, background: course.logo || course.mediaUrl ? "transparent" : C.medBlueBg, flexShrink: 0, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: course.logo || course.mediaUrl ? "0 2px 8px rgba(0,0,0,0.06)" : "none" }}>
+                      {course.logo || course.mediaUrl ? <img src={course.logo ?? course.mediaUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke={C.medBlue} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M6 2v6a6 6 0 0 0 12 0V2" /><path d="M6 5a2 2 0 0 1 2-2" /><path d="M18 5a2 2 0 0 0-2-2" /><circle cx="12" cy="14" r="2" /><path d="M10 16v2a4 4 0 0 0 8 0v-2" /></svg>}
                     </div>
-
-                    <div style={{ padding: "16px", flex: 1 }}>
-                      {inlineEditId === course.id ? (
-                        <>
-                          {inlineError && <div style={{ margin: "0 0 12px 0", padding: "10px 16px", background: C.red, color: "#fff", borderRadius: "10px", fontSize: "14px", fontWeight: "500", textAlign: "center" }}>{inlineError}</div>}
-                          <div style={{ ...iosGroupHeader, paddingLeft: "0" }}>THUMBNAIL</div>
-                          <div style={{ borderRadius: "12px", overflow: "hidden", marginBottom: "16px", border: `1px solid ${C.separator}` }}>
-                            <button onClick={() => inlinePicRef.current?.click()} style={{ width: "100%", padding: "16px", background: "transparent", border: "none", display: "flex", alignItems: "center", gap: "14px", cursor: "pointer", textAlign: "left", boxSizing: "border-box" }}>
-                              <div style={{ width: "50px", height: "50px", borderRadius: "12px", background: C.inset, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", flexShrink: 0 }}>
-                                {inlineForm.logo ? <img src={inlineForm.logo} alt="Preview" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke={C.textQuaternary} strokeWidth="1.5"><rect x="3" y="3" width="18" height="18" rx="2" ry="2" /><circle cx="8.5" cy="8.5" r="1.5" /><polyline points="21 15 16 10 5 21" /></svg>}
-                              </div>
-                              <div><div style={{ fontSize: "17px", color: C.blue }}>Change Thumbnail</div><div style={{ fontSize: "13px", color: C.textTertiary, marginTop: "2px" }}>Tap to select</div></div>
-                            </button>
-                          </div>
-                          <div style={{ ...iosGroupHeader, paddingLeft: "0" }}>COURSE DETAILS</div>
-                          <div style={{ borderRadius: "12px", overflow: "hidden", marginBottom: "16px", border: `1px solid ${C.separator}` }}>
-                            <div style={{ borderBottom: `0.5px solid ${C.separator}` }}><input style={iosInput} placeholder="Course Name" value={inlineForm.name} onChange={e => { updateInlineForm("name", e.target.value); setInlineError(""); }} /></div>
-                            <div><textarea style={{ ...iosInput, resize: "none", minHeight: "80px" }} placeholder="Description" value={inlineForm.description} onChange={e => updateInlineForm("description", e.target.value)} /></div>
-                          </div>
-                          <div style={{ ...iosGroupHeader, paddingLeft: "0" }}>PRICING</div>
-                          <div style={{ ...toggleWrap, margin: "0 0 16px 0" }}>
-                            <button type="button" style={toggleBtn(inlineForm.tuitionType === "free", C.green)} onClick={() => updateInlineForm("tuitionType", "free")}>&#10003; Free</button>
-                            <button type="button" style={toggleBtn(inlineForm.tuitionType === "paid", C.orange)} onClick={() => updateInlineForm("tuitionType", "paid")}>Paid</button>
-                          </div>
-                          <div style={inlineForm.tuitionType === "paid" ? { ...paidInputVisible, margin: "0 0 16px 0" } : paidInputHidden}>
-                            <div style={{ borderRadius: "12px", overflow: "hidden", border: `1px solid ${C.separator}` }}>
-                              <input style={{ ...iosInput, color: C.paidText, fontWeight: "500" }} type="text" inputMode="decimal" placeholder="Enter price (e.g. 2,000,000)" value={inlineForm.paidValue} onChange={e => { updateInlineForm("paidValue", e.target.value.replace(/[^0-9,\.]/g, '')); }} />
-                            </div>
-                          </div>
-                          <div style={{ ...iosGroupHeader, paddingLeft: "0" }}>SCHEDULE</div>
-                          <div style={{ borderRadius: "12px", overflow: "hidden", marginBottom: "24px", border: `1px solid ${C.separator}`, display: "flex", flexWrap: "wrap" }}>
-                            <div style={dateRowStyle(true)}><div style={dateLabelStyle}>Start date</div><input style={dateInputStyle} type="date" value={inlineForm.startDate} onChange={e => updateInlineForm("startDate", e.target.value)} /></div>
-                            <div style={dateRowStyle()}><div style={dateLabelStyle}>End date</div><input style={dateInputStyle} type="date" value={inlineForm.endDate} onChange={e => updateInlineForm("endDate", e.target.value)} /></div>
-                          </div>
-                          <div style={{ display: "flex", flexWrap: "wrap", gap: "12px", width: "100%", boxSizing: "border-box" }}>
-                            <button onClick={() => saveInlineCourse(course.id)} style={{ flex: "1 1 45%", background: C.blue, color: "#fff", border: "none", padding: "14px", borderRadius: "12px", fontSize: "17px", fontWeight: "600", cursor: "pointer", boxShadow: `0 1px 4px ${C.blue}33` }}>Save Changes</button>
-                            <button onClick={() => setInlineEditId(null)} style={{ flex: "1 1 45%", background: "transparent", color: C.blue, border: "none", padding: "14px 20px", borderRadius: "12px", fontSize: "17px", fontWeight: "400", cursor: "pointer" }}>Cancel</button>
-                          </div>
-                        </>
-                      ) : (
-                        <>
-                          <div style={{ display: "flex", flexDirection: "column", gap: "16px", height: "100%" }}>
-                            {details.trainer && (
-                              <div style={{ display: "flex", alignItems: "center", gap: "12px", padding: "12px", borderRadius: "12px", background: C.purpleBg, color: C.purple }}>
-                                <div style={{ width: "36px", height: "36px", borderRadius: "50%", background: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: "600", fontSize: "14px", flexShrink: 0 }}>{details.trainer.username?.charAt(0).toUpperCase()}</div>
-                                <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontSize: "12px", textTransform: "uppercase", fontWeight: "600", opacity: 0.8 }}>Trainer</div><div style={{ fontSize: "15px", fontWeight: "500", marginTop: "2px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{details.trainer.username}</div><div style={{ fontSize: "12px", opacity: 0.9, marginTop: "2px" }}>{details.trainer.phone || "No phone"}</div></div>
-                              </div>
-                            )}
-                            <div style={{ display: "flex", gap: "12px", flexWrap: "wrap" }}>
-                              <div style={{ flex: "1 1 100px", padding: "12px", borderRadius: "12px", background: course.tuitionType === "paid" ? C.paidBg : C.freeBg, color: course.tuitionType === "paid" ? C.paidText : C.freeText }}><div style={{ fontSize: "12px", textTransform: "uppercase", fontWeight: "600" }}>Tuition</div><div style={{ fontSize: "15px", fontWeight: "500", marginTop: "4px" }}>{displayTuition(course)}</div></div>
-                              <div style={{ flex: "1 1 100px", padding: "12px", borderRadius: "12px", background: C.medBlueBg, color: C.medBlue }}><div style={{ fontSize: "12px", textTransform: "uppercase", fontWeight: "600" }}>Start Date</div><div style={{ fontSize: "15px", fontWeight: "500", marginTop: "4px" }}>{course.startDate || "TBD"}</div></div>
-                              <div style={{ flex: "1 1 100px", padding: "12px", borderRadius: "12px", background: C.medBlueBg, color: C.medBlue }}><div style={{ fontSize: "12px", textTransform: "uppercase", fontWeight: "600" }}>Duration</div><div style={{ fontSize: "15px", fontWeight: "500", marginTop: "4px" }}>{calculateDuration(course.startDate, course.period)}</div></div>
-                            </div>
-                            {course.description && <div style={{ padding: "12px", borderRadius: "12px", background: C.inset, border: `1px solid ${C.separator}` }}><div style={{ fontSize: "12px", color: C.textTertiary, textTransform: "uppercase", fontWeight: "600" }}>Details</div><div style={{ fontSize: "14px", color: C.textSecondary, fontWeight: "500", lineHeight: "1.4", marginTop: "4px" }}>{course.description}</div></div>}
-                            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px", flex: 1 }}>
-                              <div style={{ display: "flex", flexDirection: "column" }}>
-                                <div style={{ fontSize: "13px", color: C.textTertiary, marginBottom: "8px", textTransform: "uppercase", fontWeight: "600" }}>Schedules ({details.schedules.length})</div>
-                                <div style={{ display: "flex", flexDirection: "column", gap: "8px", flex: 1 }}>
-                                  {details.schedules.length > 0 ? details.schedules.map((sch) => (<div key={sch.id} style={{ padding: "10px", borderRadius: "8px", background: C.inset, display: "flex", alignItems: "center", gap: "8px" }}><div style={{ width: "28px", height: "28px", borderRadius: "6px", background: C.orangeBg, color: C.orange, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><rect x="3" y="4" width="18" height="18" rx="2" ry="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" /></svg></div><div style={{ minWidth: 0 }}><div style={{ fontSize: "13px", fontWeight: "500", color: C.textPrimary, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{sch.title}</div><div style={{ fontSize: "11px", color: C.textTertiary }}>{new Date(sch.scheduledAt).toLocaleString()}</div></div></div>)) : <div style={{ padding: "12px", textAlign: "center", color: C.textTertiary, fontSize: "13px", borderRadius: "8px", background: C.inset }}>No schedules</div>}
-                                </div>
-                              </div>
-                              <div style={{ display: "flex", flexDirection: "column" }}>
-                                <div style={{ fontSize: "13px", color: C.textTertiary, marginBottom: "8px", textTransform: "uppercase", fontWeight: "600" }}>Trainees ({details.trainees.length})</div>
-                                <div style={{ display: "flex", flexDirection: "column", gap: "8px", flex: 1 }}>
-                                  {details.trainees.length > 0 ? details.trainees.map((trainee) => (<div key={trainee.id} style={{ padding: "8px", borderRadius: "8px", background: C.inset, display: "flex", alignItems: "center", gap: "8px" }}><div style={{ width: "28px", height: "28px", borderRadius: "50%", background: C.greenBg, color: C.green, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: "600", fontSize: "12px", flexShrink: 0 }}>{trainee.username?.charAt(0).toUpperCase()}</div><div style={{ minWidth: 0, flex: 1 }}><div style={{ fontSize: "13px", fontWeight: "500", color: C.textPrimary, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{trainee.username}</div><div style={{ fontSize: "11px", color: C.textTertiary, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{trainee.phone || "No phone"}</div></div></div>)) : <div style={{ padding: "12px", textAlign: "center", color: C.textTertiary, fontSize: "13px", borderRadius: "8px", background: C.inset }}>No trainees</div>}
-                                </div>
-                              </div>
-                            </div>
-                            <div style={{ display: "flex", gap: "12px", marginTop: "auto", paddingTop: "16px" }}>
-                              <button onClick={() => startInlineEdit(course)} style={{ flex: 1, background: C.blue, color: "#fff", border: "none", padding: "12px", borderRadius: "10px", fontSize: "15px", fontWeight: "600", cursor: "pointer" }}>Edit</button>
-                              <button onClick={() => setDeleteId(course.id)} style={{ flex: 1, background: "transparent", color: C.red, border: `1px solid ${C.redBg}`, padding: "12px", borderRadius: "10px", fontSize: "15px", fontWeight: "600", cursor: "pointer" }}>Delete</button>
-                            </div>
-                            {deleteId === course.id && (
-                              <div style={{ padding: "16px", borderRadius: "12px", background: C.redBg, border: `1px solid ${C.red}` }}>
-                                <div style={{ fontSize: "15px", color: C.textPrimary, marginBottom: "12px", textAlign: "center" }}>Delete this course permanently?</div>
-                                <div style={{ display: "flex", gap: "12px" }}>
-                                  <button style={{ flex: 1, background: C.red, color: "#fff", border: "none", padding: "10px", borderRadius: "8px", fontSize: "15px", fontWeight: "600", cursor: "pointer" }} onClick={() => removeCourse(course.id)}>Delete</button>
-                                  <button style={{ flex: 1, background: "transparent", color: C.red, border: "none", padding: "10px", borderRadius: "8px", fontSize: "15px", fontWeight: "600", cursor: "pointer" }} onClick={() => setDeleteId(null)}>Cancel</button>
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                        </>
-                      )}
+                    <div style={{ flex: 1, marginLeft: 14, minWidth: 0 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                        <div style={{ fontSize: 17, fontWeight: 600, color: C.textPrimary, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", lineHeight: 1.3, minWidth: 0 }}>{course.name}</div>
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6, marginTop: 5 }}>
+                        <span style={tuitionPill(course)}>{course.tuitionType === "paid" ? <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"></rect><line x1="1" y1="10" x2="23" y2="10"></line></svg> : <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12" /></svg>} {displayTuition(course)}</span>
+                        {course.startDate && <span style={metaChip}><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={C.medBlue} strokeWidth="2.5"><rect x="3" y="4" width="18" height="18" rx="2" ry="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" /></svg> {course.startDate}</span>}
+                      </div>
                     </div>
                   </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
+
+                  <div style={{ padding: 16, flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
+                    {inlineEditId === course.id ? (
+                      <>
+                        {inlineError && <div style={{ margin: "0 0 12px 0", padding: "10px 16px", background: C.red, color: "#fff", borderRadius: 10, fontSize: 14, fontWeight: 500, textAlign: "center" }}>{inlineError}</div>}
+                        <div style={{ ...groupHeader, paddingTop: 0, paddingLeft: 0 }}>Thumbnail</div>
+                        <div style={{ ...borderedPanel, marginBottom: 16 }}>
+                          <button onClick={() => inlinePicRef.current?.click()} style={{ width: "100%", padding: 16, background: "transparent", border: "none", display: "flex", alignItems: "center", gap: 14, cursor: "pointer", textAlign: "left", boxSizing: "border-box" }}>
+                            <div style={{ width: 50, height: 50, borderRadius: 12, background: C.inset, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", flexShrink: 0 }}>
+                              {inlineForm.logo ? <img src={inlineForm.logo} alt="Preview" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke={C.textQuaternary} strokeWidth="1.5"><rect x="3" y="3" width="18" height="18" rx="2" ry="2" /><circle cx="8.5" cy="8.5" r="1.5" /><polyline points="21 15 16 10 5 21" /></svg>}
+                            </div>
+                            <div><div style={{ fontSize: 17, color: C.blue }}>Change Thumbnail</div><div style={{ fontSize: 13, color: C.textTertiary, marginTop: 2 }}>Tap to select</div></div>
+                          </button>
+                        </div>
+                        <div style={{ ...groupHeader, paddingLeft: 0 }}>Course Details</div>
+                        <div style={{ ...borderedPanel, marginBottom: 16 }}>
+                          <div style={{ borderBottom: `0.5px solid ${C.separator}` }}><input style={iosInput} placeholder="Course Name" value={inlineForm.name} onChange={e => { updateInlineForm("name", e.target.value); setInlineError(""); }} /></div>
+                          <div><textarea style={{ ...iosInput, resize: "none", minHeight: 80 }} placeholder="Description" value={inlineForm.description} onChange={e => updateInlineForm("description", e.target.value)} /></div>
+                        </div>
+                        <div style={{ ...groupHeader, paddingLeft: 0 }}>Pricing</div>
+                        <div style={{ ...toggleWrap, marginBottom: 16 }}>
+                          <button type="button" style={toggleBtn(inlineForm.tuitionType === "free", C.green)} onClick={() => updateInlineForm("tuitionType", "free")}>&#10003; Free</button>
+                          <button type="button" style={toggleBtn(inlineForm.tuitionType === "paid", C.orange)} onClick={() => updateInlineForm("tuitionType", "paid")}>Paid</button>
+                        </div>
+                        <div style={inlineForm.tuitionType === "paid" ? paidInputVisible : paidInputHidden}>
+                          <div style={borderedPanel}>
+                            <input style={{ ...iosInput, color: C.paidText, fontWeight: 500 }} type="text" inputMode="decimal" placeholder="Enter price (e.g. 2,000,000)" value={inlineForm.paidValue} onChange={e => { updateInlineForm("paidValue", e.target.value.replace(/[^0-9,\.]/g, '')); }} />
+                          </div>
+                        </div>
+                        <div style={{ ...groupHeader, paddingLeft: 0 }}>Schedule</div>
+                        <div style={{ ...borderedPanel, marginBottom: 24, display: "flex", flexWrap: "wrap" }}>
+                          <div style={dateRowStyle(true)}><div style={dateLabelStyle}>Start date</div><input style={dateInputStyle} type="date" value={inlineForm.startDate} onChange={e => updateInlineForm("startDate", e.target.value)} /></div>
+                          <div style={dateRowStyle()}><div style={dateLabelStyle}>End date</div><input style={dateInputStyle} type="date" value={inlineForm.endDate} onChange={e => updateInlineForm("endDate", e.target.value)} /></div>
+                        </div>
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 12, width: "100%", boxSizing: "border-box" }}>
+                          <button onClick={() => saveInlineCourse(course.id)} style={{ flex: "1 1 min(160px, 100%)", background: C.blue, color: "#fff", border: "none", padding: 14, borderRadius: 12, fontSize: 17, fontWeight: 600, cursor: "pointer", boxShadow: `0 1px 4px ${C.blue}33` }}>Save Changes</button>
+                          <button onClick={() => setInlineEditId(null)} style={{ flex: "1 1 min(120px, 100%)", background: "transparent", color: C.blue, border: "none", padding: 14, borderRadius: 12, fontSize: 17, fontWeight: 400, cursor: "pointer" }}>Cancel</button>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 16, height: "100%", minWidth: 0 }}>
+                          {details.trainer && (
+                            <div style={{ display: "flex", alignItems: "center", gap: 12, padding: 12, borderRadius: 12, background: C.purpleBg, color: C.purple, minWidth: 0 }}>
+                              <div style={{ width: 36, height: 36, borderRadius: "50%", background: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 600, fontSize: 14, flexShrink: 0 }}>{details.trainer.username?.charAt(0).toUpperCase()}</div>
+                              <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontSize: 12, textTransform: "uppercase", fontWeight: 600, opacity: 0.8 }}>Trainer</div><div style={{ fontSize: 15, fontWeight: 500, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{details.trainer.username}</div><div style={{ fontSize: 12, opacity: 0.9, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{details.trainer.phone || "No phone"}</div></div>
+                            </div>
+                          )}
+                          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(110px, 100%), 1fr))", gap: 12 }}>
+                            <div style={{ padding: 12, borderRadius: 12, background: course.tuitionType === "paid" ? C.paidBg : C.freeBg, color: course.tuitionType === "paid" ? C.paidText : C.freeText }}><div style={{ fontSize: 12, textTransform: "uppercase", fontWeight: 600 }}>Tuition</div><div style={{ fontSize: 15, fontWeight: 500, marginTop: 4 }}>{displayTuition(course)}</div></div>
+                            <div style={{ padding: 12, borderRadius: 12, background: C.medBlueBg, color: C.medBlue }}><div style={{ fontSize: 12, textTransform: "uppercase", fontWeight: 600 }}>Start Date</div><div style={{ fontSize: 15, fontWeight: 500, marginTop: 4 }}>{course.startDate || "TBD"}</div></div>
+                            <div style={{ padding: 12, borderRadius: 12, background: C.medBlueBg, color: C.medBlue }}><div style={{ fontSize: 12, textTransform: "uppercase", fontWeight: 600 }}>Duration</div><div style={{ fontSize: 15, fontWeight: 500, marginTop: 4 }}>{calculateDuration(course.startDate, course.period)}</div></div>
+                          </div>
+                          {course.description && <div style={{ padding: 12, borderRadius: 12, background: C.inset, border: `1px solid ${C.separator}` }}><div style={{ fontSize: 12, color: C.textTertiary, textTransform: "uppercase", fontWeight: 600 }}>Details</div><div style={{ fontSize: 14, color: C.textSecondary, fontWeight: 500, lineHeight: 1.4, marginTop: 4 }}>{course.description}</div></div>}
+                          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(220px, 100%), 1fr))", gap: 16, flex: 1 }}>
+                            <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
+                              <div style={{ fontSize: 13, color: C.textTertiary, marginBottom: 8, textTransform: "uppercase", fontWeight: 600 }}>Schedules ({details.schedules.length})</div>
+                              <div style={{ display: "flex", flexDirection: "column", gap: 8, flex: 1 }}>
+                                {details.schedules.length > 0 ? details.schedules.map((sch) => (<div key={sch.id} style={{ padding: 10, borderRadius: 8, background: C.inset, display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}><div style={{ width: 28, height: 28, borderRadius: 6, background: C.orangeBg, color: C.orange, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><rect x="3" y="4" width="18" height="18" rx="2" ry="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" /></svg></div><div style={{ minWidth: 0 }}><div style={{ fontSize: 13, fontWeight: 500, color: C.textPrimary, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{sch.title}</div><div style={{ fontSize: 11, color: C.textTertiary }}>{new Date(sch.scheduledAt).toLocaleString()}</div></div></div>)) : <div style={{ padding: 12, textAlign: "center", color: C.textTertiary, fontSize: 13, borderRadius: 8, background: C.inset }}>No schedules</div>}
+                              </div>
+                            </div>
+                            <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
+                              <div style={{ fontSize: 13, color: C.textTertiary, marginBottom: 8, textTransform: "uppercase", fontWeight: 600 }}>Trainees ({details.trainees.length})</div>
+                              <div style={{ display: "flex", flexDirection: "column", gap: 8, flex: 1 }}>
+                                {details.trainees.length > 0 ? details.trainees.map((trainee) => (<div key={trainee.id} style={{ padding: 8, borderRadius: 8, background: C.inset, display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}><div style={{ width: 28, height: 28, borderRadius: "50%", background: C.greenBg, color: C.green, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 600, fontSize: 12, flexShrink: 0 }}>{trainee.username?.charAt(0).toUpperCase()}</div><div style={{ minWidth: 0, flex: 1 }}><div style={{ fontSize: 13, fontWeight: 500, color: C.textPrimary, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{trainee.username}</div><div style={{ fontSize: 11, color: C.textTertiary, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{trainee.phone || "No phone"}</div></div></div>)) : <div style={{ padding: 12, textAlign: "center", color: C.textTertiary, fontSize: 13, borderRadius: 8, background: C.inset }}>No trainees</div>}
+                              </div>
+                            </div>
+                          </div>
+                          <div style={{ display: "flex", gap: 12, marginTop: "auto", paddingTop: 16 }}>
+                            <button onClick={() => startInlineEdit(course)} style={{ flex: 1, background: C.blue, color: "#fff", border: "none", padding: 12, borderRadius: 10, fontSize: 15, fontWeight: 600, cursor: "pointer" }}>Edit</button>
+                            <button onClick={() => setDeleteId(course.id)} style={{ flex: 1, background: "transparent", color: C.red, border: `1px solid ${C.redBg}`, padding: 12, borderRadius: 10, fontSize: 15, fontWeight: 600, cursor: "pointer" }}>Delete</button>
+                          </div>
+                          {deleteId === course.id && (
+                            <div style={{ padding: 16, borderRadius: 12, background: C.redBg, border: `1px solid ${C.red}`, marginTop: 12 }}>
+                              <div style={{ fontSize: 15, color: C.textPrimary, marginBottom: 12, textAlign: "center" }}>Delete this course permanently?</div>
+                              <div style={{ display: "flex", gap: 12 }}>
+                                <button style={{ flex: 1, background: C.red, color: "#fff", border: "none", padding: 10, borderRadius: 8, fontSize: 15, fontWeight: 600, cursor: "pointer" }} onClick={() => removeCourse(course.id)}>Delete</button>
+                                <button style={{ flex: 1, background: "transparent", color: C.red, border: "none", padding: 10, borderRadius: 8, fontSize: 15, fontWeight: 600, cursor: "pointer" }} onClick={() => setDeleteId(null)}>Cancel</button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );

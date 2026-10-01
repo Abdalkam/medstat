@@ -6,6 +6,26 @@ function throwError(message: string): never {
   throw new Error(message);
 }
 
+// CASE-SENSITIVE / SECURITY: an error tagged with `noOfflineFallback` is a
+// deliberate credential rejection. The login flows MUST NOT catch it and
+// retry against the offline local DB (which may hold a stale password or a
+// differently-cased username).
+class AuthRejectedError extends Error {
+  noOfflineFallback = true;
+  constructor(message: string) {
+    super(message);
+    this.name = "AuthRejectedError";
+  }
+}
+
+// CASE-SENSITIVE: the username the service returned must byte-match what the
+// user typed. aDmin ≠ admin ≠ ADMIN ≠ Admin.
+function assertExactUsername(typed: string, returned: unknown): void {
+  if (typeof returned !== "string" || returned !== typed.trim()) {
+    throw new AuthRejectedError("Invalid username or password");
+  }
+}
+
 function getCurrentUser(): { id: string; tenantId: string; role: string; assigned_courses?: string[] } | null {
   const stored = localStorage.getItem("currentUser");
   if (!stored) return null;
@@ -125,7 +145,7 @@ export async function loginTenant(data: {
 
   if (!targetTenantId) throwError("Could not identify business.");
 
-  // ✅ FIX: Try to log in via the backend first. Let it wait up to 60s for Render to wake up.
+  // Try to log in via the backend first. Let it wait up to 60s for Render to wake up.
   try {
     const API_BASE = import.meta.env.VITE_API_URL || 
       (import.meta.env.PROD 
@@ -140,10 +160,23 @@ export async function loginTenant(data: {
 
     if (!response.ok) {
       const err = await response.json().catch(() => ({}));
+      // SECURITY: an explicit 401/403 means the SERVER saw the credentials and
+      // rejected them. NEVER fall back to the offline DB in that case — the
+      // local copy may hold a stale password or a differently-cased username.
+      if (response.status === 401 || response.status === 403) {
+        throw new AuthRejectedError(err.error || "Invalid username or password");
+      }
+      // Other HTTP errors (500/502/503 — server asleep/unavailable): the
+      // throw below is caught by the catch block, which falls back offline.
       throw new Error(err.error || "Invalid credentials");
     }
 
     const result = await response.json();
+
+    // CASE-SENSITIVE: the server must have matched the EXACT username typed.
+    // If the server is doing case-insensitive matching (ILIKE / lower()), this
+    // guard converts that into a rejection — but fix the server query too.
+    assertExactUsername(data.username, result.user?.username);
 
     return {
       authToken: result.authToken,
@@ -160,10 +193,17 @@ export async function loginTenant(data: {
       },
     };
   } catch (backendError: any) {
+    // SECURITY: deliberate credential rejections propagate — no offline retry.
+    if (backendError?.noOfflineFallback) throw backendError;
+
     console.warn("Backend login failed, falling back to OFFLINE mode:", backendError.message);
     
-    // ✅ FIX: Instantly fall back to local IndexedDB if backend is asleep
+    // Instantly fall back to local IndexedDB if backend is asleep/unreachable.
     const localUser = await loginUser(data.username, data.password);
+
+    // CASE-SENSITIVE: require an EXACT byte match on the username — never
+    // accept a differently-cased local match (aDmin ≠ admin ≠ Admin).
+    assertExactUsername(data.username, localUser?.username);
     if (!localUser) throw new Error("Invalid username or password (Offline)");
 
     return {
@@ -204,6 +244,18 @@ export async function createUserApi(user: {
     throwError("Only admins can create users.");
   }
 
+  // CASE-SENSITIVE policy companion: block near-duplicates so admins can't
+  // create "Admin" when "admin" already exists in the same tenant (login is
+  // exact-match, but ambiguous names are a support trap). ilike without
+  // wildcards = exact match, case-insensitive.
+  const { data: dupe } = await supabase
+    .from("users")
+    .select("id")
+    .eq("tenant_id", currentUser.tenantId)
+    .ilike("username", user.username)
+    .maybeSingle();
+  if (dupe) throwError("A user with this username already exists (names that differ only by capitalization are not allowed).");
+
   const bcrypt = await import("bcryptjs");
   const hashedPassword = await bcrypt.default.hash(user.password, 10);
 
@@ -240,6 +292,20 @@ export async function updateUserApi(user: {
   const currentUser = getCurrentUser();
   if (currentUser?.role !== "admin" && currentUser?.id !== user.id) {
     throwError("You can only update your own profile.");
+  }
+
+  // CASE-SENSITIVE policy companion: renaming to a name that collides
+  // (case-insensitively) with another user in the tenant is blocked.
+  if (user.username !== undefined && currentUser) {
+    const { data: dupe } = await supabase
+      .from("users")
+      .select("id")
+      .eq("tenant_id", currentUser.tenantId)
+      .ilike("username", user.username)
+      .maybeSingle();
+    if (dupe && dupe.id !== user.id) {
+      throwError("That username is already taken by another user in your institution.");
+    }
   }
 
   const updates: Record<string, any> = {};

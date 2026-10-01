@@ -119,33 +119,84 @@ app.post("/api/create-daily-room", async (req: Request, res: Response) => {
 });
 
 // ==========================================
-// AUTH - SEND CODE
+// AUTH - SEND CODE (WITH SENDER ID FALLBACK)
 // ==========================================
 app.post("/api/auth/send-code", async (req: Request, res: Response) => {
   const { phone: rawPhone } = req.body;
   if (!rawPhone) return res.status(400).json({ error: "Phone is required" });
-  
+
   const phone = formatPhoneNumber(rawPhone);
 
   const code = Math.floor(100000 + Math.random() * 900000).toString();
   otpStore.set(phone, { code, expires: Date.now() + 5 * 60 * 1000 });
 
+  const message = `Your SmartPages verification code is ${code}`;
+
+  let finalLogs: Array<{ phone: string; status: string }> = [];
+  let numbersToRetry: string[] = [];
+
   try {
-    const result = await smsService.send({ 
-      to: [phone], 
-      message: `Your MEDSTAT verification code is: ${code}`, 
-      from: "ATTech" 
-    });
-    
-    const recipients = result?.SMSMessageData?.Recipients;
-    if (recipients && recipients.length > 0 && recipients[0].status === "Success") {
+    // ---------------------------------------------------------
+    // ATTEMPT 1: Send using MEDSTAT Sender ID
+    // ---------------------------------------------------------
+    try {
+      const result1 = await smsService.send({ 
+        to: [phone], 
+        message: message, 
+        from: "MEDSTAT" 
+      });
+
+      const atRecipients1 = result1?.SMSMessageData?.Recipients || [];
+      
+      atRecipients1.forEach((r: any) => {
+        if (r.status === "Success") {
+          finalLogs.push({ phone: r.number, status: "Success" });
+        } else {
+          // Failed with MEDSTAT, add to retry list
+          numbersToRetry.push(r.number);
+        }
+      });
+    } catch (err: any) {
+      console.error("MEDSTAT Sender ID Error (Retrying with ATTech):", err.message);
+      // If the whole request fails (e.g. Sender ID not approved at all), retry all
+      numbersToRetry = [...[phone]];
+    }
+
+    // ---------------------------------------------------------
+    // ATTEMPT 2: Fallback to ATTech for any failed numbers
+    // ---------------------------------------------------------
+    if (numbersToRetry.length > 0) {
+      try {
+        const result2 = await smsService.send({ 
+          to: numbersToRetry, 
+          message: message, 
+          from: "ATTech" 
+        });
+
+        const atRecipients2 = result2?.SMSMessageData?.Recipients || [];
+        
+        atRecipients2.forEach((r: any) => {
+          finalLogs.push({ phone: r.number, status: r.status || "Failed" });
+        });
+      } catch (err2: any) {
+        console.error("ATTech Fallback Error:", err2.message);
+        // If ATTech also fails, mark them all as failed
+        numbersToRetry.forEach(p => finalLogs.push({ phone: p, status: "Failed" }));
+      }
+    }
+
+    // ---------------------------------------------------------
+    // RESPOND TO FRONTEND
+    // ---------------------------------------------------------
+    const successEntry = finalLogs.find(log => log.status === "Success");
+    if (successEntry) {
       return res.json({ sent: true });
     }
-    
-    const atError = recipients?.[0]?.status || "Failed to send SMS.";
+
+    const atError = finalLogs[0]?.status || "Failed to send verification SMS.";
     return res.status(500).json({ error: atError });
   } catch (error: any) {
-    console.error("AT SMS Error:", error);
+    console.error("Verification SMS Error:", error);
     if (error?.message && error.message.includes("Unsupported")) {
       return res.status(400).json({ error: "Unsupported phone number format. Please use international format (e.g., +256...)." });
     }

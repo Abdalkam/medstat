@@ -1,37 +1,70 @@
 // src/components/Updater.tsx
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 
+const CHECK_DELAY_MS = 5000;              // first check 5s after launch
+const RETRY_INTERVAL_MS = 60 * 60 * 1000; // re-check hourly
+
 export default function Updater() {
+  const checkingRef = useRef(false);
+
   useEffect(() => {
-    const checkForUpdates = async () => {
+    if (!(window as any).__TAURI_INTERNALS__) return;
+
+    let cancelled = false;
+
+    const run = async () => {
+      if (checkingRef.current || cancelled) return;
+      checkingRef.current = true;
       try {
         const update = await check();
-        
-        // If an update is available, download and install it SILENTLY
-        if (update) {
-          console.log(`Update v${update.version} found! Downloading...`);
-          await update.downloadAndInstall();
-          console.log("Installed! Relaunching...");
-          await relaunch();
-        } else {
-          console.log("App is up to date.");
+
+        if (cancelled) return;
+
+        if (!update) {
+          console.log("[updater] App is up to date.");
+          return;
         }
+
+        console.log(`[updater] Update v${update.version} found — downloading silently...`);
+
+        let received = 0;
+        let total = 0;
+        await update.downloadAndInstall((event) => {
+          if (event.event === "Started") {
+            total = event.data.contentLength ?? 0;
+            console.log(`[updater] Download started (${(total / 1e6).toFixed(1)} MB)`);
+          } else if (event.event === "Progress") {
+            received += event.data.chunkLength;
+            if (total > 0 && Math.random() < 0.1) {
+              console.log(`[updater] ${Math.round((received / total) * 100)}%`);
+            }
+          } else if (event.event === "Finished") {
+            console.log("[updater] Download finished — installing...");
+          }
+        });
+
+        console.log("[updater] Installed. Relaunching...");
+        await relaunch();
       } catch (err) {
-        // Silently fail in the background without bothering the user
-        console.error("Auto-update failed:", err);
+        // THE important line — prints the real reason (404, permission denied,
+        // plugin not registered, signature mismatch...) instead of dying silently
+        console.error("[updater] Auto-update failed:", err);
+      } finally {
+        checkingRef.current = false;
       }
     };
 
-    // Only run if inside the Tauri desktop app
-    if ((window as any).__TAURI_INTERNALS__) {
-      // Wait 5 seconds after app opens before checking
-      const timer = setTimeout(checkForUpdates, 5000);
-      return () => clearTimeout(timer);
-    }
+    const first = setTimeout(run, CHECK_DELAY_MS);
+    const interval = setInterval(run, RETRY_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(first);
+      clearInterval(interval);
+    };
   }, []);
 
-  // This component returns nothing, so it will never show a progress bar or text!
   return null;
 }

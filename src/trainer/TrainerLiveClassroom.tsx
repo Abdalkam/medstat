@@ -1,10 +1,15 @@
 // src/trainer/TrainerLiveClassroom.tsx
+// TRAINER live classroom: session control, blackboard with drawing tools,
+// uploaded-material (lesson pages) controls, per-learner mic/cam permissions,
+// raised hands, and the trainer's own AV bar.
 import React, { useEffect, useState, useRef, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import type { CourseMaterial, LivePresentation, User, BusinessSettings, Stroke } from "../types";
 import LiveClassView from "../components/LiveClassView";
 import DrawingBlackboard, { type ToolType, type FontOptions } from "../components/DrawingBlackboard";
 import ClassChat from "../components/ClassChat";
+import MediaHelpModal, { type MediaProblem } from "../components/MediaHelpModal";
+import { probeDevice } from "../utils/mediaPermissions";
 import { useDaily, useDailyEvent, DailyAudio } from "@daily-co/daily-react";
 import { supabase } from "../auth/supabase";
 import { db } from "../database/db";
@@ -66,6 +71,9 @@ export default function TrainerLiveClassroom() {
   const [isVoiceJoined, setIsVoiceJoined] = useState(false);
   const [videoTrack, setVideoTrack] = useState<MediaStreamTrack | null>(null);
 
+  // In-app media problem modal (replaces suppressed window.alert)
+  const [mediaProblem, setMediaProblem] = useState<MediaProblem | null>(null);
+
   useDailyEvent("track-started", (event) => { if (event.participant?.local && event.track?.kind === "video") setVideoTrack(event.track as unknown as MediaStreamTrack); });
   useDailyEvent("track-stopped", (event) => { if (event.participant?.local && event.track?.kind === "video") setVideoTrack(null); });
 
@@ -81,7 +89,7 @@ export default function TrainerLiveClassroom() {
   }, [currentUser.id, tenantId]);
 
   useEffect(() => {
-    if (window.activeTrainerCourse && window.activeTrainerCourse !== courseId) { alert("You can only host one live lesson at a time."); navigate("/trainer"); return; }
+    if (window.activeTrainerCourse && window.activeTrainerCourse !== courseId) { console.warn("You can only host one live lesson at a time."); navigate("/trainer"); return; }
     window.activeTrainerCourse = courseId;
     return () => { window.activeTrainerCourse = undefined; };
   }, [courseId, navigate]);
@@ -201,15 +209,26 @@ export default function TrainerLiveClassroom() {
     finally { setIsConnecting(false); }
   }
 
+  // OS-level device probe before switching ON — surfaces the Windows privacy
+  // toggle / device-in-use / no-device cases via the in-app modal.
+  // (Trainers are never app-locked, so there is no "locked" case here.)
   async function toggleMic() {
     const ok = await ensureJoined();
     if (!ok) return;
+    if (!isMicOn) {
+      const probe = await probeDevice("audio");
+      if (probe !== "ok") { setMediaProblem({ kind: probe, device: "mic" }); return; }
+    }
     try { const n = !isMicOn; await daily!.setLocalAudio(n); setIsMicOn(n); } catch (e) {}
   }
 
   async function toggleCam() {
     const ok = await ensureJoined();
     if (!ok) return;
+    if (!isCamOn) {
+      const probe = await probeDevice("video");
+      if (probe !== "ok") { setMediaProblem({ kind: probe, device: "cam" }); return; }
+    }
     try { const n = !isCamOn; await daily!.setLocalVideo(n); setIsCamOn(n); } catch (e) {}
   }
 
@@ -279,7 +298,7 @@ export default function TrainerLiveClassroom() {
       const can_video = kind === "video" ? true : ((existing?.can_video as boolean) ?? false);
       await supabase.from("allowed_speakers").upsert({ user_id: userId, course_id: courseId, tenant_id: tenantId, allowed: can_audio, can_audio, can_video }, { onConflict: "user_id" });
       await supabase.from("raised_hands").delete().eq("user_id", userId).eq("course_id", courseId);
-    } catch (error) { alert("Could not grant permission."); }
+    } catch (error) { console.warn("Could not grant permission:", error); }
   }
 
   // Revoke a specific capability — force-stops the learner's track remotely.
@@ -515,6 +534,9 @@ export default function TrainerLiveClassroom() {
           />
         </div>
       </div>
+
+      {/* Media help modal (Windows privacy toggle / device busy / missing) */}
+      <MediaHelpModal problem={mediaProblem} onClose={() => setMediaProblem(null)} />
     </div>
   );
 }

@@ -10,12 +10,6 @@ interface CourseData {
   category: string;
 }
 
-interface MaterialFile {
-  id: string;
-  fileName: string;
-  fileType: string;
-}
-
 const C = {
   textPrimary: "#1C1C1E",
   textTertiary: "#8E8E93",
@@ -77,39 +71,35 @@ async function cacheAvatarImage(userId: string, url: string) {
   } catch { /* offline or quota exceeded — ignore */ }
 }
 
-function getFileMeta(fileType: string, fileName: string) {
-  const t = (fileType || "").toLowerCase();
-  const ext = fileName.includes(".") ? fileName.split(".").pop()!.toLowerCase() : "";
+// Same pattern for the business logo so the app bar keeps its identity offline.
+// Keys: cachedBusinessLogo_<tenantId> / cachedBusinessLogoUrl_<tenantId>
+async function cacheBusinessLogo(tenantId: string, url: string) {
+  try {
+    if (!url) return;
+    if (url.startsWith("data:")) {
+      localStorage.setItem(`cachedBusinessLogo_${tenantId}`, url);
+      localStorage.setItem(`cachedBusinessLogoUrl_${tenantId}`, url);
+      return;
+    }
+    if (localStorage.getItem(`cachedBusinessLogoUrl_${tenantId}`) === url) return;
 
-  const isPdf = t.includes("pdf") || ext === "pdf";
-  const isDoc = t.includes("word") || t.includes("document") || ["doc", "docx", "rtf", "odt"].includes(ext);
-  const isSheet = t.includes("sheet") || t.includes("excel") || ["xls", "xlsx", "csv"].includes(ext);
-  const isSlide = t.includes("presentation") || t.includes("powerpoint") || ["ppt", "pptx"].includes(ext);
-  const isImg = t.startsWith("image") || ["png", "jpg", "jpeg", "gif", "webp", "svg"].includes(ext);
-  const isVideo = t.startsWith("video") || ["mp4", "mov", "webm", "avi"].includes(ext);
-  const isAudio = t.startsWith("audio") || ["mp3", "wav", "m4a"].includes(ext);
+    const res = await fetch(url, { cache: "force-cache" });
+    if (!res.ok) return;
+    const blob = await res.blob();
+    if (blob.size > 1_000_000) return;
 
-  const color = isPdf ? "#FF3B30"
-    : isDoc ? "#2D6CDF"
-    : isSheet ? "#1F7A3D"
-    : isSlide ? "#E8710A"
-    : isVideo ? "#AF52DE"
-    : isImg ? "#0A84FF"
-    : isAudio ? "#FF9F0A"
-    : "#8E8E93";
+    const dataUrl = await new Promise<string | null>((resolve) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result as string);
+      reader.onerror = () => resolve(null);
+      reader.readAsDataURL(blob);
+    });
 
-  return { color, isPdf };
-}
-
-function FileIcon({ fileType, fileName }: { fileType: string; fileName: string }) {
-  const { color, isPdf } = getFileMeta(fileType, fileName);
-  return (
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
-      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-      <polyline points="14 2 14 8 20 8" />
-      {isPdf && <path d="M8 13h8M8 17h5" />}
-    </svg>
-  );
+    if (dataUrl) {
+      localStorage.setItem(`cachedBusinessLogo_${tenantId}`, dataUrl);
+      localStorage.setItem(`cachedBusinessLogoUrl_${tenantId}`, url);
+    }
+  } catch { /* offline or quota exceeded — ignore */ }
 }
 
 function SkeletonCourseCard() {
@@ -147,7 +137,8 @@ export default function UserDashboard() {
   const [liveCourseIds, setLiveCourseIds] = useState<string[]>([]);
   const [activeAttendanceCourseId, setActiveAttendanceCourseId] = useState<string | null>(null);
   const [business, setBusiness] = useState<BusinessData | null>(null);
-  const [courseFiles, setCourseFiles] = useState<Record<string, MaterialFile[]>>({});
+  // NEW: published forms this user hasn't filled yet (drives the app-bar badge)
+  const [pendingForms, setPendingForms] = useState(0);
 
   const isTrainer = currentUser?.role === "trainer" || currentUser?.role === "admin";
 
@@ -160,25 +151,57 @@ export default function UserDashboard() {
     navigate("/");
   }
 
+  // Offline-first business fetch — hydrate instantly from localBusinessSettings
+  // (same key TrainerDashboard uses) + cached base64 logo, then refresh from Supabase.
   useEffect(() => {
     if (!currentUser?.tenantId) return;
     let cancelled = false;
+
+    // 1. Hydrate instantly from localStorage so the app bar renders offline
+    try {
+      const local = localStorage.getItem("localBusinessSettings");
+      if (local) {
+        const s = JSON.parse(local);
+        if (!cancelled) setBusiness({ business_name: s.businessName || null, phone: s.phone || null, logo: s.logo || null });
+      }
+    } catch {}
+    const cachedLogo = localStorage.getItem(`cachedBusinessLogo_${currentUser.tenantId}`);
+    if (cachedLogo && !cancelled) {
+      setBusiness((b) => ({ business_name: b?.business_name || null, phone: b?.phone || null, logo: cachedLogo }));
+    }
+
+    // 2. Refresh from Supabase + write back to both caches
     const fetchBusiness = async () => {
       try {
         const { data } = await supabase.from("business_settings").select("business_name, phone, logo").eq("tenant_id", currentUser.tenantId).maybeSingle();
-        if (!cancelled && data) setBusiness(data as BusinessData);
-      } catch (err: unknown) { console.error("Business fetch failed:", err); }
+        if (!cancelled && data) {
+          setBusiness(data as BusinessData);
+          try {
+            const existing = (() => { try { return JSON.parse(localStorage.getItem("localBusinessSettings") || "null"); } catch { return null; } })();
+            localStorage.setItem("localBusinessSettings", JSON.stringify({
+              ...(existing || {}),
+              businessName: data.business_name || existing?.businessName || "",
+              phone: data.phone || existing?.phone || "",
+              logo: data.logo || existing?.logo || "",
+            }));
+          } catch {}
+          if (data.logo) cacheBusinessLogo(currentUser.tenantId, data.logo);
+        }
+      } catch (err) { /* offline — cached business info already shown */ }
     };
     fetchBusiness();
     return () => { cancelled = true; };
   }, [currentUser?.tenantId]);
 
+  // Hardened profile pic — always caches a base64 copy (whatever the source),
+  // falls back to users.profile_pic, and on <img> error prefers the cached base64
+  // before dropping to the initial letter.
   useEffect(() => {
     const fetchProfilePic = async () => {
       if (!currentUser?.id) return;
       setProfilePicError(false);
 
-      // 1. Offline-first hydration: render cached avatar instantly
+      // 1. Offline-first hydration: render cached avatar instantly (base64 wins)
       const cached = localStorage.getItem(`cachedAvatar_${currentUser.id}`);
       let cachedProfile: any = null;
       try { cachedProfile = JSON.parse(localStorage.getItem(`cachedProfile_${currentUser.id}`) || "null"); } catch {}
@@ -193,15 +216,36 @@ export default function UserDashboard() {
           setProfilePic(data.avatar_url);
           localStorage.setItem(`cachedProfile_${currentUser.id}`, JSON.stringify({ id: currentUser.id, username: currentUser.username, role: currentUser.role, avatar_url: data.avatar_url }));
           cacheAvatarImage(currentUser.id, data.avatar_url);
-        } else if (currentUser.profilePic) {
-          setProfilePic(currentUser.profilePic);
         } else {
-          setProfilePic(null);
+          // Fallback: some accounts keep the pic on the users table
+          const { data: u } = await supabase.from("users").select("profile_pic").eq("id", currentUser.id).maybeSingle();
+          if (u?.profile_pic) {
+            setProfilePic(u.profile_pic);
+            cacheAvatarImage(currentUser.id, u.profile_pic);
+          } else if (currentUser.profilePic) {
+            setProfilePic(currentUser.profilePic);
+            cacheAvatarImage(currentUser.id, currentUser.profilePic);
+          } else {
+            setProfilePic(null);
+          }
         }
-      } catch (e) { /* offline — cached avatar already shown */ }
+      } catch { /* offline — cached avatar already shown */ }
     };
     fetchProfilePic();
   }, [currentUser?.id]);
+
+  // NEW: count published forms the user hasn't filled (for the Forms badge)
+  useEffect(() => {
+    if (!currentUser?.tenantId || !currentUser?.id) return;
+    (async () => {
+      try {
+        const { data: forms } = await supabase.from("forms").select("id").eq("tenant_id", currentUser.tenantId).eq("status", "published");
+        const { data: subs } = await supabase.from("form_submissions").select("form_id").eq("user_id", currentUser.id);
+        const filled = new Set((subs || []).map((s: any) => s.form_id));
+        setPendingForms((forms || []).filter((f: any) => !filled.has(f.id)).length);
+      } catch { /* offline — badge just stays hidden */ }
+    })();
+  }, [currentUser?.tenantId, currentUser?.id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -252,43 +296,6 @@ export default function UserDashboard() {
       }
 
       if (!cancelled) setCourses(fetchedCourses);
-
-      // ---- Material file names for the course cards ----
-      if (fetchedCourses.length > 0) {
-        const ids = fetchedCourses.map((c) => c.id);
-
-        // 1. Offline-first: hydrate from cached file names instantly
-        try {
-          const cached = JSON.parse(localStorage.getItem("localCourseFiles") || "{}");
-          const cachedForCourses: Record<string, MaterialFile[]> = {};
-          ids.forEach((id) => { if (Array.isArray(cached[id]) && cached[id].length > 0) cachedForCourses[id] = cached[id]; });
-          if (!cancelled && Object.keys(cachedForCourses).length > 0) setCourseFiles(cachedForCourses);
-        } catch {}
-
-        // 2. Refresh from Supabase
-        try {
-          const { data: mats } = await supabase
-            .from("course_materials")
-            .select("id, course_id, file_name, file_type")
-            .in("course_id", ids)
-            .order("presentation_order", { ascending: true });
-
-          if (!cancelled && mats) {
-            const grouped: Record<string, MaterialFile[]> = {};
-            const cacheObj: Record<string, MaterialFile[]> = {};
-            (mats as any[]).forEach((m) => {
-              const entry: MaterialFile = { id: m.id, fileName: m.file_name || "File", fileType: m.file_type || "" };
-              if (!grouped[m.course_id]) { grouped[m.course_id] = []; cacheObj[m.course_id] = []; }
-              grouped[m.course_id].push(entry);
-              cacheObj[m.course_id].push(entry);
-            });
-            setCourseFiles(grouped);
-            localStorage.setItem("localCourseFiles", JSON.stringify(cacheObj));
-          }
-        } catch (e) {
-          console.warn("Material file names fetch failed, using cached list.");
-        }
-      }
 
       const activeSession = localStorage.getItem("activeAttendanceCourseId");
       if (!cancelled) setActiveAttendanceCourseId(activeSession);
@@ -380,12 +387,10 @@ export default function UserDashboard() {
   async function handleClassAction(courseId: string, isLive: boolean) {
     if (isTrainer) {
       if (isLive) {
-        // End Class logic for Trainer/Admin
         await supabase.from("live_session").update({ active: false, updated_at: new Date().toISOString() }).eq("course_id", courseId);
         await supabase.from("live_presentations").delete().eq("course_id", courseId);
-        fetchLiveClasses(); // Refresh UI
+        fetchLiveClasses();
       } else {
-        // Start Class logic for Trainer/Admin
         await supabase.from("live_session").insert({
           id: crypto.randomUUID(),
           tenant_id: currentUser.tenantId,
@@ -399,9 +404,7 @@ export default function UserDashboard() {
         navigate(`/trainer/live/${courseId}`);
       }
     } else {
-      // ---- Learner ----
       if (activeAttendanceCourseId === courseId) {
-        // EXIT the live classroom (same button)
         const savedUser = JSON.parse(localStorage.getItem("currentUser") || "{}");
         localStorage.removeItem("activeAttendanceCourseId");
         setActiveAttendanceCourseId(null);
@@ -412,7 +415,6 @@ export default function UserDashboard() {
         supabase.from("active_attendances").delete().eq("user_id", savedUser.id).eq("course_id", courseId).then(() => {}, () => {});
         supabase.from("raised_hands").delete().eq("user_id", savedUser.id).eq("course_id", courseId).then(() => {}, () => {});
       } else if (isLive) {
-        // ENTER the live classroom
         localStorage.setItem("activeAttendanceCourseId", courseId);
         setActiveAttendanceCourseId(courseId);
         navigate(`/user/classroom/${courseId}`);
@@ -447,27 +449,24 @@ export default function UserDashboard() {
     border: `1px solid ${C.separator}`,
   };
 
-  const fileChipStyle: React.CSSProperties = {
-    display: "inline-flex",
-    alignItems: "center",
-    gap: "5px",
-    background: C.bg,
-    border: `1px solid ${C.separator}`,
-    borderRadius: "8px",
-    padding: "4px 8px",
-    fontSize: "12px",
-    fontWeight: "600",
-    color: C.textPrimary,
-    maxWidth: "100%",
-  };
-
   return (
     <div style={{ minHeight: "100vh", background: C.card, fontFamily: FONT, WebkitFontSmoothing: "antialiased", MozOsxFontSmoothing: "grayscale" }}>
       <div style={{ borderBottom: `1px solid ${C.separator}`, padding: "12px 24px", position: "sticky", top: 0, zIndex: 10, width: "100%", boxSizing: "border-box", background: C.card }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, width: "100%" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12, flex: 1, minWidth: 0 }}>
             {business?.logo ? (
-              <img src={business.logo} alt={business.business_name || "Business"} style={{ width: 36, height: 36, borderRadius: 8, objectFit: "cover", flexShrink: 0 }} />
+              <img
+                src={business.logo}
+                alt={business.business_name || "Business"}
+                style={{ width: 36, height: 36, borderRadius: 8, objectFit: "cover", flexShrink: 0 }}
+                // If the remote logo fails offline, swap to the cached base64 copy
+                onError={() => {
+                  const cachedLogo = currentUser?.tenantId ? localStorage.getItem(`cachedBusinessLogo_${currentUser.tenantId}`) : null;
+                  if (cachedLogo && business.logo !== cachedLogo) {
+                    setBusiness((b) => ({ business_name: b?.business_name || null, phone: b?.phone || null, logo: cachedLogo }));
+                  }
+                }}
+              />
             ) : (
               <div style={{ ...TS.h3, width: 36, height: 36, borderRadius: 8, background: C.medBlueBg, color: C.medBlue, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, flexShrink: 0 }}>
                 {(business?.business_name || "B").charAt(0).toUpperCase()}
@@ -484,10 +483,25 @@ export default function UserDashboard() {
             </div>
           </div>
 
-          {/* Profile Chip with Profile Picture */}
+          {/* Profile Chip with Profile Picture (online + offline) */}
           <div style={{ display: "flex", alignItems: "center", gap: 8, background: C.purpleBg, padding: "4px 12px 4px 4px", borderRadius: 20, flexShrink: 0 }}>
             {profilePic && !profilePicError ? (
-              <img src={profilePic} alt="Profile" onError={() => setProfilePicError(true)} style={{ width: 28, height: 28, borderRadius: "50%", objectFit: "cover" }} />
+              <img
+                src={profilePic}
+                alt="Profile"
+                style={{ width: 28, height: 28, borderRadius: "50%", objectFit: "cover" }}
+                // On error (e.g. remote URL while offline) try the cached base64
+                // copy first; only fall back to the initial letter if there is none.
+                onError={() => {
+                  const cached = currentUser?.id ? localStorage.getItem(`cachedAvatar_${currentUser.id}`) : null;
+                  if (cached && profilePic !== cached) {
+                    setProfilePic(cached);
+                    setProfilePicError(false);
+                  } else {
+                    setProfilePicError(true);
+                  }
+                }}
+              />
             ) : (
               <div style={{ width: 28, height: 28, borderRadius: "50%", background: C.card, color: C.purple, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700 }}>
                 {currentUser?.username?.charAt(0).toUpperCase()}
@@ -495,6 +509,25 @@ export default function UserDashboard() {
             )}
             <span style={{ fontSize: 13, fontWeight: 600, color: C.purple, whiteSpace: "nowrap" }}>{currentUser?.username || "User"}</span>
           </div>
+
+          {/* NEW: Forms button with pending-count badge */}
+          <button
+            onClick={() => navigate("/forms")}
+            title="Forms"
+            style={{ position: "relative", display: "flex", alignItems: "center", justifyContent: "center", width: 40, height: 40, borderRadius: 9, background: C.greenBg, border: "none", cursor: "pointer", color: C.green, flexShrink: 0 }}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+              <polyline points="14 2 14 8 20 8" />
+              <line x1="16" y1="13" x2="8" y2="13" />
+              <line x1="16" y1="17" x2="8" y2="17" />
+            </svg>
+            {pendingForms > 0 && (
+              <span style={{ position: "absolute", top: -3, right: -3, minWidth: 16, height: 16, borderRadius: 8, background: C.red, color: "#fff", fontSize: 10, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 4px", border: "1.5px solid #fff", boxSizing: "border-box" }}>
+                {pendingForms}
+              </span>
+            )}
+          </button>
 
           <button onClick={handleLogout} title="Logout" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 40, height: 40, borderRadius: 9, background: C.redBg, border: "none", cursor: "pointer", color: C.red, flexShrink: 0 }}>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></svg>
@@ -529,9 +562,7 @@ export default function UserDashboard() {
             {courses.map((course) => {
               const isLive = (liveCourseIds || []).includes(course.id);
               const isAttendingThis = activeAttendanceCourseId === course.id;
-              const files = courseFiles[course.id] || [];
 
-              // Dynamic Button Styling based on Role and Live Status
               let btnBackground = C.bg;
               let btnColor = C.textTertiary;
               let btnIcon = null;
@@ -551,7 +582,6 @@ export default function UserDashboard() {
                 }
               } else {
                 if (isAttendingThis) {
-                  // Currently in class → tapping leaves
                   btnBackground = C.redBg;
                   btnColor = C.red;
                   btnIcon = (<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>);
@@ -582,24 +612,9 @@ export default function UserDashboard() {
 
                   <div style={{ padding: "20px", borderBottom: `1px solid ${C.separator}`, flex: 1, display: "flex", flexDirection: "column" }}>
                     <h3 style={{ ...TS.h3, margin: "0 0 6px 0" }}>{course.name}</h3>
-
-                    {files.length > 0 ? (
-                      <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", flex: 1, alignContent: "flex-start" }}>
-                        {files.slice(0, 6).map((f) => (
-                          <span key={f.id} style={fileChipStyle}>
-                            <FileIcon fileType={f.fileType} fileName={f.fileName} />
-                            <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{f.fileName}</span>
-                          </span>
-                        ))}
-                        {files.length > 6 && (
-                          <span style={{ ...fileChipStyle, color: C.textTertiary, fontWeight: "500" }}>+{files.length - 6} more</span>
-                        )}
-                      </div>
-                    ) : (
-                      <p style={{ ...TS.bodySm, margin: 0, flex: 1, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
-                        {course.description || "No description provided."}
-                      </p>
-                    )}
+                    <p style={{ ...TS.bodySm, margin: 0, flex: 1, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+                      {course.description || "No description provided."}
+                    </p>
                   </div>
 
                   <div style={{ padding: "16px 12px", display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "12px" }}>

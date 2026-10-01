@@ -13,8 +13,13 @@ import AdminLayout from "./admin/AdminLayout";
 import AdminDashboard from "./admin/AdminDashboard";
 import UserManagement from "./admin/UserManagement";
 import CourseManagement from "./admin/CourseManagement";
-import SMSManagement from "./admin/SMSManagement";
+import SMSManagement from "./admin/SMSManagement"; // file must be SMSManagement.tsx (case matters on Linux builds)
 import Settings from "./admin/Settings";
+
+// FORMS — ADMIN
+import AdminForms from "./admin/AdminForms";
+import AdminFormBuilder from "./admin/AdminFormBuilder";
+import AdminFormSubmissions from "./admin/AdminFormSubmissions";
 
 // TRAINER
 import TrainerDashboard from "./trainer/TrainerDashboard";
@@ -29,6 +34,9 @@ import UserDashboard from "./user/UserDashboard";
 import Classroom from "./user/Classroom";
 import UserAssignments from "./user/UserAssignments";
 import UserAssignmentTaker from "./user/UserAssignmentTaker";
+
+// SHARED FORMS — visible to trainers AND trainees
+import FormFiller, { FormsHome } from "./components/FormFiller";
 
 // COMPONENTS
 import ProfileSettings from "./components/ProfileSettings";
@@ -110,6 +118,19 @@ export default function App() {
         return <>{children}</>;
     }, [currentUser]);
 
+    // Any logged-in role may use shared forms (trainer, trainee, admin)
+    const ProtectedAll = useCallback(({ children }: { children: React.ReactNode }) => {
+        if (!currentUser) return <Navigate to="/login" replace />;
+        return <>{children}</>;
+    }, [currentUser]);
+
+    // Unknown URL — log it so routing bugs are visible, then send the user
+    // to their dashboard (or login) instead of bouncing through /login.
+    const Fallback = useCallback(() => {
+        console.warn("⚠ Unmatched route:", window.location.pathname);
+        return <Navigate to={currentUser ? getDashboardPath(currentUser.role) : "/login"} replace />;
+    }, [currentUser]);
+
     return (
         <DailyProvider>
             <BrowserRouter>
@@ -121,13 +142,21 @@ export default function App() {
                         <Route path="/login" element={currentUser ? <Navigate to={getDashboardPath(currentUser.role)} replace /> : <Startup />} />
                         <Route path="/" element={currentUser ? <Navigate to={getDashboardPath(currentUser.role)} replace /> : <Startup />} />
 
-                        {/* ADMIN */}
+                        {/* ADMIN — main suite: ALL admin pages inside the layout, incl. Forms */}
                         <Route path="/admin" element={<ProtectedAdmin><AdminLayout user={currentUser} /></ProtectedAdmin>}>
                             <Route index element={<AdminDashboard />} />
                             <Route path="users" element={<UserManagement />} />
                             <Route path="courses" element={<CourseManagement />} />
                             <Route path="sms" element={<SMSManagement />} />
                             <Route path="settings" element={<Settings />} />
+
+                            {/* FORMS — inside the layout, like every other admin page.
+                                The ONLY forms routes in this file. */}
+                            <Route path="forms" element={<AdminForms />} />
+                            <Route path="forms/new" element={<AdminFormBuilder />} />
+                            <Route path="forms/:formId/edit" element={<AdminFormBuilder />} />
+                            <Route path="forms/:formId/responses" element={<AdminFormSubmissions />} />
+                            <Route path="forms/:formId/submissions" element={<AdminFormSubmissions />} />
                         </Route>
 
                         {/* TRAINER */}
@@ -146,7 +175,11 @@ export default function App() {
                         <Route path="/user/assignment-taker/:assignmentId" element={<ProtectedUser><UserAssignmentTaker /></ProtectedUser>} />
                         <Route path="/user/classroom/:courseId" element={<ProtectedUser><Classroom /></ProtectedUser>} />
 
-                        <Route path="*" element={<Navigate to="/login" replace />} />
+                        {/* SHARED FORMS — trainers AND trainees (admins too) */}
+                        <Route path="/forms" element={<ProtectedAll><FormsHome /></ProtectedAll>} />
+                        <Route path="/forms/:formId" element={<ProtectedAll><FormFiller /></ProtectedAll>} />
+
+                        <Route path="*" element={<Fallback />} />
                     </Routes>
                 )}
             </BrowserRouter>

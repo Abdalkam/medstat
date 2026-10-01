@@ -1,3 +1,4 @@
+// src/database/userDB.ts
 import { db } from "./db";
 import type { User } from "../types";
 
@@ -31,13 +32,25 @@ export async function adminExists(): Promise<boolean> {
     return !!admin;
 }
 
-export async function loginUser(username: string, password: string): Promise<User | null> {
+export async function loginUser(username: string, password: string, tenantId?: string): Promise<User | null> {
+    // Trim whitespace only — NEVER change the case. Trimming is clearly
+    // unintentional input; case is significant.
+    const entered = username.trim();
+
     const users = await db.users.toArray();
-    const localUser = users.find(u => 
-        (u.username?.toLowerCase() === username.toLowerCase() || u.phone === username) 
+
+    // SECURITY: username matching is CASE-SENSITIVE (exact) —
+    // aDmin ≠ admin ≠ ADMIN ≠ Admin. Phone matching is exact too
+    // (phone numbers carry no case). Password stays exact — never trim it,
+    // since passwords may legitimately contain leading/trailing spaces.
+    const localUser = users.find(u =>
+        (u.username === entered || (u.phone != null && u.phone === entered))
         && u.password === password
+        // SECURITY: when the caller knows the tenant, scope the match so the
+        // same username in two institutions can never cross-login offline.
+        // (Defensive: accept both camelCase and snake_case storage.)
+        && (!tenantId || (u as any).tenantId === tenantId || (u as any).tenant_id === tenantId)
     );
-    
-    if (localUser) return localUser;
-    return null;
+
+    return localUser || null;
 }
