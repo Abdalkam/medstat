@@ -2,7 +2,6 @@ param(
     [string]$Message = "auto-release $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 )
 
- $ErrorActionPreference = "Stop"
 Set-Location (Split-Path -Parent $MyInvocation.MyCommand.Path)
 
 Write-Host ""
@@ -13,16 +12,16 @@ Write-Host ""
 
 # ── 1. Git ──
 Write-Host "[1/3] Git sync..." -ForegroundColor Yellow
- $dirty = git status --porcelain 2>&1 | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }
+ $dirty = cmd /c "git status --porcelain"
 if (-not $dirty) {
     Write-Host "  Nothing to commit." -ForegroundColor Green
 } else {
-    git add -A
-    git commit -m $Message
-    git push origin main 2>&1 | Out-Null
+    cmd /c "git add -A"
+    cmd /c "git commit -m `"$Message`""
+    cmd /c "git push origin main"
     Write-Host "  Committed & pushed." -ForegroundColor Green
 }
-git pull origin main --rebase 2>&1 | Out-Null
+cmd /c "git pull origin main --rebase"
 
 # ── 2. Build frontend ──
 Write-Host "[2/3] Building frontend..." -ForegroundColor Yellow
