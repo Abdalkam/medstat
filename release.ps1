@@ -6,28 +6,28 @@ Set-Location (Split-Path -Parent $MyInvocation.MyCommand.Path)
 
 # ── Auto-bump version ──
  $confPath = "src-tauri\tauri.conf.json"
- $confRaw = Get-Content $confPath -Raw
+ $confRaw = [System.IO.File]::ReadAllText((Resolve-Path $confPath))
 if ($confRaw -match '"version"\s*:\s*"(\d+\.\d+\.\d+)"') {
     $currentVersion = $Matches[1]
     $parts = $currentVersion.Split(".")
     $parts[2] = [int]$parts[2] + 1
     $newVersion = $parts -join "."
     $confRaw = $confRaw -replace "(?<=`"version`"\s*:\s*`")\d+\.\d+\.\d+", $newVersion
-    Set-Content $confPath -Value $confRaw -NoNewline -Encoding UTF8
+    [System.IO.File]::WriteAllText((Resolve-Path $confPath), $confRaw)
 } else {
     Write-Host "Could not find version in tauri.conf.json" -ForegroundColor Red
     exit 1
 }
 
  $pkgPath = "package.json"
- $pkgRaw = Get-Content $pkgPath -Raw
+ $pkgRaw = [System.IO.File]::ReadAllText((Resolve-Path $pkgPath))
  $pkgRaw = $pkgRaw -replace "(?<=`"version`"\s*:\s*`")\d+\.\d+\.\d+", $newVersion
-Set-Content $pkgPath -Value $pkgRaw -NoNewline -Encoding UTF8
+[System.IO.File]::WriteAllText((Resolve-Path $pkgPath), $pkgRaw)
 
  $cargoPath = "src-tauri\Cargo.toml"
- $cargoRaw = Get-Content $cargoPath -Raw
+ $cargoRaw = [System.IO.File]::ReadAllText((Resolve-Path $cargoPath))
  $cargoRaw = $cargoRaw -replace "(?<=version\s*=\s*`")\d+\.\d+\.\d+", $newVersion
-Set-Content $cargoPath -Value $cargoRaw -NoNewline -Encoding UTF8
+[System.IO.File]::WriteAllText((Resolve-Path $cargoPath), $cargoRaw)
 
 if (-not $Message) { $Message = "Release SmartPages v$newVersion" }
 
