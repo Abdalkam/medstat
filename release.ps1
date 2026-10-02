@@ -1,12 +1,40 @@
 param(
-    [string]$Message = "auto-release $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+    [string]$Message = ""
 )
 
 Set-Location (Split-Path -Parent $MyInvocation.MyCommand.Path)
 
+# ── Auto-bump version ──
+ $confPath = "src-tauri\tauri.conf.json"
+ $confRaw = Get-Content $confPath -Raw
+if ($confRaw -match '"version"\s*:\s*"(\d+\.\d+\.\d+)"') {
+    $currentVersion = $Matches[1]
+    $parts = $currentVersion.Split(".")
+    $parts[2] = [int]$parts[2] + 1
+    $newVersion = $parts -join "."
+    $confRaw = $confRaw -replace "(?<=`"version`"\s*:\s*`")\d+\.\d+\.\d+", $newVersion
+    Set-Content $confPath -Value $confRaw -NoNewline -Encoding UTF8
+} else {
+    Write-Host "Could not find version in tauri.conf.json" -ForegroundColor Red
+    exit 1
+}
+
+ $pkgPath = "package.json"
+ $pkgRaw = Get-Content $pkgPath -Raw
+ $pkgRaw = $pkgRaw -replace "(?<=`"version`"\s*:\s*`")\d+\.\d+\.\d+", $newVersion
+Set-Content $pkgPath -Value $pkgRaw -NoNewline -Encoding UTF8
+
+ $cargoPath = "src-tauri\Cargo.toml"
+ $cargoRaw = Get-Content $cargoPath -Raw
+ $cargoRaw = $cargoRaw -replace "(?<=version\s*=\s*`")\d+\.\d+\.\d+", $newVersion
+Set-Content $cargoPath -Value $cargoRaw -NoNewline -Encoding UTF8
+
+if (-not $Message) { $Message = "Release SmartPages v$newVersion" }
+
 Write-Host ""
 Write-Host "======================================" -ForegroundColor Cyan
-Write-Host "  SmartPages RELEASE (Tauri)" -ForegroundColor Cyan
+Write-Host "  SmartPages v$newVersion" -ForegroundColor Cyan
+Write-Host "  (was v$currentVersion)" -ForegroundColor DarkGray
 Write-Host "======================================" -ForegroundColor Cyan
 Write-Host ""
 
@@ -37,12 +65,18 @@ if ($LASTEXITCODE -eq 0) {
         Sort-Object LastWriteTime -Descending | Select-Object -First 1
     Write-Host "  Done." -ForegroundColor Green
     if ($exe) { Write-Host "  EXE: $($exe.FullName)" -ForegroundColor Cyan }
+    Write-Host "  Version: v$newVersion" -ForegroundColor Green
 } else {
     Write-Host "  FAILED." -ForegroundColor Red; exit 1
 }
 
+# ── 4. Git tag ──
+Write-Host "[extra] Tagging v$newVersion..." -ForegroundColor Yellow
+cmd /c "git tag v$newVersion"
+cmd /c "git push origin v$newVersion"
+
 Write-Host ""
 Write-Host "======================================" -ForegroundColor Green
-Write-Host "  RELEASE COMPLETE" -ForegroundColor Green
+Write-Host "  RELEASE COMPLETE  v$newVersion" -ForegroundColor Green
 Write-Host "======================================" -ForegroundColor Green
 Write-Host ""
