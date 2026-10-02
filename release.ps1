@@ -26,7 +26,7 @@ if ($confRaw -match '"version"\s*:\s*"(\d+\.\d+\.\d+)"') {
 
  $cargoPath = "src-tauri\Cargo.toml"
  $cargoRaw = [System.IO.File]::ReadAllText((Resolve-Path $cargoPath))
- $cargoRaw = $cargoRaw -replace "(?<=version\s*=\s*`")\d+\.\d+\.\d+", $newVersion
+ $cargoRaw = $cargoRaw -replace "(?<!rust-)version\s*=\s*`"(\d+\.\d+\.\d+)", "version = `"$newVersion"
 [System.IO.File]::WriteAllText((Resolve-Path $cargoPath), $cargoRaw)
 
 if (-not $Message) { $Message = "Release SmartPages v$newVersion" }

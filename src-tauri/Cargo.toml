@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "1.0.175"
+version = "1.0.176"
 description = "A Tauri App"
 authors = ["you"]
 license = ""
@@ -13,13 +13,13 @@ name = "app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
-tauri-build = { version = "1.0.175", features = [] }
+tauri-build = { version = "1.0.176", features = [] }
 
 [dependencies]
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
-tauri = { version = "1.0.175", features = [] }
+tauri = { version = "1.0.176", features = [] }
 tauri-plugin-log = "2"
 tauri-plugin-process = "2.2.0"
 tauri-plugin-updater = "2.12.0"
