@@ -1,4 +1,9 @@
 // src/auth/supabase.ts
+// FIXED: sbFetch now strips "eq." prefix from filter values (callers were passing
+//   `eq.${value}` but Supabase .eq() adds `eq.` automatically → double `eq.eq.` → 400 errors)
+// FIXED: Added PATCH method support (was missing — soft-deletes and upserts silently failed!)
+// FIXED: Added trainer_id filter support (used by deleteUserFromSupabase)
+
 import { createClient } from "@supabase/supabase-js";
 
 const supabaseUrl = (import.meta.env.VITE_SUPABASE_URL as string).trim();
@@ -7,34 +12,65 @@ const supabaseAnonKey = (import.meta.env.VITE_SUPABASE_ANON_KEY as string).trim(
 export const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
 // ==========================================
-// ORIGINAL SUPABASE FETCH WRAPPER
+// HELPER: Strip "eq." prefix from filter values
+// ==========================================
+// Callers pass values like `eq.${id}` but Supabase .eq() already adds
+// the "eq." operator to the URL. Without stripping, we get "eq.eq.UUID" → 400.
+function stripEq(val: any): any {
+  if (typeof val === "string" && val.startsWith("eq.")) {
+    return val.slice(3);
+  }
+  return val;
+}
+
+// ==========================================
+// SUPABASE FETCH WRAPPER (FIXED)
 // ==========================================
 export async function sbFetch(table: string, options: Record<string, any> = {}) {
+  // --- PATCH method ---
+  if (options.method === "PATCH" && options.body) {
+    let patchQuery = supabase.from(table).update(JSON.parse(options.body));
+    if (options.id) patchQuery = patchQuery.eq("id", stripEq(options.id));
+    if (options.tenant_id) patchQuery = patchQuery.eq("tenant_id", stripEq(options.tenant_id));
+    if (options.course_id) patchQuery = patchQuery.eq("course_id", stripEq(options.course_id));
+    if (options.user_id) patchQuery = patchQuery.eq("user_id", stripEq(options.user_id));
+    if (options.assignment_id) patchQuery = patchQuery.eq("assignment_id", stripEq(options.assignment_id));
+    if (options.trainer_id) patchQuery = patchQuery.eq("trainer_id", stripEq(options.trainer_id));
+
+    const { data, error } = await patchQuery;
+    return { data, error };
+  }
+
+  // --- DELETE method ---
   if (options.method === "DELETE") {
     let deleteQuery = supabase.from(table).delete();
-    if (options.id) deleteQuery = deleteQuery.eq("id", options.id);
-    if (options.tenant_id) deleteQuery = deleteQuery.eq("tenant_id", options.tenant_id);
-    if (options.course_id) deleteQuery = deleteQuery.eq("course_id", options.course_id);
-    if (options.user_id) deleteQuery = deleteQuery.eq("user_id", options.user_id);
-    if (options.assignment_id) deleteQuery = deleteQuery.eq("assignment_id", options.assignment_id);
-    
+    if (options.id) deleteQuery = deleteQuery.eq("id", stripEq(options.id));
+    if (options.tenant_id) deleteQuery = deleteQuery.eq("tenant_id", stripEq(options.tenant_id));
+    if (options.course_id) deleteQuery = deleteQuery.eq("course_id", stripEq(options.course_id));
+    if (options.user_id) deleteQuery = deleteQuery.eq("user_id", stripEq(options.user_id));
+    if (options.assignment_id) deleteQuery = deleteQuery.eq("assignment_id", stripEq(options.assignment_id));
+    if (options.trainer_id) deleteQuery = deleteQuery.eq("trainer_id", stripEq(options.trainer_id));
+
     const { data, error } = await deleteQuery;
     return { data, error };
   }
 
-  let query = supabase.from(table).select(options.select || "*");
-
-  if (options.id) query = query.eq("id", options.id);
-  if (options.tenant_id) query = query.eq("tenant_id", options.tenant_id);
-  if (options.course_id) query = query.eq("course_id", options.course_id);
-  if (options.user_id) query = query.eq("user_id", options.user_id);
-  if (options.assignment_id) query = query.eq("assignment_id", options.assignment_id);
-  if (options.limit) query = query.limit(parseInt(options.limit));
-
+  // --- POST method (insert) ---
   if (options.method === "POST" && options.body) {
     const { data, error } = await supabase.from(table).insert(JSON.parse(options.body)).select();
     return { data, error };
   }
+
+  // --- SELECT method (default) ---
+  let query = supabase.from(table).select(options.select || "*");
+
+  if (options.id) query = query.eq("id", stripEq(options.id));
+  if (options.tenant_id) query = query.eq("tenant_id", stripEq(options.tenant_id));
+  if (options.course_id) query = query.eq("course_id", stripEq(options.course_id));
+  if (options.user_id) query = query.eq("user_id", stripEq(options.user_id));
+  if (options.assignment_id) query = query.eq("assignment_id", stripEq(options.assignment_id));
+  if (options.trainer_id) query = query.eq("trainer_id", stripEq(options.trainer_id));
+  if (options.limit) query = query.limit(parseInt(options.limit));
 
   const { data, error } = await query;
   return { data, error };
@@ -81,7 +117,7 @@ async function apiFetch(path: string) {
 // 1. REALTIME SYNC (Disabled for stability with custom backend)
 // ==========================================
 export function enableSyncHooks() {
-  console.log("📡 Sync hooks enabled (Polling mode).");
+  console.log("Sync hooks enabled (Polling mode).");
 }
 
 // ==========================================
@@ -89,17 +125,17 @@ export function enableSyncHooks() {
 // ==========================================
 export function startPeriodicPull(ms: number = 15000) {
   if (periodicPullInterval) clearInterval(periodicPullInterval);
-  
+
   // Prevent 401 spam by disabling backend polling on the Live Classroom page
   if (window.location.pathname.includes("/trainer/live/")) {
-    console.log("⏱️ Skipping periodic pull on live classroom page.");
+    console.log("Skipping periodic pull on live classroom page.");
     return;
   }
 
-  console.log(`⏱️ Starting periodic pull every ${ms}ms`);
+  console.log(`Starting periodic pull every ${ms}ms`);
   periodicPullInterval = setInterval(async () => {
-    if (!hasValidAuth()) return; 
-    
+    if (!hasValidAuth()) return;
+
     const user = JSON.parse(localStorage.getItem("currentUser") || "{}");
     if (user?.tenantId) {
       await pullAllTenantData(user.tenantId);
@@ -111,7 +147,7 @@ export function stopPeriodicPull() {
   if (periodicPullInterval) {
     clearInterval(periodicPullInterval);
     periodicPullInterval = null;
-    console.log("⏱️ Stopped periodic pull.");
+    console.log("Stopped periodic pull.");
   }
 }
 
@@ -120,17 +156,17 @@ export function stopPeriodicPull() {
 // ==========================================
 export async function pullAllTenantData(tenantId: string) {
   if (!hasValidAuth()) {
-    console.log("⏭️ Skipping pull - not authenticated yet");
+    console.log("Skipping pull - not authenticated yet");
     return;
   }
 
-  console.log("🔄 Pulling all tenant data via backend...");
+  console.log("Pulling all tenant data via backend...");
   try {
-    // ✅ SAFE DYNAMIC IMPORT: Loads db only when needed, preventing blank screen crashes
-    const { db } = await import("../database/db"); 
-    
+    // SAFE DYNAMIC IMPORT: Loads db only when needed, preventing blank screen crashes
+    const { db } = await import("../database/db");
+
     const data = await apiFetch(`/api/sync/pull?tenant_id=${tenantId}`);
-    
+
     if (data.users) {
       for (const u of data.users) await db.users.put(mapUser(u));
     }
@@ -140,9 +176,9 @@ export async function pullAllTenantData(tenantId: string) {
     if (data.enrollments) {
       for (const e of data.enrollments) await db.enrollments.put(mapEnrollment(e));
     }
-    console.log("✅ Tenant data pull complete.");
+    console.log("Tenant data pull complete.");
   } catch (error) {
-    console.error("❌ Pull tenant data failed:", error);
+    console.error("Pull tenant data failed:", error);
   }
 }
 
@@ -151,7 +187,7 @@ export async function pullAllTenantData(tenantId: string) {
 // ==========================================
 export async function pullSettings() {
   if (!hasValidAuth()) {
-    console.log("⏭️ Skipping settings pull - not authenticated yet");
+    console.log("Skipping settings pull - not authenticated yet");
     return null;
   }
 
@@ -159,7 +195,7 @@ export async function pullSettings() {
   const tenantId = user?.tenantId;
 
   if (!tenantId) {
-    console.warn("⚠️ No tenantId found for settings pull");
+    console.warn("No tenantId found for settings pull");
     return null;
   }
 
@@ -167,7 +203,7 @@ export async function pullSettings() {
     const data = await apiFetch(`/api/settings/get?tenant_id=${tenantId}`);
     return data;
   } catch (error) {
-    console.error("❌ Failed to pull settings:", error);
+    console.error("Failed to pull settings:", error);
     return null;
   }
 }
@@ -187,14 +223,14 @@ export async function syncDown() {
 // ==========================================
 export async function syncUp() {
   if (!hasValidAuth()) {
-    console.log("⏭️ Skipping sync up - not authenticated yet");
+    console.log("Skipping sync up - not authenticated yet");
     return;
   }
 
-  console.log("☁️ Starting Sync Up...");
+  console.log("Starting Sync Up...");
   try {
-    // ✅ SAFE DYNAMIC IMPORT
-    const { db } = await import("../database/db"); 
+    // SAFE DYNAMIC IMPORT
+    const { db } = await import("../database/db");
     const localUsers = await db.users.toArray();
     const usersToSync = localUsers.filter((u: any) => !(u as any).synced);
 
@@ -208,9 +244,9 @@ export async function syncUp() {
         console.warn("Push users failed:", res.status);
       }
     }
-    console.log("☁️ Sync Up complete.");
+    console.log("Sync Up complete.");
   } catch (error) {
-    console.error("❌ Sync Up failed:", error);
+    console.error("Sync Up failed:", error);
   }
 }
 

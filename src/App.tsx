@@ -1,3 +1,5 @@
+// src/App.tsx — root router.
+
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { useEffect, useState, useCallback } from "react";
 import { DailyProvider } from "@daily-co/daily-react";
@@ -11,6 +13,7 @@ import AdminLayout from "./admin/AdminLayout";
 
 // ADMIN
 import AdminDashboard from "./admin/AdminDashboard";
+import WalletDashboard from "./admin/WalletDashboard"; // MTN MoMo prepaid wallet (/admin/wallet)
 import UserManagement from "./admin/UserManagement";
 import CourseManagement from "./admin/CourseManagement";
 import SMSManagement from "./admin/SMSManagement"; // file must be SMSManagement.tsx (case matters on Linux builds)
@@ -48,13 +51,22 @@ if (typeof window !== "undefined") {
   window.prompt = (message, _default) => { console.warn("🚨 PROMPT SUPPRESSED (auto-null):", message); return null; };
 }
 
+// Safe JSON parse — never throws, even on corrupted/legacy localStorage
+// entries (same helper AppBar.tsx and Login.tsx use).
+function safeParse<T>(json: string | null, fallback: T): T {
+    try {
+        return json ? (JSON.parse(json) as T) : fallback;
+    } catch {
+        return fallback;
+    }
+}
+
 export default function App() {
     const [isSynced, setIsSynced] = useState(false);
 
-    const [currentUser, setCurrentUser] = useState<any>(() => {
-        const saved = localStorage.getItem("currentUser");
-        return saved ? JSON.parse(saved) : null;
-    });
+    const [currentUser, setCurrentUser] = useState<any>(() =>
+        safeParse<Record<string, any> | null>(localStorage.getItem("currentUser"), null)
+    );
 
     // ✅ SILENT TAURI AUTO-UPDATE (No UI)
     useEffect(() => {
@@ -82,16 +94,26 @@ export default function App() {
 
     useEffect(() => {
         const loadUser = () => {
-            const saved = localStorage.getItem("currentUser");
-            const parsedUser = saved ? JSON.parse(saved) : null;
+            const parsedUser = safeParse<Record<string, any> | null>(localStorage.getItem("currentUser"), null);
             setCurrentUser((prev: any) => {
                 if (prev?.id === parsedUser?.id) return prev;
                 return parsedUser;
             });
         };
         loadUser();
+        // Login.tsx and AppBar.tsx dispatch "userChanged"; other flows dispatch
+        // "authStateChanged". Listen to BOTH so the route guards see the session
+        // the instant it changes — otherwise navigating right after login still
+        // sees a stale (null) user and bounces back to /login. "storage" keeps
+        // login/logout in sync across browser tabs.
+        window.addEventListener("userChanged", loadUser);
         window.addEventListener("authStateChanged", loadUser);
-        return () => window.removeEventListener("authStateChanged", loadUser);
+        window.addEventListener("storage", loadUser);
+        return () => {
+            window.removeEventListener("userChanged", loadUser);
+            window.removeEventListener("authStateChanged", loadUser);
+            window.removeEventListener("storage", loadUser);
+        };
     }, []);
 
     const getDashboardPath = (role: string) => {
@@ -139,6 +161,9 @@ export default function App() {
                     <SyncLoadingScreen onSyncComplete={() => setIsSynced(true)} />
                 ) : (
                     <Routes>
+                        {/* Startup bootstraps auth and renders the updated Login page
+                            (AppBar in login mode — no logo, no avatar). A signed-in
+                            user is bounced straight to their dashboard. */}
                         <Route path="/login" element={currentUser ? <Navigate to={getDashboardPath(currentUser.role)} replace /> : <Startup />} />
                         <Route path="/" element={currentUser ? <Navigate to={getDashboardPath(currentUser.role)} replace /> : <Startup />} />
 
@@ -149,6 +174,9 @@ export default function App() {
                             <Route path="courses" element={<CourseManagement />} />
                             <Route path="sms" element={<SMSManagement />} />
                             <Route path="settings" element={<Settings />} />
+
+                            {/* MTN PREPAID WALLET — MoMo top-ups, balance & transactions */}
+                            <Route path="wallet" element={<WalletDashboard />} />
 
                             {/* FORMS — inside the layout, like every other admin page.
                                 The ONLY forms routes in this file. */}

@@ -1,268 +1,683 @@
-// src/trainer/TrainerAssignments.tsx
-import { useEffect, useState } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import React, { useEffect, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
 import { supabase } from "../auth/supabase";
 
+/* ============================== design tokens ============================= */
+
 const C = {
-  textPrimary: "#1C1C1E", textSecondary: "#3C3C43", textTertiary: "#8E8E93",
-  bg: "#F2F2F7", card: "#FFFFFF", separator: "#E5E5EA", separatorLight: "#F0F0F2",
-  medBlue: "#007AFF", medBlueBg: "#E8F2FF",
-  red: "#FF3B30", redBg: "#FFEFEE", green: "#34C759", greenBg: "#EAF9EE",
-  purple: "#AF52DE", purpleBg: "#F5F0FF", orange: "#FF9F0A", orangeBg: "#FFF6EB",
+  bg: "#F2F2F7",
+  card: "#FFFFFF",
+  text: "#1C1C1E",
+  sub: "#8E8E93",
+  sep: "#E5E5EA",
+  blue: "#007AFF",
+  green: "#34C759",
+  orange: "#FF9F0A",
+  red: "#FF3B30",
+  purple: "#AF52DE",
 };
 
-const FONT = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif";
+const FONT =
+  '-apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
 
 const TS = {
-  h1: { fontSize: 28, fontWeight: 800, letterSpacing: "-0.03em", lineHeight: 1.15, color: C.textPrimary, fontFamily: FONT },
-  h2: { fontSize: 22, fontWeight: 700, letterSpacing: "-0.02em", lineHeight: 1.25, color: C.textPrimary, fontFamily: FONT },
-  h3: { fontSize: 17, fontWeight: 600, letterSpacing: "-0.015em", lineHeight: 1.3, color: C.textPrimary, fontFamily: FONT },
-  body: { fontSize: 16, fontWeight: 400, letterSpacing: "-0.005em", lineHeight: 1.75, color: C.textPrimary, fontFamily: FONT },
-  bodySm: { fontSize: 14, fontWeight: 400, letterSpacing: "-0.005em", lineHeight: 1.5, color: C.textTertiary, fontFamily: FONT },
-  label: { fontSize: 13, fontWeight: 500, letterSpacing: "-0.005em", lineHeight: 1.4, fontFamily: FONT },
-  caption: { fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", lineHeight: 1.2, textTransform: "uppercase" as const, fontFamily: FONT },
-  input: { fontSize: 16, fontWeight: 400, letterSpacing: "-0.005em", lineHeight: 1.5, fontFamily: FONT, color: C.textPrimary },
+  largeTitle: { fontSize: 28, fontWeight: 700, letterSpacing: -0.6 } as React.CSSProperties,
+  headline: { fontSize: 16, fontWeight: 600 } as React.CSSProperties,
+  body: { fontSize: 15, fontWeight: 400 } as React.CSSProperties,
+  caption: { fontSize: 13, fontWeight: 500 } as React.CSSProperties,
+  micro: {
+    fontSize: 11,
+    fontWeight: 700,
+    letterSpacing: 0.8,
+    textTransform: "uppercase" as const,
+  } as React.CSSProperties,
 };
 
+const SHADOW = "0 1px 2px rgba(0,0,0,0.04), 0 12px 32px rgba(0,0,0,0.06)";
+
+/* ================================= types ================================== */
+
 interface AssignmentSummary {
-  id: string; title: string; description: string; created_at: string;
-  submission_count: number; graded_count: number; pending_count: number; draft_count: number;
+  id: string;
+  title: string;
+  description: string;
+  created_at: string;
+  status: string;
+  passmark: number;
 }
-interface BusinessData { business_name: string | null; phone: string | null; logo: string | null; }
+
+interface SubCounts {
+  total: number;
+  graded: number;
+  pending: number;
+}
+
+interface BusinessInfo {
+  name: string;
+  phone: string;
+  logo: string | null;
+}
+
+/* ================================= icons ================================== */
+
+const IconChevronLeft = () => (
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M15 18l-6-6 6-6" />
+  </svg>
+);
+
+const IconLogout = () => (
+  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+    <path d="M16 17l5-5-5-5" />
+    <path d="M21 12H9" />
+  </svg>
+);
+
+const IconPlus = () => (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round">
+    <path d="M12 5v14" />
+    <path d="M5 12h14" />
+  </svg>
+);
+
+const IconDoc = () => (
+  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7z" />
+    <path d="M14 2v5h5" />
+    <path d="M9 13h6" />
+    <path d="M9 17h4" />
+  </svg>
+);
+
+/* ================================ helpers ================================= */
+
+function readLocalBusiness(): BusinessInfo | null {
+  try {
+    const raw = localStorage.getItem("localBusinessSettings");
+    if (!raw) return null;
+    const o = JSON.parse(raw);
+    return {
+      name: o.businessName ?? o.business_name ?? "",
+      phone: o.phone ?? "",
+      logo: o.logo ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function formatDate(iso: string): string {
+  try {
+    return new Date(iso).toLocaleDateString(undefined, {
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+    });
+  } catch {
+    return "";
+  }
+}
+
+/* ================================ components =============================== */
+
+function StatusBadge({ status }: { status: string }) {
+  const s = (status ?? "").trim().toLowerCase();
+  if (!s) return null;
+  const isDraft = s === "draft" || s === "unpublished";
+  const label = s.charAt(0).toUpperCase() + s.slice(1);
+  return (
+    <span
+      style={{
+        fontSize: 11,
+        fontWeight: 700,
+        letterSpacing: 0.4,
+        textTransform: "uppercase",
+        padding: "3px 9px",
+        borderRadius: 999,
+        background: isDraft ? "rgba(142,142,147,0.14)" : "rgba(52,199,89,0.14)",
+        color: isDraft ? "#636366" : "#1E8E4A",
+        whiteSpace: "nowrap",
+      }}
+    >
+      {label}
+    </span>
+  );
+}
+
+function MetaDot({ color, children }: { color: string; children: React.ReactNode }) {
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, ...TS.caption, color: C.sub }}>
+      <span style={{ width: 7, height: 7, borderRadius: 4, background: color, display: "inline-block" }} />
+      {children}
+    </span>
+  );
+}
+
+/* ================================== page =================================== */
+
+const appBar: React.CSSProperties = {
+  position: "sticky",
+  top: 0,
+  zIndex: 50,
+  background: "rgba(255,255,255,0.86)",
+  backdropFilter: "saturate(180%) blur(20px)",
+  WebkitBackdropFilter: "saturate(180%) blur(20px)",
+  borderBottom: `1px solid ${C.sep}`,
+};
+
+const iconBtn: React.CSSProperties = {
+  width: 36,
+  height: 36,
+  borderRadius: 10,
+  border: "none",
+  background: "transparent",
+  color: C.blue,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  cursor: "pointer",
+};
+
+const primaryBtn: React.CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 7,
+  background: C.blue,
+  color: "#fff",
+  border: "none",
+  borderRadius: 12,
+  padding: "10px 16px",
+  fontSize: 14,
+  fontWeight: 600,
+  fontFamily: FONT,
+  cursor: "pointer",
+  boxShadow: "0 4px 14px rgba(0,122,255,0.28)",
+};
+
+const outlineBtn: React.CSSProperties = {
+  background: C.card,
+  color: C.blue,
+  border: `1.5px solid ${C.blue}`,
+  borderRadius: 10,
+  padding: "8px 14px",
+  fontSize: 13,
+  fontWeight: 600,
+  fontFamily: FONT,
+  cursor: "pointer",
+  whiteSpace: "nowrap",
+};
+
+const ghostBtn: React.CSSProperties = {
+  background: C.bg,
+  color: C.text,
+  border: "none",
+  borderRadius: 10,
+  padding: "8px 14px",
+  fontSize: 13,
+  fontWeight: 600,
+  fontFamily: FONT,
+  cursor: "pointer",
+  whiteSpace: "nowrap",
+};
 
 export default function TrainerAssignments() {
-  const { courseId } = useParams<{ courseId: string }>();
   const navigate = useNavigate();
-  const currentUser = JSON.parse(localStorage.getItem("currentUser") || "{}");
-  const [assignments, setAssignments] = useState<AssignmentSummary[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [business, setBusiness] = useState<BusinessData | null>(null);
+  const params = useParams<{ courseId: string }>();
+  const courseId = params.courseId;
 
-  function handleLogout() {
+  const [assignments, setAssignments] = useState<AssignmentSummary[]>([]);
+  const [subCounts, setSubCounts] = useState<Record<string, SubCounts>>({});
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [clearingId, setClearingId] = useState<string | null>(null);
+  const [business, setBusiness] = useState<BusinessInfo>(
+    () => readLocalBusiness() ?? { name: "", phone: "", logo: null }
+  );
+
+  useEffect(() => {
+    const raw = localStorage.getItem("currentUser");
+    if (!raw) {
+      navigate("/");
+      return;
+    }
+    let user: any = null;
+    try {
+      user = JSON.parse(raw);
+    } catch {
+      navigate("/");
+      return;
+    }
+    if (!user?.tenantId || !courseId) {
+      setError("No course selected.");
+      setLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+
+    (async () => {
+      try {
+        // Business settings — local cache first, then refresh from the DB.
+        const { data: bs } = await supabase
+          .from("business_settings")
+          .select("business_name, phone, logo")
+          .eq("tenant_id", user.tenantId)
+          .maybeSingle();
+        if (cancelled) return;
+        if (bs) {
+          const mapped: BusinessInfo = {
+            name: bs.business_name ?? "",
+            phone: bs.phone ?? "",
+            logo: bs.logo ?? null,
+          };
+          setBusiness(mapped);
+          try {
+            localStorage.setItem("localBusinessSettings", JSON.stringify(mapped));
+          } catch {
+            /* ignore quota errors */
+          }
+        }
+
+        const { data: rows, error: aerr } = await supabase
+          .from("assignments")
+          .select("id, title, description, created_at, status, passmark")
+          .eq("course_id", courseId)
+          .eq("tenant_id", user.tenantId)
+          .order("created_at", { ascending: false });
+        if (cancelled) return;
+        if (aerr) {
+          setError(aerr.message);
+          setLoading(false);
+          return;
+        }
+        const list = (rows ?? []) as AssignmentSummary[];
+        setAssignments(list);
+
+        if (list.length > 0) {
+          const ids = list.map((a) => a.id);
+          // Count only this business's responses: match our tenant_id, and
+          // keep older rows that were saved before the column existed
+          // (tenant_id is null). If the column is missing entirely, fall
+          // back to the unfiltered count so numbers never vanish.
+          const tenantScoped = await supabase
+            .from("assignment_submissions")
+            .select("assignment_id, graded_at, grade")
+            .in("assignment_id", ids)
+            .or(`tenant_id.eq.${user.tenantId},tenant_id.is.null`);
+          if (cancelled) return;
+          let subsRows: any[] = [];
+          if (!tenantScoped.error) {
+            subsRows = (tenantScoped.data ?? []) as any[];
+          } else {
+            const plain = await supabase
+              .from("assignment_submissions")
+              .select("assignment_id, graded_at, grade")
+              .in("assignment_id", ids);
+            if (cancelled) return;
+            subsRows = (plain.data ?? []) as any[];
+          }
+          const counts: Record<string, SubCounts> = {};
+          for (const a of list) counts[a.id] = { total: 0, graded: 0, pending: 0 };
+          for (const s of subsRows) {
+            const c = counts[s.assignment_id];
+            if (!c) continue;
+            c.total += 1;
+            if (s.graded_at || s.grade != null) c.graded += 1;
+            else c.pending += 1;
+          }
+          setSubCounts(counts);
+        }
+      } catch (e: any) {
+        if (!cancelled) setError(e?.message ?? "Failed to load modules.");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [courseId, navigate]);
+
+  const handleLogout = () => {
     localStorage.removeItem("currentUser");
     localStorage.removeItem("authToken");
     localStorage.removeItem("adminDeviceId");
     localStorage.removeItem("activeAttendanceCourseId");
     window.dispatchEvent(new Event("authStateChanged"));
     navigate("/");
-  }
+  };
 
-  useEffect(() => {
-    if (!currentUser?.tenantId) return;
-    let cancelled = false;
-    const fetchBusiness = async () => {
-      try {
-        // 1. Load from Local Storage INSTANTLY
-        const localSettings = localStorage.getItem("localBusinessSettings");
-        if (localSettings) {
-          const parsed = JSON.parse(localSettings);
-          setBusiness({ business_name: parsed.businessName || null, phone: parsed.phone || null, logo: parsed.logo || null });
-        }
+  const clearResponses = async (assignmentId: string, title: string) => {
+    const ok = window.confirm(
+      `Delete every response for "${title || "this module"}"?\n\nUse this to remove test submissions. This cannot be undone.`
+    );
+    if (!ok) return;
+    setClearingId(assignmentId);
+    setError(null);
+    try {
+      const { error } = await supabase
+        .from("assignment_submissions")
+        .delete()
+        .eq("assignment_id", assignmentId);
+      if (error) throw error;
+      setSubCounts((prev) => ({
+        ...prev,
+        [assignmentId]: { total: 0, graded: 0, pending: 0 },
+      }));
+    } catch (e: any) {
+      setError(e?.message ?? "Could not clear responses.");
+    } finally {
+      setClearingId(null);
+    }
+  };
 
-        // 2. Try Supabase
-        const { data } = await supabase.from("business_settings").select("business_name, phone, logo").eq("tenant_id", currentUser.tenantId).maybeSingle();
-        if (!cancelled && data) setBusiness(data as BusinessData);
-      } catch (err: unknown) { console.error("Business fetch failed:", err); }
-    };
-    fetchBusiness();
-    return () => { cancelled = true; };
-  }, [currentUser?.tenantId]);
-
-  useEffect(() => {
-    if (!courseId) { setLoading(false); return; }
-    const load = async () => {
-      try {
-        const { data: aList, error: aErr } = await supabase
-          .from("assignments").select("id, title, description, created_at")
-          .eq("course_id", courseId).eq("tenant_id", currentUser.tenantId)
-          .order("created_at", { ascending: false });
-        if (aErr) throw aErr;
-
-        const { data: subs } = await supabase.from("assignment_submissions").select("assignment_id, grade, submitted_at, graded_at");
-        const subCounts: Record<string, { total: number; graded: number; pending: number; draft: number }> = {};
-        (subs || []).forEach((s: any) => {
-          if (!subCounts[s.assignment_id]) subCounts[s.assignment_id] = { total: 0, graded: 0, pending: 0, draft: 0 };
-          subCounts[s.assignment_id].total++;
-          if (s.submitted_at) {
-            if (s.graded_at || s.grade) subCounts[s.assignment_id].graded++;
-            else subCounts[s.assignment_id].pending++;
-          } else {
-            subCounts[s.assignment_id].draft++;
-          }
-        });
-
-        setAssignments((aList || []).map((a: any) => ({
-          id: a.id, title: a.title, description: a.description || "", created_at: a.created_at,
-          submission_count: subCounts[a.id]?.total || 0,
-          graded_count: subCounts[a.id]?.graded || 0,
-          pending_count: subCounts[a.id]?.pending || 0,
-          draft_count: subCounts[a.id]?.draft || 0,
-        })));
-      } catch (err) { console.error("Failed to load modules:", err); }
-      finally { setLoading(false); }
-    };
-    load();
-  }, [courseId, currentUser.tenantId]);
-
-  if (loading) return (
-    <div style={{ minHeight: "100vh", background: C.card, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: FONT, WebkitFontSmoothing: "antialiased" }}>
-      <span style={{ ...TS.body, fontWeight: 500 }}>Loading...</span>
-    </div>
+  const totals = assignments.reduce(
+    (acc, a) => {
+      const c = subCounts[a.id] ?? { total: 0, graded: 0, pending: 0 };
+      acc.subs += c.total;
+      acc.graded += c.graded;
+      acc.pending += c.pending;
+      return acc;
+    },
+    { subs: 0, graded: 0, pending: 0 }
   );
 
-  const totalPending = assignments.reduce((sum, a) => sum + a.pending_count, 0);
+  const firstPendingId =
+    assignments.find((a) => (subCounts[a.id]?.pending ?? 0) > 0)?.id ?? null;
+
+  const logoInitial = (business.name || "B").trim().charAt(0).toUpperCase();
 
   return (
-    <div style={{ minHeight: "100vh", background: C.card, fontFamily: FONT, WebkitFontSmoothing: "antialiased", MozOsxFontSmoothing: "grayscale" }}>
-      {/* SINGLE APP BAR */}
-      <div style={{ borderBottom: `1px solid ${C.separator}`, padding: "12px 24px", position: "sticky", top: 0, zIndex: 10, width: "100%", boxSizing: "border-box", background: C.card }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 12, width: "100%" }}>
-          <button onClick={() => navigate("/trainer")} style={{ background: C.bg, border: `1px solid ${C.separator}`, borderRadius: 10, color: C.medBlue, cursor: "pointer", width: 36, height: 36, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="15 18 9 12 15 6" /></svg>
+    <div style={{ width: "100%", minHeight: "100vh", background: C.bg, fontFamily: FONT, color: C.text }}>
+      {/* ------------------------------- App bar ------------------------------ */}
+      <div style={appBar}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 20px", width: "100%", boxSizing: "border-box" }}>
+          <button style={iconBtn} onClick={() => navigate("/trainer")} title="Back">
+            <IconChevronLeft />
           </button>
-
-          <div style={{ display: "flex", alignItems: "center", gap: 12, flex: 1, minWidth: 0 }}>
-            {business?.logo ? (
-              <img src={business.logo} alt={business.business_name || "Business"} style={{ width: 36, height: 36, borderRadius: 8, objectFit: "cover", flexShrink: 0 }} />
-            ) : (
-              <div style={{ ...TS.h3, width: 36, height: 36, borderRadius: 8, background: C.medBlueBg, color: C.medBlue, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, flexShrink: 0 }}>
-                {(business?.business_name || "B").charAt(0).toUpperCase()}
-              </div>
-            )}
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ ...TS.h3, fontSize: 15, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{business?.business_name || "Business"}</div>
-              {business?.phone && (
-                <a href={`tel:${business.phone}`} style={{ ...TS.label, color: C.medBlue, textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4, marginTop: 2 }}>
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z" /></svg>
-                  {business.phone}
-                </a>
-              )}
+          {business.logo ? (
+            <img src={business.logo} alt="" style={{ width: 38, height: 38, borderRadius: 10, objectFit: "cover" }} />
+          ) : (
+            <div
+              style={{
+                width: 38,
+                height: 38,
+                borderRadius: 10,
+                background: `linear-gradient(135deg, ${C.blue}, #5856D6)`,
+                color: "#fff",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                fontSize: 16,
+                fontWeight: 700,
+                flexShrink: 0,
+              }}
+            >
+              {logoInitial}
             </div>
+          )}
+          <div style={{ minWidth: 0 }}>
+            <div style={{ ...TS.headline, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+              {business.name || "Business"}
+            </div>
+            <div style={{ ...TS.caption, color: C.sub }}>Trainer console</div>
           </div>
-
-          <button onClick={() => navigate(`/trainer/assignment-builder/${courseId}`)} style={{ ...TS.input, padding: "8px 16px", background: C.medBlue, color: "#fff", border: "none", borderRadius: 10, fontWeight: 600, cursor: "pointer", fontSize: 14, display: "flex", alignItems: "center", gap: 7, flexShrink: 0 }}>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
-            New
+          <div style={{ flex: 1 }} />
+          <button
+            style={primaryBtn}
+            onClick={() => navigate(`/trainer/assignment-builder/${courseId}`)}
+          >
+            <IconPlus /> New Module
           </button>
-
-          <button onClick={handleLogout} title="Logout" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 36, height: 36, borderRadius: 9, background: C.redBg, border: "none", cursor: "pointer", color: C.red, flexShrink: 0 }}>
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></svg>
+          <button style={iconBtn} onClick={handleLogout} title="Log out">
+            <IconLogout />
           </button>
         </div>
       </div>
 
-      {/* BODY */}
-      <div style={{ padding: "40px 48px 40px", width: "100%", boxSizing: "border-box" }}>
-        {/* PENDING REVIEW BANNER */}
-        {totalPending > 0 && (
-          <div style={{ background: C.orangeBg, borderRadius: 12, padding: "16px 20px", marginBottom: 24, border: `1px solid ${C.orange}33`, display: "flex", alignItems: "center", gap: 12, width: "100%", boxSizing: "border-box", cursor: "pointer" }}
-            onClick={() => {
-              const firstPending = assignments.find(a => a.pending_count > 0);
-              if (firstPending) navigate(`/trainer/submissions/${firstPending.id}`);
-            }}>
-            <div style={{ width: 40, height: 40, borderRadius: 10, background: C.orange, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5"><path d="M12 6v6l4 2" /><circle cx="12" cy="12" r="10" /></svg>
-            </div>
-            <div style={{ flex: 1 }}>
-              <div style={{ ...TS.h3, fontSize: 15, fontWeight: 700, color: C.textPrimary }}>{totalPending} submission{totalPending > 1 ? "s" : ""} need grading</div>
-              <div style={{ ...TS.bodySm, marginTop: 2 }}>Tap to review and mark now</div>
-            </div>
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={C.orange} strokeWidth="2.5"><polyline points="9 18 15 12 9 6" /></svg>
+      {/* -------------------------------- Body -------------------------------- */}
+      <div style={{ padding: "28px clamp(18px, 4vw, 40px) 80px" }}>
+        <div style={{ ...TS.micro, color: C.sub, marginBottom: 6 }}>Assignments</div>
+        <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", flexWrap: "wrap", gap: 16, marginBottom: 24 }}>
+          <h1 style={{ ...TS.largeTitle, margin: 0 }}>Modules</h1>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            {[
+              { label: "Modules", value: assignments.length, color: C.blue },
+              { label: "Submissions", value: totals.subs, color: C.purple },
+              { label: "To mark", value: totals.pending, color: C.orange },
+            ].map((s) => (
+              <div
+                key={s.label}
+                style={{
+                  background: C.card,
+                  border: `1px solid ${C.sep}`,
+                  borderRadius: 14,
+                  padding: "10px 18px",
+                  boxShadow: SHADOW,
+                  minWidth: 96,
+                }}
+              >
+                <div style={{ fontSize: 22, fontWeight: 700, color: s.color, lineHeight: 1.1 }}>{s.value}</div>
+                <div style={{ ...TS.caption, color: C.sub }}>{s.label}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {error && (
+          <div
+            style={{
+              background: "rgba(255,59,48,0.10)",
+              border: `1px solid rgba(255,59,48,0.35)`,
+              color: C.red,
+              borderRadius: 12,
+              padding: "12px 16px",
+              fontSize: 14,
+              fontWeight: 600,
+              marginBottom: 16,
+            }}
+          >
+            {error}
           </div>
         )}
 
-        {/* EMPTY STATE */}
-        {assignments.length === 0 && (
-          <div style={{ padding: "80px 40px", textAlign: "center", width: "100%", boxSizing: "border-box" }}>
-            <div style={{ width: 72, height: 72, borderRadius: "50%", background: C.medBlueBg, margin: "0 auto 20px", display: "flex", alignItems: "center", justifyContent: "center" }}>
-              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke={C.medBlue} strokeWidth="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /></svg>
-            </div>
-            <h3 style={{ ...TS.h3, fontSize: 20, fontWeight: 700, margin: "0 0 8px" }}>No Modules Yet</h3>
-            <p style={{ ...TS.bodySm, margin: "0 0 32px" }}>Create your first module to get started.</p>
-            <button onClick={() => navigate(`/trainer/assignment-builder/${courseId}`)} style={{ ...TS.input, padding: "14px 36px", background: C.medBlue, color: "#fff", border: "none", borderRadius: 12, fontWeight: 700, fontSize: 16, cursor: "pointer" }}>Create Module</button>
+        {!error && totals.pending > 0 && firstPendingId && (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 12,
+              background: "rgba(255,159,10,0.12)",
+              border: "1px solid rgba(255,159,10,0.35)",
+              borderRadius: 12,
+              padding: "12px 16px",
+              marginBottom: 20,
+              flexWrap: "wrap",
+            }}
+          >
+            <span style={{ width: 8, height: 8, borderRadius: 4, background: C.orange, flexShrink: 0 }} />
+            <span style={{ ...TS.body, color: "#8a5300", fontWeight: 600, flex: 1, minWidth: 200 }}>
+              {totals.pending} submission{totals.pending === 1 ? "" : "s"} waiting for grading
+            </span>
+            <button
+              style={{ ...primaryBtn, boxShadow: "none", padding: "8px 14px", fontSize: 13 }}
+              onClick={() => navigate(`/trainer/submissions/${firstPendingId}`)}
+            >
+              Open marking
+            </button>
           </div>
         )}
 
-        {/* ASSIGNMENT LIST */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 12, width: "100%" }}>
-          {assignments.map((a) => {
-            const allGraded = a.submission_count > 0 && a.pending_count === 0;
-            const hasPending = a.pending_count > 0;
-            const progress = a.submission_count > 0 ? Math.round((a.graded_count / a.submission_count) * 100) : 0;
-
-            return (
-              <div key={a.id} style={{ display: "flex", alignItems: "stretch", gap: 16, width: "100%" }}>
-                {/* Status icon */}
-                <div style={{ ...TS.h2, width: 52, height: 52, borderRadius: 14, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", background: allGraded ? C.greenBg : hasPending ? C.orangeBg : C.purpleBg, color: allGraded ? C.green : hasPending ? C.orange : C.purple, border: `1px solid ${C.separator}` }}>
-                  {allGraded ? (
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" /><polyline points="22 4 12 14.01 9 11.01" /></svg>
-                  ) : hasPending ? (
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10" /><path d="M12 6v6l4 2" /></svg>
-                  ) : (
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /></svg>
-                  )}
-                </div>
-
-                {/* Card */}
-                <div onClick={() => navigate(`/trainer/assignments/${courseId}/${a.id}`)}
-                  style={{ flex: 1, background: C.bg, borderRadius: 12, padding: "18px 24px", cursor: "pointer", border: `1px solid ${hasPending ? C.orange + "33" : allGraded ? C.green + "33" : C.separator}`, minWidth: 0, transition: "border-color 0.2s" }}
-                  onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.borderColor = hasPending ? C.orange + "66" : allGraded ? C.green + "66" : C.medBlue + "33"; }}
-                  onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.borderColor = hasPending ? C.orange + "33" : allGraded ? C.green + "33" : C.separator; }}>
-
-                  {/* Status badges */}
-                  <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
-                    {hasPending && (
-                      <span style={{ ...TS.caption, color: C.orange, background: C.orangeBg, padding: "3px 8px", borderRadius: 6 }}>
-                        {a.pending_count} to grade
-                      </span>
-                    )}
-                    {a.graded_count > 0 && (
-                      <span style={{ ...TS.caption, color: C.green, background: C.greenBg, padding: "3px 8px", borderRadius: 6 }}>
-                        {a.graded_count} graded
-                      </span>
-                    )}
-                    {a.draft_count > 0 && (
-                      <span style={{ ...TS.caption, color: C.textTertiary, background: C.bg, padding: "3px 8px", borderRadius: 6, border: `1px solid ${C.separator}` }}>
-                        {a.draft_count} draft{a.draft_count > 1 ? "s" : ""}
-                      </span>
-                    )}
-                    {a.submission_count === 0 && (
-                      <span style={{ ...TS.caption, color: C.textTertiary, background: C.bg, padding: "3px 8px", borderRadius: 6, border: `1px solid ${C.separator}` }}>
-                        No submissions
-                      </span>
-                    )}
+        {loading ? (
+          <div style={{ padding: "64px 0", textAlign: "center", ...TS.body, color: C.sub }}>
+            Loading modules…
+          </div>
+        ) : assignments.length === 0 ? (
+          /* ------------------------------ Empty state ----------------------------- */
+          <div
+            style={{
+              background: C.card,
+              border: `1px solid ${C.sep}`,
+              borderRadius: 20,
+              boxShadow: SHADOW,
+              padding: "64px 32px",
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              gap: 14,
+              textAlign: "center",
+            }}
+          >
+            <div
+              style={{
+                width: 72,
+                height: 72,
+                borderRadius: 22,
+                background: "rgba(0,122,255,0.10)",
+                color: C.blue,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <IconDoc />
+            </div>
+            <div style={{ ...TS.headline, fontSize: 18 }}>No Modules Yet</div>
+            <div style={{ ...TS.body, color: C.sub, maxWidth: 420 }}>
+              Create your first module for this course. Add slides, media and questions in the
+              assignment builder — trainees unlock each module in order.
+            </div>
+            <button style={{ ...primaryBtn, marginTop: 6 }} onClick={() => navigate(`/trainer/assignment-builder/${courseId}`)}>
+              <IconPlus /> New Module
+            </button>
+          </div>
+        ) : (
+          /* ------------------------------ Module cards ---------------------------- */
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            {assignments.map((a) => {
+              const c = subCounts[a.id] ?? { total: 0, graded: 0, pending: 0 };
+              return (
+                <div
+                  key={a.id}
+                  onClick={() => navigate(`/trainer/assignments/${courseId}/${a.id}`)}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.borderColor = "rgba(0,122,255,0.45)";
+                    e.currentTarget.style.boxShadow = "0 2px 4px rgba(0,0,0,0.05), 0 16px 40px rgba(0,0,0,0.10)";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.borderColor = C.sep;
+                    e.currentTarget.style.boxShadow = SHADOW;
+                  }}
+                  style={{
+                    background: C.card,
+                    border: `1px solid ${C.sep}`,
+                    borderRadius: 16,
+                    boxShadow: SHADOW,
+                    padding: "18px 20px",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 18,
+                    cursor: "pointer",
+                    transition: "box-shadow .18s, border-color .18s",
+                    width: "100%",
+                    boxSizing: "border-box",
+                  }}
+                >
+                  <div
+                    style={{
+                      width: 52,
+                      height: 52,
+                      borderRadius: 14,
+                      background: "rgba(175,82,222,0.12)",
+                      color: C.purple,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      flexShrink: 0,
+                    }}
+                  >
+                    <IconDoc />
                   </div>
 
-                  <h3 style={{ ...TS.h3, margin: "0 0 4px" }}>{a.title}</h3>
-                  <p style={{ ...TS.bodySm, margin: "0 0 12px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{a.description || "No description"}</p>
-
-                  {/* Progress bar */}
-                  {a.submission_count > 0 && (
-                    <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                      <div style={{ flex: 1, height: 4, borderRadius: 2, background: C.separator, overflow: "hidden" }}>
-                        <div style={{ height: "100%", width: `${progress}%`, borderRadius: 2, background: allGraded ? C.green : C.medBlue, transition: "width 0.5s ease-out" }} />
-                      </div>
-                      <span style={{ ...TS.label, fontSize: 12, fontWeight: 600, whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>{a.graded_count}/{a.submission_count} marked</span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                      <span style={{ ...TS.headline, fontSize: 17 }}>{a.title || "Untitled module"}</span>
+                      <StatusBadge status={a.status} />
                     </div>
-                  )}
-                </div>
+                    {a.description && (
+                      <div
+                        style={{
+                          ...TS.body,
+                          color: C.sub,
+                          marginTop: 3,
+                          overflow: "hidden",
+                          display: "-webkit-box",
+                          WebkitLineClamp: 2,
+                          WebkitBoxOrient: "vertical",
+                        }}
+                      >
+                        {a.description}
+                      </div>
+                    )}
+                    <div style={{ display: "flex", gap: 16, marginTop: 9, alignItems: "center", flexWrap: "wrap" }}>
+                      <span style={{ ...TS.caption, color: C.sub }}>{formatDate(a.created_at)}</span>
+                      {c.total > 0 ? (
+                        <>
+                          <MetaDot color={C.purple}>
+                            {c.total} submission{c.total === 1 ? "" : "s"}
+                          </MetaDot>
+                          {c.graded > 0 && <MetaDot color={C.green}>{c.graded} graded</MetaDot>}
+                          {c.pending > 0 && <MetaDot color={C.orange}>{c.pending} to mark</MetaDot>}
+                        </>
+                      ) : (
+                        <MetaDot color="#C7C7CC">No responses yet</MetaDot>
+                      )}
+                    </div>
+                  </div>
 
-                {/* Action buttons */}
-                <div style={{ display: "flex", flexDirection: "column", gap: 6, flexShrink: 0, justifyContent: "center" }}>
-                  {hasPending && (
-                    <button onClick={() => navigate(`/trainer/submissions/${a.id}`)} style={{ ...TS.input, padding: "8px 16px", background: C.orange, color: "#fff", border: "none", borderRadius: 10, fontWeight: 700, cursor: "pointer", fontSize: 12, whiteSpace: "nowrap" }}>
-                      Mark ({a.pending_count})
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", flexShrink: 0 }}>
+                    {c.total > 0 && (
+                      <>
+                        <button
+                          style={{ ...ghostBtn, color: C.red, background: "rgba(255,59,48,0.08)" }}
+                          disabled={clearingId === a.id}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            clearResponses(a.id, a.title);
+                          }}
+                        >
+                          {clearingId === a.id ? "Clearing…" : "Clear"}
+                        </button>
+                        <button
+                          style={outlineBtn}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            navigate(`/trainer/submissions/${a.id}`);
+                          }}
+                        >
+                          Mark{c.pending > 0 ? ` (${c.pending})` : ""}
+                        </button>
+                      </>
+                    )}
+                    <button
+                      style={ghostBtn}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        navigate(`/trainer/assignment-builder/${courseId}/${a.id}`);
+                      }}
+                    >
+                      Edit
                     </button>
-                  )}
-                  {a.submission_count > 0 && !hasPending && (
-                    <button onClick={() => navigate(`/trainer/submissions/${a.id}`)} style={{ ...TS.input, padding: "8px 16px", background: C.greenBg, color: C.green, border: `1px solid ${C.green}22`, borderRadius: 10, fontWeight: 600, cursor: "pointer", fontSize: 12, whiteSpace: "nowrap" }}>View</button>
-                  )}
-                  <button onClick={() => navigate(`/trainer/assignment-builder/${courseId}/${a.id}`)} style={{ ...TS.input, padding: "8px 16px", background: C.bg, color: C.textTertiary, border: `1px solid ${C.separator}`, borderRadius: 10, fontWeight: 600, cursor: "pointer", fontSize: 12, whiteSpace: "nowrap" }}>Edit</button>
+                  </div>
                 </div>
-              </div>
-            );
-          })}
-        </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );

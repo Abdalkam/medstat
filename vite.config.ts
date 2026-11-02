@@ -1,12 +1,18 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
+import dns from 'node:dns'
+
+// Fix: Node 17+ may try IPv6 first, which breaks the dev proxy with
+// "getaddrinfo ENOTFOUND" on some Windows networks. Prefer IPv4.
+dns.setDefaultResultOrder('ipv4first')
 
 export default defineConfig({
+  base: process.env.TAURI_ENV_PLATFORM || process.env.TAURI_PLATFORM ? undefined : "/medstat/",
   plugins: [
     react(),
     VitePWA({
-      disable: true, // <--- ADDED THIS: Stops service worker crashes in Tauri
+      disable: true, // Stops service worker crashes in Tauri
       registerType: 'autoUpdate',
       workbox: {
         runtimeCaching: [

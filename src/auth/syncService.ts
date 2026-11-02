@@ -1,9 +1,23 @@
-// src/auth/syncService.ts
+// src/auth/syncService.ts — v2: tombstone-aware realtime + pull
+// (v1 put Supabase rows straight into Dexie with no tombstone check — a failed
+//  cloud delete meant every realtime event / manual syncDown resurrected the
+//  deleted user)
+
 import { supabase } from "./supabase";
 import { db } from "../database/db";
+import { isDeleted, getDeletedIds } from "../database/deletedIdsTracker";
 import type { RealtimeChannel } from "@supabase/supabase-js";
 
 let activeChannels: RealtimeChannel[] = [];
+
+function getTenantId(): string {
+  try {
+    const user: any = JSON.parse(localStorage.getItem("currentUser") || "{}");
+    return user?.tenantId || "";
+  } catch {
+    return "";
+  }
+}
 
 // ==========================================
 // 1. INSTANT REALTIME SYNC
@@ -15,55 +29,104 @@ export function enableRealtimeSync() {
   setupEnrollmentRealtime();
 }
 
+function realtimeFilter(tenantId: string): { filter: string } | {} {
+  // Scope the channel to the current tenant when we know it — otherwise this
+  // client receives (and stores) rows from every institution on the server.
+  return tenantId ? { filter: `tenant_id=eq.${tenantId}` } : {};
+}
+
 function setupUserRealtime() {
+  const tenantId = getTenantId();
   const channel = supabase
     .channel("users-realtime")
-    .on("postgres_changes", { event: "INSERT", schema: "public", table: "users" }, async (payload: { new: Record<string, unknown> }) => {
-      console.log("📥 Realtime User received:", payload.new);
-      const localData = mapUser(payload.new);
-      await db.users.put(localData);
-      // Trigger UI refresh if needed
-      window.dispatchEvent(new Event("userChanged"));
-    })
+    .on(
+      "postgres_changes",
+      { event: "*", schema: "public", table: "users", ...realtimeFilter(tenantId) },
+      async (payload: any) => {
+        // DELETE — hard delete on the cloud: drop the local row too
+        if (payload.eventType === "DELETE") {
+          const id = payload.old?.id;
+          if (id) await db.users.delete(id);
+          window.dispatchEvent(new Event("userChanged"));
+          return;
+        }
+
+        const row = mapUser(payload.new);
+        if (!row.id) return;
+        if ((payload.new as any)?.deleted_at) return; // soft-deleted remotely
+
+        // ✅ TOMBSTONE CHECK — never re-insert a locally-deleted user.
+        // This is the path that resurrected deleted users in v1.
+        if (await isDeleted("user", row.id)) {
+          console.warn(`[realtime] Skipped tombstoned user ${row.id}`);
+          return;
+        }
+
+        console.log("📥 Realtime User received:", row.id);
+        await db.users.put(row);
+        // Trigger UI refresh if needed
+        window.dispatchEvent(new Event("userChanged"));
+      }
+    )
     .subscribe();
   activeChannels.push(channel);
 }
 
 function setupCourseRealtime() {
+  const tenantId = getTenantId();
   const channel = supabase
     .channel("courses-realtime")
-    .on("postgres_changes", { event: "*", schema: "public", table: "courses" }, async (payload) => {
-      console.log("📥 Realtime Course event:", payload.eventType);
-      
-      if (payload.eventType === "DELETE") {
-        await db.courses.delete((payload as any).old.id);
-      } else {
-        const localData = mapCourse((payload as any).new);
-        await db.courses.put(localData);
+    .on(
+      "postgres_changes",
+      { event: "*", schema: "public", table: "courses", ...realtimeFilter(tenantId) },
+      async (payload: any) => {
+        console.log("📥 Realtime Course event:", payload.eventType);
+
+        if (payload.eventType === "DELETE") {
+          await db.courses.delete(payload.old?.id);
+        } else {
+          const localData = mapCourse(payload.new);
+          // ✅ TOMBSTONE CHECK — same protection as users
+          if (!localData.id || (payload.new as any)?.deleted_at || (await isDeleted("course", localData.id))) {
+            console.warn(`[realtime] Skipped tombstoned course ${localData.id || "?"}`);
+          } else {
+            await db.courses.put(localData);
+          }
+        }
+
+        // Trigger UI refresh for course components
+        window.dispatchEvent(new Event("coursesChanged"));
       }
-      
-      // Trigger UI refresh for course components
-      window.dispatchEvent(new Event("coursesChanged"));
-    })
+    )
     .subscribe();
   activeChannels.push(channel);
 }
 
 function setupEnrollmentRealtime() {
+  const tenantId = getTenantId();
   const channel = supabase
     .channel("enrollments-realtime")
-    .on("postgres_changes", { event: "*", schema: "public", table: "enrollments" }, async (payload) => {
-      console.log("📥 Realtime Enrollment event:", payload.eventType);
-      
-      if (payload.eventType === "DELETE") {
-        await db.enrollments.delete((payload as any).old.id);
-      } else {
-        const localData = mapEnrollment((payload as any).new);
-        await db.enrollments.put(localData);
+    .on(
+      "postgres_changes",
+      { event: "*", schema: "public", table: "enrollments", ...realtimeFilter(tenantId) },
+      async (payload: any) => {
+        console.log("📥 Realtime Enrollment event:", payload.eventType);
+
+        if (payload.eventType === "DELETE") {
+          await db.enrollments.delete(payload.old?.id);
+        } else {
+          const localData = mapEnrollment(payload.new);
+          // ✅ TOMBSTONE CHECK
+          if (!localData.id || (payload.new as any)?.deleted_at || (await isDeleted("enrollment", localData.id))) {
+            console.warn(`[realtime] Skipped tombstoned enrollment ${localData.id || "?"}`);
+          } else {
+            await db.enrollments.put(localData);
+          }
+        }
+
+        window.dispatchEvent(new Event("enrollmentsChanged"));
       }
-      
-      window.dispatchEvent(new Event("enrollmentsChanged"));
-    })
+    )
     .subscribe();
   activeChannels.push(channel);
 }
@@ -79,22 +142,57 @@ export function disableRealtimeSync() {
 export async function syncDown() {
   console.log("🔄 Starting Manual Sync Down...");
   try {
-    const { data: onlineUsers } = await supabase.from("users").select("*");
+    const tenantId = getTenantId();
+
+    // ✅ Load tombstoned IDs once — the pull must never resurrect them
+    const deletedUserIds = new Set(await getDeletedIds("user"));
+    const deletedCourseIds = new Set(await getDeletedIds("course"));
+    const deletedEnrollmentIds = new Set(await getDeletedIds("enrollment"));
+
+    // Users — tombstone + soft-delete filtered, tenant-scoped when known
+    // (v1 pulled every user from every tenant and put them all into Dexie)
+    let usersQuery = supabase.from("users").select("*");
+    if (tenantId) usersQuery = usersQuery.eq("tenant_id", tenantId);
+    const { data: onlineUsers } = await usersQuery;
     if (onlineUsers) {
-      for (const u of onlineUsers) await db.users.put(mapUser(u as unknown as Record<string, unknown>));
-      console.log(`✅ Pulled ${onlineUsers.length} users.`);
+      let pulled = 0;
+      for (const u of onlineUsers as any[]) {
+        if (deletedUserIds.has(u.id)) continue;
+        if (u.deleted_at) continue;
+        await db.users.put(mapUser(u));
+        pulled++;
+      }
+      console.log(`✅ Pulled ${pulled}/${onlineUsers.length} users (tombstoned/deleted skipped).`);
     }
 
-    const { data: onlineCourses } = await supabase.from("courses").select("*");
+    // Courses
+    let coursesQuery = supabase.from("courses").select("*");
+    if (tenantId) coursesQuery = coursesQuery.eq("tenant_id", tenantId);
+    const { data: onlineCourses } = await coursesQuery;
     if (onlineCourses) {
-      for (const c of onlineCourses) await db.courses.put(mapCourse(c as unknown as Record<string, unknown>));
-      console.log(`✅ Pulled ${onlineCourses.length} courses.`);
+      let pulled = 0;
+      for (const c of onlineCourses as any[]) {
+        if (deletedCourseIds.has(c.id)) continue;
+        if (c.deleted_at) continue;
+        await db.courses.put(mapCourse(c));
+        pulled++;
+      }
+      console.log(`✅ Pulled ${pulled}/${onlineCourses.length} courses (tombstoned/deleted skipped).`);
     }
 
-    const { data: onlineEnrollments } = await supabase.from("enrollments").select("*");
+    // Enrollments
+    let enrollmentsQuery = supabase.from("enrollments").select("*");
+    if (tenantId) enrollmentsQuery = enrollmentsQuery.eq("tenant_id", tenantId);
+    const { data: onlineEnrollments } = await enrollmentsQuery;
     if (onlineEnrollments) {
-      for (const e of onlineEnrollments) await db.enrollments.put(mapEnrollment(e as unknown as Record<string, unknown>));
-      console.log(`✅ Pulled ${onlineEnrollments.length} enrollments.`);
+      let pulled = 0;
+      for (const e of onlineEnrollments as any[]) {
+        if (deletedEnrollmentIds.has(e.id)) continue;
+        if (e.deleted_at) continue;
+        await db.enrollments.put(mapEnrollment(e));
+        pulled++;
+      }
+      console.log(`✅ Pulled ${pulled}/${onlineEnrollments.length} enrollments (tombstoned/deleted skipped).`);
     }
 
     window.dispatchEvent(new Event("dataSynced"));
@@ -110,8 +208,12 @@ export async function syncDown() {
 export async function syncUp() {
   console.log("☁️ Starting Sync Up...");
   try {
+    // ✅ Never push a tombstoned row back to the cloud
+    const deletedUserIds = new Set(await getDeletedIds("user"));
+    const deletedCourseIds = new Set(await getDeletedIds("course"));
+
     const localUsers = await db.users.toArray();
-    const usersToSync = localUsers.filter((u) => !(u as any).synced);
+    const usersToSync = localUsers.filter((u) => !(u as any).synced && !deletedUserIds.has(u.id));
 
     for (const user of usersToSync) {
       const userRecord = user as any;
@@ -136,7 +238,7 @@ export async function syncUp() {
     const localCourses = await db.courses.toArray();
     for (const course of localCourses) {
       const courseRecord = course as any;
-      if (!courseRecord.synced) {
+      if (!courseRecord.synced && !deletedCourseIds.has(course.id)) {
         const { error } = await supabase
           .from("courses")
           .upsert(
@@ -182,6 +284,7 @@ function mapUser(u: Record<string, unknown>) {
     role: (u.role as "admin" | "trainer" | "trainee") || "trainee",
     profilePic: (u.profile_pic as string) || "",
     assignedCourses: (u.assigned_courses as string[]) || [],
+    tenantId: (u.tenant_id as string) || "", // preserve tenant on mirrored rows
     createdAt: (u.created_at as string) || new Date().toISOString(),
     synced: true,
   };
@@ -202,6 +305,7 @@ function mapCourse(c: Record<string, unknown>) {
     mediaType: "image" as const,
     mediaName: "course-logo",
     trainerId: (c.trainer_id as string) || "",
+    tenantId: (c.tenant_id as string) || "",
     createdAt: (c.created_at as string) || new Date().toISOString(),
     synced: true,
   };
@@ -213,6 +317,7 @@ function mapEnrollment(e: Record<string, unknown>) {
     userId: (e.user_id as string) || "",
     courseId: (e.course_id as string) || "",
     role: (e.role as "trainer" | "trainee") || "trainee",
+    tenantId: (e.tenant_id as string) || "",
     enrolledAt: (e.enrolled_at as string) || (e.created_at as string) || new Date().toISOString(),
     createdAt: (e.enrolled_at as string) || (e.created_at as string) || new Date().toISOString(),
     synced: true,

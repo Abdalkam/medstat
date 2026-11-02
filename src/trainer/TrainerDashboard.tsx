@@ -4,16 +4,206 @@ import type { Course, BusinessSettings, User } from "../types";
 import { supabase } from "../auth/supabase";
 import { getCourses } from "../database/courseDB";
 
-const C = {
-  textPrimary: "#1C1C1E", textSecondary: "#3C3C43", textTertiary: "#8E8E93",
-  bg: "#F2F2F7", card: "#FFFFFF", separator: "#E5E5EA", separatorLight: "#F0F0F2",
-  medBlue: "#0A84FF", medBlueBg: "#E8F2FF", red: "#FF3B30", redBg: "#FFEFEE",
-  green: "#34C759", greenBg: "#EAF9EE", orange: "#FF9F0A", orangeBg: "#FFF6EB",
-  purple: "#AF52DE", purpleBg: "#F5F0FF", shadow: "0 4px 24px rgba(0,0,0,0.06)", shadowHover: "0 8px 32px rgba(0,0,0,0.1)",
-};
+function initialsOf(name: string | null | undefined, fallback: string): string {
+  const parts = (name || "").trim().split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) return (parts[0].charAt(0) + parts[1].charAt(0)).toUpperCase();
+  return (parts[0]?.slice(0, 2) || fallback).toUpperCase();
+}
 
-// Cache the avatar as a base64 data URL so it renders even fully offline.
-// Same keys as AppBar.tsx / UserDashboard.tsx — all views stay in sync.
+const PRIMARY = "#0B57D0";
+const PRIMARY_HOVER = "#0842A0";
+const PRIMARY_CONTAINER = "#D3E3FD";
+const GREEN_FG = "#146C2E";
+const GREEN_CONTAINER = "#D2EEDA";
+const PURPLE_FG = "#8430CE";
+const PURPLE_CONTAINER = "#E9DDFB";
+const ORANGE_FG = "#965E00";
+const ORANGE_CONTAINER = "#FDEBC8";
+
+const TD_CSS = `
+@import url('https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap');
+
+.td-root { min-height:100vh; min-height:100dvh; width:100%; background:#F0F4F9; color:#1F1F1F;
+  font-family:Roboto,'Google Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;
+  display:flex; flex-direction:column; }
+.td-root *, .td-root *::before, .td-root *::after { box-sizing:border-box; }
+
+.td-bar { position:sticky; top:0; z-index:20; background:#fff; border-bottom:1px solid #DADCE0;
+  box-shadow:0 1px 3px rgba(60,64,67,.06); }
+.td-bar-inner { display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+  padding:10px clamp(12px,3vw,24px); width:100%; }
+.td-brand { display:flex; align-items:center; gap:12px; flex:1 1 220px; min-width:0; }
+.td-logo { width:38px; height:38px; border-radius:10px; object-fit:contain; object-position:center; background:#FFFFFF; padding:3px; box-sizing:border-box; border:1px solid #DADCE0; flex-shrink:0; }
+.td-logo-fallback { display:flex; align-items:center; justify-content:center;
+  background:${PRIMARY_CONTAINER}; color:${PRIMARY}; font-weight:500; font-size:17px; }
+.td-name { margin:0; font-size:16px; font-weight:500; color:#1F1F1F;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.td-phone { font-size:12.5px; color:#444746; text-decoration:none; display:inline-flex;
+  align-items:center; gap:5px; margin-top:1px; white-space:nowrap; }
+.td-phone:hover { color:${PRIMARY}; }
+.td-bar-actions { display:flex; align-items:center; gap:6px; }
+.td-chip { display:flex; align-items:center; gap:8px; background:#F0F4F9; border:1px solid #DADCE0;
+  border-radius:999px; padding:3px 14px 3px 4px; max-width:210px; min-width:0; }
+.td-avatar { width:30px; height:30px; border-radius:50%; background:${PRIMARY}; color:#fff;
+  font-size:13px; font-weight:500; display:flex; align-items:center; justify-content:center;
+  overflow:hidden; flex-shrink:0; }
+.td-avatar img { width:100%; height:100%; object-fit:cover; }
+.td-username { font-size:13px; font-weight:500; color:#1F1F1F; white-space:nowrap;
+  overflow:hidden; text-overflow:ellipsis; }
+.td-iconbtn { position:relative; width:40px; height:40px; border-radius:50%; border:none;
+  background:transparent; color:#444746; display:flex; align-items:center; justify-content:center;
+  cursor:pointer; flex-shrink:0; transition:background .15s ease, color .15s ease; }
+@media (hover:hover){ .td-iconbtn:hover { background:rgba(60,64,67,0.08); color:#1F1F1F; } }
+.td-badge { position:absolute; top:1px; right:1px; min-width:17px; height:17px; border-radius:9px;
+  background:#B3261E; color:#fff; font-size:10px; font-weight:700; display:flex; align-items:center;
+  justify-content:center; padding:0 4px; border:2px solid #fff; box-sizing:content-box; }
+
+.td-body { flex:1; width:100%;
+  padding:clamp(16px,3.5vw,32px) clamp(14px,3.5vw,28px) 72px; }
+.td-heading { display:flex; align-items:center; gap:10px; margin:4px 2px 22px; }
+.td-heading h2 { margin:0; font-size:clamp(20px,2.4vw,24px); font-weight:400; color:#1F1F1F; }
+.td-count { background:#fff; border:1px solid #DADCE0; border-radius:999px; padding:2px 11px;
+  font-size:12px; font-weight:500; color:#444746; white-space:nowrap; }
+
+.td-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(min(310px,100%),1fr));
+  gap:clamp(14px,2vw,22px); }
+.td-card { background:#fff; border-radius:22px; overflow:hidden; display:flex; flex-direction:column;
+  box-shadow:0 1px 2px 0 rgba(60,64,67,.24), 0 1px 3px 1px rgba(60,64,67,.08);
+  transition:box-shadow .2s ease, transform .2s ease; min-width:0; }
+@media (hover:hover){
+  .td-card:hover { box-shadow:0 1px 3px 0 rgba(60,64,67,.30), 0 4px 8px 3px rgba(60,64,67,.15); transform:translateY(-2px); }
+}
+.td-media { position:relative; width:100%; height:clamp(150px,22vw,200px); background:${PRIMARY_CONTAINER}; }
+.td-media img { width:100%; height:100%; object-fit:cover; display:block; }
+.td-media-fallback { width:100%; height:100%; display:flex; align-items:center; justify-content:center;
+  font-size:46px; font-weight:400; color:${PRIMARY};
+  background:linear-gradient(135deg, #E8F0FE, ${PRIMARY_CONTAINER}); }
+.td-media-scrim { position:absolute; left:0; right:0; bottom:0; height:55%;
+  background:linear-gradient(to top, rgba(0,0,0,.40), transparent); pointer-events:none; }
+.td-countpill { position:absolute; top:12px; right:12px; display:flex; align-items:center; gap:6px;
+  background:rgba(255,255,255,.95); color:#1F1F1F; border-radius:999px; padding:5px 12px;
+  font-size:12.5px; font-weight:500; box-shadow:0 1px 2px rgba(60,64,67,.18); }
+.td-cardbody { padding:18px 20px 14px; flex:1; display:flex; flex-direction:column; min-width:0; }
+.td-cardtitle { margin:0 0 7px; font-size:19px; font-weight:500; color:#1F1F1F; }
+.td-carddesc { margin:0; color:#444746; font-size:14px; line-height:1.6; max-width:72ch; display:-webkit-box;
+  -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+.td-schedbtn { align-self:flex-start; margin-top:16px; display:inline-flex; align-items:center; gap:7px;
+  padding:7px 15px; border-radius:999px; border:1px solid #DADCE0; background:#fff; color:#444746;
+  font-size:13px; font-weight:500; cursor:pointer; font-family:inherit;
+  transition:background .15s, border-color .15s; }
+@media (hover:hover){ .td-schedbtn:hover { background:#F0F4F9; border-color:#C4C7C5; } }
+.td-actions { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; padding:14px 16px 16px;
+  border-top:1px solid #E8EAED; }
+.td-tile { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px;
+  padding:12px 6px; border-radius:16px; border:none; cursor:pointer; font-family:inherit;
+  transition:filter .15s ease, transform .1s ease; min-width:0; }
+@media (hover:hover){ .td-tile:hover { filter:brightness(0.95); } }
+.td-tile:active { transform:scale(.97); }
+.td-tile span { font-size:11px; font-weight:500; letter-spacing:.3px; }
+.td-iconbtn:focus-visible, .td-tile:focus-visible, .td-schedbtn:focus-visible,
+.td-close:focus-visible, .td-delbtn:focus-visible, .td-primary:focus-visible {
+  outline:2px solid ${PRIMARY}; outline-offset:2px; }
+
+.td-overlay { position:fixed; inset:0; background:rgba(32,33,36,.5); display:flex;
+  align-items:center; justify-content:center; z-index:1000; padding:20px; }
+.td-dialog { background:#fff; border-radius:28px; width:100%; max-width:560px;
+  max-height:88vh; max-height:88dvh; display:flex; flex-direction:column; overflow:hidden;
+  box-shadow:0 4px 8px 3px rgba(60,64,67,.15), 0 1px 3px rgba(60,64,67,.3); }
+.td-sheet-handle { display:none; }
+.td-dialog-head { padding:18px 14px 14px 24px; display:flex; align-items:flex-start;
+  justify-content:space-between; gap:12px; border-bottom:1px solid #E8EAED; }
+.td-dialog-title { margin:0; font-size:21px; font-weight:400; color:#1F1F1F; }
+.td-dialog-sub { margin:3px 0 0; font-size:13.5px; color:#747775; }
+.td-dialog-body { padding:20px 24px 26px; overflow-y:auto; }
+.td-close { width:36px; height:36px; border-radius:50%; border:none; background:#F0F4F9;
+  color:#444746; display:flex; align-items:center; justify-content:center; cursor:pointer;
+  flex-shrink:0; transition:background .15s; }
+.td-close:hover { background:#E8EAED; }
+
+.td-field { width:100%; padding:12px 14px; border:1px solid #C4C7C5; border-radius:12px;
+  font-size:15px; font-family:inherit; color:#1F1F1F; outline:none; background:#fff;
+  margin-bottom:10px; transition:border-color .15s, box-shadow .15s; }
+.td-field:focus { border-color:${PRIMARY}; box-shadow:inset 0 0 0 1px ${PRIMARY}; }
+.td-field::placeholder { color:#747775; }
+.td-label { font-size:12.5px; font-weight:500; color:#444746; margin:2px 0 6px; display:block; }
+.td-primary { width:100%; padding:13px 20px; border:none; border-radius:999px; background:${PRIMARY};
+  color:#fff; font-size:14.5px; font-weight:500; font-family:inherit; cursor:pointer;
+  margin-top:4px; transition:background .15s, box-shadow .15s; }
+.td-primary:hover { background:${PRIMARY_HOVER}; box-shadow:0 1px 3px 0 rgba(60,64,67,.3); }
+.td-primary:disabled { background:#C4C7C5; color:#fff; cursor:default; box-shadow:none; }
+.td-upcoming { margin:0 0 12px; font-size:12.5px; font-weight:600; letter-spacing:.6px;
+  text-transform:uppercase; color:#747775; }
+
+.td-listitem { display:flex; align-items:center; gap:12px; padding:9px 12px; border-radius:16px;
+  transition:background .12s; }
+@media (hover:hover){ .td-listitem:hover { background:#F0F4F9; } }
+.td-lavatar { width:40px; height:40px; border-radius:50%; background:${PRIMARY_CONTAINER};
+  color:${PRIMARY}; font-weight:500; font-size:15px; display:flex; align-items:center;
+  justify-content:center; overflow:hidden; flex-shrink:0; }
+.td-lavatar img { width:100%; height:100%; object-fit:cover; }
+.td-listmeta { flex:1; min-width:0; }
+.td-listname { font-size:15px; font-weight:500; color:#1F1F1F; white-space:nowrap;
+  overflow:hidden; text-overflow:ellipsis; }
+.td-listsub { font-size:13px; color:#747775; margin-top:1px; white-space:nowrap;
+  overflow:hidden; text-overflow:ellipsis; }
+
+.td-schedrow { display:flex; align-items:center; gap:12px; background:#F0F4F9;
+  border-radius:16px; padding:12px 14px; }
+.td-datesq { width:46px; border-radius:12px; background:#fff; border:1px solid #DADCE0;
+  text-align:center; padding:6px 0 5px; flex-shrink:0; }
+.td-datesq b { display:block; font-size:17px; font-weight:500; color:#1F1F1F; line-height:1.1; }
+.td-datesq span { font-size:10.5px; font-weight:500; color:#747775; text-transform:uppercase;
+  letter-spacing:.4px; }
+.td-delbtn { border:none; background:transparent; color:#B3261E; font-size:13px; font-weight:500;
+  padding:7px 12px; border-radius:999px; cursor:pointer; font-family:inherit; flex-shrink:0;
+  transition:background .15s; }
+.td-delbtn:hover { background:#FCE8E6; }
+
+.td-empty { background:#fff; border-radius:24px; padding:56px 28px; text-align:center;
+  box-shadow:0 1px 2px rgba(60,64,67,.3), 0 1px 3px 1px rgba(60,64,67,.1); }
+.td-emptyicon { width:76px; height:76px; border-radius:50%; background:${PRIMARY_CONTAINER};
+  color:${PRIMARY}; display:flex; align-items:center; justify-content:center; margin:0 auto 18px; }
+.td-emptytitle { margin:0 0 8px; font-size:20px; font-weight:500; color:#1F1F1F; }
+.td-emptysub { margin:0 auto; font-size:14.5px; color:#747775; line-height:1.6; max-width:430px; }
+.td-emptysmall { text-align:center; color:#747775; padding:26px 0; font-size:14px; margin:0; }
+.td-skel { border-radius:20px;
+  background:linear-gradient(100deg,#E7EDF5 40%,#F5F8FC 50%,#E7EDF5 60%);
+  background-size:200% 100%; animation:td-shimmer 1.3s infinite linear; }
+@keyframes td-shimmer { to { background-position:-200% 0; } }
+
+@media (max-width:720px){
+  .td-username, .td-phone { display:none; }
+  .td-chip { padding-right:10px; }
+}
+@media (max-width:640px){
+  .td-overlay { align-items:flex-end; padding:0; }
+  .td-dialog { max-width:100%; border-radius:24px 24px 0 0; max-height:92dvh; }
+  .td-sheet-handle { display:block; width:36px; height:4px; border-radius:2px;
+    background:#DADCE0; margin:10px auto 0; }
+  .td-dialog-head { border-bottom:none; padding-bottom:8px; }
+}
+@media (max-width:360px){
+  .td-actions { grid-template-columns:repeat(2,1fr); }
+}
+@media (max-width:480px){
+  .td-cardbody { padding:16px 16px 12px; }
+  .td-cardtitle { font-size:18px; }
+  .td-actions { padding:10px 12px 12px; gap:6px; }
+}
+@media (min-width:1200px){
+  .td-grid { grid-template-columns:1fr; gap:18px; }
+  .td-card { flex-direction:row; align-items:stretch; border-radius:24px; }
+  .td-card:hover { transform:none;
+    box-shadow:0 1px 2px 0 rgba(60,64,67,.24), 0 6px 16px 4px rgba(60,64,67,.12); }
+  .td-media { width:clamp(250px,24vw,360px); height:auto; min-height:210px; flex-shrink:0; }
+  .td-cardbody { flex:1; min-width:0; justify-content:center; padding:26px 32px; }
+  .td-cardtitle { font-size:21px; }
+  .td-actions { width:clamp(240px,21vw,330px); flex-shrink:0; grid-template-columns:repeat(2,1fr); gap:10px;
+    align-content:center; padding:18px 20px; border-top:none; border-left:1px solid #E8EAED; }
+  .td-skel { height:240px !important; }
+}
+`;
+
 async function cacheAvatarImage(userId: string, url: string) {
   try {
     if (url.startsWith("data:")) {
@@ -26,7 +216,7 @@ async function cacheAvatarImage(userId: string, url: string) {
     const res = await fetch(url, { cache: "force-cache" });
     if (!res.ok) return;
     const blob = await res.blob();
-    if (blob.size > 1_000_000) return; // protect localStorage quota
+    if (blob.size > 1_000_000) return;
 
     const dataUrl = await new Promise<string | null>((resolve) => {
       const reader = new FileReader();
@@ -39,7 +229,7 @@ async function cacheAvatarImage(userId: string, url: string) {
       localStorage.setItem(`cachedAvatar_${userId}`, dataUrl);
       localStorage.setItem(`cachedAvatarUrl_${userId}`, url);
     }
-  } catch { /* offline or quota exceeded — ignore */ }
+  } catch {}
 }
 
 function mapCourseFromSupabase(c: Record<string, unknown>): Course {
@@ -69,7 +259,7 @@ export default function TrainerDashboard() {
   const [newScheduleTitle, setNewScheduleTitle] = useState("");
   const [newScheduleDesc, setNewScheduleDesc] = useState("");
   const [newScheduleDate, setNewScheduleDate] = useState("");
-  // NEW: published forms this trainer hasn't filled yet (drives the app-bar badge)
+
   const [pendingForms, setPendingForms] = useState(0);
 
   useEffect(() => {
@@ -80,11 +270,9 @@ export default function TrainerDashboard() {
       if (!savedUser.id || !savedUser.tenantId) { navigate("/"); return; }
       setCurrentUser(savedUser);
 
-      // 1. Load Settings from Local Storage INSTANTLY
       const localSettings = localStorage.getItem("localBusinessSettings");
       if (localSettings) setSettings(JSON.parse(localSettings));
 
-      // 2. Try Supabase for Settings
       try {
         const { data: s } = await supabase.from("business_settings").select("*").eq("tenant_id", savedUser.tenantId).maybeSingle();
         if (s) {
@@ -97,13 +285,11 @@ export default function TrainerDashboard() {
     loadData();
   }, [navigate]);
 
-  // ---- Trainer avatar for the app bar (offline-first) ----
   useEffect(() => {
     const fetchTrainerAvatar = async () => {
       if (!currentUser?.id) return;
       setProfilePicError(false);
 
-      // 1. Hydrate instantly from cache / localStorage so it renders even offline
       const cached = localStorage.getItem(`cachedAvatar_${currentUser.id}`);
       let cachedProfile: any = null;
       try { cachedProfile = JSON.parse(localStorage.getItem(`cachedProfile_${currentUser.id}`) || "null"); } catch {}
@@ -111,7 +297,6 @@ export default function TrainerDashboard() {
         setProfilePic(cached || cachedProfile?.avatar_url || currentUser.profilePic);
       }
 
-      // 2. Refresh from Supabase + write back to cache
       try {
         const { data } = await supabase.from("profile_settings").select("avatar_url").eq("user_id", currentUser.id).maybeSingle();
         if (data?.avatar_url) {
@@ -120,7 +305,7 @@ export default function TrainerDashboard() {
           cacheAvatarImage(currentUser.id, data.avatar_url);
           return;
         }
-        // Fallback: some accounts keep the pic on the users table
+
         const { data: u } = await supabase.from("users").select("profile_pic").eq("id", currentUser.id).maybeSingle();
         if (u?.profile_pic) {
           setProfilePic(u.profile_pic);
@@ -128,12 +313,11 @@ export default function TrainerDashboard() {
         } else {
           setProfilePic(currentUser.profilePic || null);
         }
-      } catch { /* offline — cached avatar already shown */ }
+      } catch {}
     };
     fetchTrainerAvatar();
   }, [currentUser?.id]);
 
-  // NEW: count published forms the trainer hasn't filled (for the Forms badge)
   useEffect(() => {
     if (!currentUser?.tenantId || !currentUser?.id) return;
     (async () => {
@@ -142,7 +326,7 @@ export default function TrainerDashboard() {
         const { data: subs } = await supabase.from("form_submissions").select("form_id").eq("user_id", currentUser.id);
         const filled = new Set((subs || []).map((s: any) => s.form_id));
         setPendingForms((forms || []).filter((f: any) => !filled.has(f.id)).length);
-      } catch { /* offline — badge just stays hidden */ }
+      } catch {}
     })();
   }, [currentUser?.tenantId, currentUser?.id]);
 
@@ -150,7 +334,6 @@ export default function TrainerDashboard() {
     if (!currentUser?.id || !currentUser?.tenantId) return;
     setLoading(true);
 
-    // 1. Load Local Courses INSTANTLY
     try {
       const allLocalCourses = await getCourses();
       const assignedIds = currentUser.assignedCourses || [];
@@ -158,7 +341,6 @@ export default function TrainerDashboard() {
       setCourses(localCourses);
     } catch (e) { console.error("Local courses fetch failed", e); }
 
-    // 2. Try Supabase for Courses
     try {
       const assigned = currentUser.assignedCourses;
       if (assigned && assigned.length > 0) {
@@ -166,8 +348,7 @@ export default function TrainerDashboard() {
         if (coursesRes) {
           const remoteCourses = coursesRes.map(mapCourseFromSupabase);
           setCourses(remoteCourses);
-          
-          // Fetch Learner Counts
+
           const courseIds = remoteCourses.map((c) => c.id);
           const { data: stats } = await supabase.from("enrollments").select("course_id").in("course_id", courseIds).eq("role", "trainee");
           if (stats) {
@@ -233,102 +414,236 @@ export default function TrainerDashboard() {
   const businessLogo = settings?.logo;
   const phone = settings?.phone || "";
 
-  const iconBtnStyle: React.CSSProperties = { display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "12px 4px", borderRadius: 16, border: "none", cursor: "pointer", transition: "transform 0.15s ease, box-shadow 0.15s ease", WebkitTapHighlightColor: "transparent", gap: 6, minWidth: 0, boxSizing: "border-box" };
-  const modalCloseBtnStyle: React.CSSProperties = { background: C.bg, border: "none", width: 32, height: 32, borderRadius: "50%", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: C.textTertiary, fontSize: 16 };
-
   return (
-    <div style={{ minHeight: "100vh", width: "100%", overflowX: "hidden", background: C.bg, fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif", display: "flex", flexDirection: "column" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 24px", background: "rgba(255,255,255,0.8)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", borderBottom: `1px solid ${C.separator}`, position: "sticky", top: 0, zIndex: 10, flexShrink: 0, flexWrap: "wrap", gap: 8 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 12, flex: 1, minWidth: 200 }}>
-          {businessLogo && <img src={businessLogo} alt="Logo" style={{ width: 36, height: 36, borderRadius: 8, objectFit: "cover" }} />}
-          <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
-            {businessName && <h1 style={{ margin: 0, color: C.textPrimary, fontSize: 17, fontWeight: 700, letterSpacing: "-0.4px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{businessName}</h1>}
-            {phone && <a href={`tel:${phone}`} style={{ fontSize: 13, color: C.textTertiary, textDecoration: "none", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z" /></svg>{phone}</a>}
-          </div>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, background: C.purpleBg, padding: "4px 14px 4px 4px", borderRadius: 20 }}>
-            {profilePic && !profilePicError ? (
-              <img src={profilePic} alt="Trainer" onError={() => setProfilePicError(true)} style={{ width: 28, height: 28, borderRadius: "50%", objectFit: "cover" }} />
-            ) : (
-              <div style={{ width: 28, height: 28, borderRadius: "50%", background: C.card, color: C.purple, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700 }}>{currentUser?.username?.charAt(0).toUpperCase()}</div>
-            )}
-            <span style={{ fontSize: 13, fontWeight: 600, color: C.purple }}>{currentUser?.username}</span>
-          </div>
-          {/* NEW: Forms button with pending-count badge */}
-          <button onClick={() => navigate("/forms")} title="Forms" style={{ position: "relative", display: "flex", alignItems: "center", justifyContent: "center", width: 36, height: 36, borderRadius: 9, background: C.greenBg, border: "none", cursor: "pointer", color: C.green, flexShrink: 0 }}>
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /></svg>
-            {pendingForms > 0 && (
-              <span style={{ position: "absolute", top: -3, right: -3, minWidth: 16, height: 16, borderRadius: 8, background: C.red, color: "#fff", fontSize: 10, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 4px", border: "1.5px solid #fff", boxSizing: "border-box" }}>{pendingForms}</span>
-            )}
-          </button>
-          <button onClick={() => navigate("/trainer/settings")} style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 36, height: 36, borderRadius: 9, background: "rgba(118, 118, 128, 0.12)", border: "none", cursor: "pointer", color: C.textPrimary, transition: "background 0.2s" }} title="Settings"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
-          <button onClick={handleLogout} style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 36, height: 36, borderRadius: 9, background: C.redBg, border: "none", cursor: "pointer", color: C.red, transition: "background 0.2s" }} title="Logout"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></svg></button>
-        </div>
-      </div>
+    <div className="td-root">
+      <style>{TD_CSS}</style>
 
-      <div style={{ flex: 1, padding: "32px 24px", width: "100%", maxWidth: "1200px", margin: "0 auto", boxSizing: "border-box" }}>
-        <h2 style={{ fontSize: 13, color: C.textTertiary, textTransform: "uppercase", fontWeight: 600, letterSpacing: "-0.08px", margin: "0 0 20px 0" }}>My Courses</h2>
-        {loading && <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))", gap: 24 }}><div style={{ background: C.card, borderRadius: 24, height: 300 }} /><div style={{ background: C.card, borderRadius: 24, height: 300 }} /></div>}
-        {!loading && courses.length === 0 && (
-          <div style={{ background: C.card, borderRadius: 24, padding: 48, textAlign: "center", color: C.textTertiary, boxShadow: C.shadow, border: `1px solid ${C.separatorLight}` }}><h3 style={{ margin: "0 0 8px 0", color: C.textPrimary, fontSize: 20, fontWeight: 700 }}>No Courses Assigned</h3><p style={{ margin: 0, fontSize: 15 }}>Your administrator has not assigned any courses to you yet.</p></div>
+      <header className="td-bar">
+        <div className="td-bar-inner">
+          <div className="td-brand">
+            {businessLogo ? (
+              <img className="td-logo" src={businessLogo} alt="Logo" />
+            ) : (
+              <span className="td-logo td-logo-fallback">{(businessName || "M").charAt(0).toUpperCase()}</span>
+            )}
+            <div style={{ minWidth: 0 }}>
+              {businessName && <h1 className="td-name">{businessName}</h1>}
+              {phone && (
+                <a className="td-phone" href={`tel:${phone.replace(/\s+/g, "")}`}>
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z" /></svg>
+                  {phone}
+                </a>
+              )}
+            </div>
+          </div>
+
+          <div className="td-bar-actions">
+            <div className="td-chip" title={currentUser?.username || ""}>
+              <span className="td-avatar">
+                {profilePic && !profilePicError ? (
+                  <img src={profilePic} alt="" onError={() => setProfilePicError(true)} />
+                ) : (
+                  initialsOf(currentUser?.username, "?")
+                )}
+              </span>
+              <span className="td-username">{currentUser?.username}</span>
+            </div>
+
+            <button className="td-iconbtn" onClick={() => navigate("/forms")} title="Forms">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /></svg>
+              {pendingForms > 0 && <span className="td-badge">{pendingForms}</span>}
+            </button>
+            <button className="td-iconbtn" onClick={() => navigate("/trainer/settings")} title="Settings">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>
+            </button>
+            <button className="td-iconbtn" onClick={handleLogout} title="Log out">
+              <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></svg>
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <main className="td-body">
+        <div className="td-heading">
+          <h2>My courses</h2>
+          {!loading && <span className="td-count">{courses.length} assigned</span>}
+        </div>
+
+        {loading && (
+          <div className="td-grid">
+            <div className="td-skel" style={{ height: 340 }} />
+            <div className="td-skel" style={{ height: 340 }} />
+          </div>
         )}
+
+        {!loading && courses.length === 0 && (
+          <div className="td-empty">
+            <div className="td-emptyicon">
+              <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M22 10v6M2 10l10-5 10 5-10 5z" /><path d="M6 12v5c3 3 9 3 12 0v-5" /></svg>
+            </div>
+            <h3 className="td-emptytitle">No courses assigned</h3>
+            <p className="td-emptysub">Your administrator hasn&apos;t assigned any courses to you yet. Once they do, your classes will appear here.</p>
+          </div>
+        )}
+
         {!loading && courses.length > 0 && (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))", gap: 24 }}>
+          <div className="td-grid">
             {courses.map((course) => {
               const learnerCount = courseStats[course.id] || 0;
               return (
-                <div key={course.id} style={{ background: C.card, borderRadius: 24, boxShadow: C.shadow, overflow: "hidden", display: "flex", flexDirection: "column", border: `1px solid ${C.separatorLight}`, transition: "box-shadow 0.3s ease, transform 0.3s ease" }} onMouseEnter={(e) => { e.currentTarget.style.boxShadow = C.shadowHover; e.currentTarget.style.transform = "translateY(-4px)"; }} onMouseLeave={(e) => { e.currentTarget.style.boxShadow = C.shadow; e.currentTarget.style.transform = "none"; }}>
-                  {course.logo && (<div style={{ position: "relative", width: "100%", height: 200 }}><img src={course.logo} alt={course.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} /><div style={{ position: "absolute", bottom: 0, left: 0, width: "100%", height: "60%", background: "linear-gradient(to top, rgba(0,0,0,0.6), transparent)" }} /><div style={{ position: "absolute", top: 16, right: 16, background: "rgba(0,0,0,0.6)", color: "#fff", padding: "6px 14px", borderRadius: 20, fontSize: 13, fontWeight: 600, backdropFilter: "blur(8px)" }}>👥 {learnerCount}</div></div>)}
-                  <div style={{ padding: 24, borderBottom: `1px solid ${C.separatorLight}`, flex: 1, display: "flex", flexDirection: "column" }}>
-                    <h3 style={{ margin: "0 0 8px 0", color: C.textPrimary, fontSize: 20, fontWeight: 700 }}>{course.name}</h3>
-                    <p style={{ margin: 0, color: C.textTertiary, fontSize: 14, lineHeight: 1.5, flex: 1, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{course.description || "No description provided."}</p>
-                    <button onClick={() => setScheduleCourse(course)} style={{ alignSelf: "flex-start", marginTop: 16, background: "none", border: "none", color: C.orange, cursor: "pointer", padding: 0, display: "flex", alignItems: "center", gap: 6, fontSize: 14, fontWeight: 600 }}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>Schedule Session</button>
+                <div className="td-card" key={course.id}>
+                  <div className="td-media">
+                    {course.logo ? (
+                      <img src={course.logo} alt={course.name} loading="lazy" />
+                    ) : (
+                      <div className="td-media-fallback">{(course.name || "C").charAt(0).toUpperCase()}</div>
+                    )}
+                    <div className="td-media-scrim" />
+                    <div className="td-countpill">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
+                      {learnerCount} learner{learnerCount === 1 ? "" : "s"}
+                    </div>
                   </div>
-                  <div style={{ padding: 16, display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8 }}>
-                    <button onClick={() => navigate(`/trainer/live/${course.id}`)} style={{ ...iconBtnStyle, background: C.medBlueBg, color: C.medBlue }}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="23 7 16 12 23 17 23 7"></polygon><rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect></svg><span style={{ fontSize: 11, fontWeight: 600 }}>Live</span></button>
-                    <button onClick={() => navigate(`/trainer/upload/${course.id}`)} style={{ ...iconBtnStyle, background: C.greenBg, color: C.green }}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg><span style={{ fontSize: 11, fontWeight: 600 }}>Upload</span></button>
-                    <button onClick={() => navigate(`/trainer/assignments/${course.id}`)} style={{ ...iconBtnStyle, background: C.purpleBg, color: C.purple }}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line></svg><span style={{ fontSize: 11, fontWeight: 600 }}>Assignments</span></button>
-                    <button onClick={() => openAttendance(course)} style={{ ...iconBtnStyle, background: C.orangeBg, color: C.orange }}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg><span style={{ fontSize: 11, fontWeight: 600 }}>Attendance</span></button>
+
+                  <div className="td-cardbody">
+                    <h3 className="td-cardtitle">{course.name}</h3>
+                    <p className="td-carddesc">{course.description || "No description provided."}</p>
+                    <button className="td-schedbtn" onClick={() => setScheduleCourse(course)}>
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" /></svg>
+                      Schedule session
+                    </button>
+                  </div>
+
+                  <div className="td-actions">
+                    <button className="td-tile" style={{ background: PRIMARY_CONTAINER, color: PRIMARY }} onClick={() => navigate(`/trainer/live/${course.id}`)}>
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="23 7 16 12 23 17 23 7" /><rect x="1" y="5" width="15" height="14" rx="2" ry="2" /></svg>
+                      <span>Live</span>
+                    </button>
+                    <button className="td-tile" style={{ background: GREEN_CONTAINER, color: GREEN_FG }} onClick={() => navigate(`/trainer/upload/${course.id}`)}>
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" /></svg>
+                      <span>Upload</span>
+                    </button>
+                    <button className="td-tile" style={{ background: PURPLE_CONTAINER, color: PURPLE_FG }} onClick={() => navigate(`/trainer/assignments/${course.id}`)}>
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /></svg>
+                      <span>Assignments</span>
+                    </button>
+                    <button className="td-tile" style={{ background: ORANGE_CONTAINER, color: ORANGE_FG }} onClick={() => openAttendance(course)}>
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
+                      <span>Attendance</span>
+                    </button>
                   </div>
                 </div>
               );
             })}
           </div>
         )}
-      </div>
+      </main>
 
       {attendanceCourse && (
-        <div onClick={() => setAttendanceCourse(null)} style={{ position: "fixed", top: 0, left: 0, width: "100%", height: "100%", background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 16, boxSizing: "border-box" }}>
-          <div onClick={(e) => e.stopPropagation()} style={{ background: C.card, borderRadius: 24, width: "100%", maxHeight: "85vh", display: "flex", flexDirection: "column", boxShadow: "0 20px 50px rgba(0,0,0,0.2)" }}>
-            <div style={{ padding: 24, borderBottom: `1px solid ${C.separatorLight}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <div><h2 style={{ margin: "0 0 4px 0", fontSize: 20, fontWeight: 700 }}>{attendanceCourse.name}</h2><p style={{ margin: 0, fontSize: 14, color: C.textTertiary }}>Learners ({assignedLearners.length})</p></div>
-              <button onClick={() => setAttendanceCourse(null)} style={modalCloseBtnStyle}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg></button>
+        <div className="td-overlay" onClick={() => setAttendanceCourse(null)}>
+          <div className="td-dialog" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
+            <div className="td-sheet-handle" />
+            <div className="td-dialog-head">
+              <div style={{ minWidth: 0 }}>
+                <h2 className="td-dialog-title">{attendanceCourse.name}</h2>
+                <p className="td-dialog-sub">
+                  {loadingLearners ? "Loading learners…" : `${assignedLearners.length} learner${assignedLearners.length === 1 ? "" : "s"} enrolled`}
+                </p>
+              </div>
+              <button className="td-close" onClick={() => setAttendanceCourse(null)} title="Close">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+              </button>
             </div>
-            <div style={{ padding: 24, overflowY: "auto" }}>
-              {loadingLearners ? <p style={{ textAlign: "center", color: C.textTertiary }}>Loading...</p> : assignedLearners.length === 0 ? <p style={{ textAlign: "center", color: C.textTertiary }}>No learners enrolled yet.</p> : <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>{assignedLearners.map((learner) => (<div key={learner.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", background: C.bg, borderRadius: 12 }}>{learner.profilePic ? <img src={learner.profilePic} alt="" style={{ width: 36, height: 36, borderRadius: "50%", objectFit: "cover" }} /> : <div style={{ width: 36, height: 36, borderRadius: "50%", background: C.medBlueBg, color: C.medBlue, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 600 }}>{learner.username?.charAt(0).toUpperCase()}</div>}<div style={{ flex: 1 }}><span style={{ fontWeight: 600, color: C.textPrimary, fontSize: 15, display: "block" }}>{learner.username}</span><span style={{ fontSize: 13, color: C.textTertiary }}>{learner.phone || "No phone"}</span></div></div>))}</div>}
+            <div className="td-dialog-body">
+              {loadingLearners ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  <div className="td-skel" style={{ height: 56, borderRadius: 16 }} />
+                  <div className="td-skel" style={{ height: 56, borderRadius: 16 }} />
+                  <div className="td-skel" style={{ height: 56, borderRadius: 16 }} />
+                </div>
+              ) : assignedLearners.length === 0 ? (
+                <p className="td-emptysmall">No learners enrolled yet.</p>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 2, margin: "0 -12px" }}>
+                  {assignedLearners.map((learner) => (
+                    <div className="td-listitem" key={learner.id}>
+                      <span className="td-lavatar">
+                        {learner.profilePic ? <img src={learner.profilePic} alt="" /> : learner.username?.charAt(0).toUpperCase()}
+                      </span>
+                      <div className="td-listmeta">
+                        <div className="td-listname">{learner.username}</div>
+                        <div className="td-listsub">{learner.phone || "No phone"}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         </div>
       )}
 
       {scheduleCourse && (
-        <div onClick={() => setScheduleCourse(null)} style={{ position: "fixed", top: 0, left: 0, width: "100%", height: "100%", background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 16, boxSizing: "border-box" }}>
-          <div onClick={(e) => e.stopPropagation()} style={{ background: C.card, borderRadius: 24, width: "100%", maxHeight: "85vh", display: "flex", flexDirection: "column", boxShadow: "0 20px 50px rgba(0,0,0,0.2)" }}>
-            <div style={{ padding: 24, borderBottom: `1px solid ${C.separatorLight}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <div><h2 style={{ margin: "0 0 4px 0", fontSize: 20, fontWeight: 700 }}>📅 {scheduleCourse.name}</h2><p style={{ margin: 0, fontSize: 14, color: C.textTertiary }}>Create sessions</p></div>
-              <button onClick={() => setScheduleCourse(null)} style={modalCloseBtnStyle}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg></button>
-            </div>
-            <div style={{ padding: 24, overflowY: "auto" }}>
-              <div style={{ background: C.bg, borderRadius: 16, padding: 16, marginBottom: 24 }}>
-                <input type="text" placeholder="Session Title" value={newScheduleTitle} onChange={(e) => setNewScheduleTitle(e.target.value)} style={{ width: "100%", padding: 12, border: `1px solid ${C.separator}`, borderRadius: 10, marginBottom: 8, boxSizing: "border-box", fontFamily: "inherit", fontSize: 15, outline: "none" }} />
-                <textarea placeholder="Description (Optional)" value={newScheduleDesc} onChange={(e) => setNewScheduleDesc(e.target.value)} rows={2} style={{ width: "100%", padding: 12, border: `1px solid ${C.separator}`, borderRadius: 10, marginBottom: 8, resize: "none", boxSizing: "border-box", fontFamily: "inherit", fontSize: 15, outline: "none" }} />
-                <label style={{ fontSize: 13, color: C.textTertiary, fontWeight: 600, display: "block", marginBottom: 4 }}>Date & Time</label>
-                <input type="datetime-local" value={newScheduleDate} onChange={(e) => setNewScheduleDate(e.target.value)} style={{ width: "100%", padding: 12, border: `1px solid ${C.separator}`, borderRadius: 10, marginBottom: 12, boxSizing: "border-box", fontFamily: "inherit", fontSize: 15, outline: "none" }} />
-                <button onClick={handleCreateSchedule} disabled={!newScheduleTitle || !newScheduleDate} style={{ width: "100%", padding: 14, background: C.medBlue, color: "#fff", border: "none", borderRadius: 12, fontWeight: 600, cursor: "pointer", fontSize: 15, opacity: !newScheduleTitle || !newScheduleDate ? 0.5 : 1, transition: "opacity 0.15s ease" }}>Add Session</button>
+        <div className="td-overlay" onClick={() => setScheduleCourse(null)}>
+          <div className="td-dialog" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
+            <div className="td-sheet-handle" />
+            <div className="td-dialog-head">
+              <div style={{ minWidth: 0 }}>
+                <h2 className="td-dialog-title">Schedule sessions</h2>
+                <p className="td-dialog-sub">{scheduleCourse.name}</p>
               </div>
-              <h3 style={{ fontSize: 14, fontWeight: 600, color: C.textTertiary, textTransform: "uppercase", margin: "0 0 12px 0" }}>Upcoming</h3>
-              {schedules.length === 0 ? <p style={{ textAlign: "center", color: C.textTertiary, padding: 20 }}>No sessions scheduled yet.</p> : <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>{schedules.map((sch) => (<div key={sch.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 16px", background: C.bg, borderRadius: 12 }}><div style={{ flex: 1, minWidth: 0 }}><div style={{ fontWeight: 600, color: C.textPrimary, fontSize: 15, marginBottom: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{sch.title}</div>{sch.description && <div style={{ fontSize: 13, color: C.textTertiary, marginBottom: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{sch.description}</div>}<div style={{ fontSize: 13, color: C.textTertiary }}>{new Date(sch.scheduled_at).toLocaleString()}</div></div><button onClick={() => handleDeleteSchedule(sch.id)} style={{ background: C.redBg, border: "none", color: C.red, cursor: "pointer", fontSize: 13, fontWeight: 600, padding: "6px 12px", borderRadius: 8, marginLeft: 12, flexShrink: 0 }}>Delete</button></div>))}</div>}
+              <button className="td-close" onClick={() => setScheduleCourse(null)} title="Close">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+              </button>
+            </div>
+            <div className="td-dialog-body">
+              <div style={{ background: "#F0F4F9", borderRadius: 18, padding: 16, marginBottom: 22 }}>
+                <input
+                  className="td-field" type="text" placeholder="Session title"
+                  value={newScheduleTitle} onChange={(e) => setNewScheduleTitle(e.target.value)}
+                />
+                <textarea
+                  className="td-field" placeholder="Description (optional)" rows={2} style={{ resize: "none" }}
+                  value={newScheduleDesc} onChange={(e) => setNewScheduleDesc(e.target.value)}
+                />
+                <label className="td-label">Date &amp; time</label>
+                <input
+                  className="td-field" type="datetime-local"
+                  value={newScheduleDate} onChange={(e) => setNewScheduleDate(e.target.value)}
+                />
+                <button
+                  className="td-primary" onClick={handleCreateSchedule}
+                  disabled={!newScheduleTitle || !newScheduleDate}
+                >
+                  Add session
+                </button>
+              </div>
+
+              <h3 className="td-upcoming">Upcoming</h3>
+              {schedules.length === 0 ? (
+                <p className="td-emptysmall">No sessions scheduled yet.</p>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {schedules.map((sch) => {
+                    const d = new Date(sch.scheduled_at);
+                    const valid = !isNaN(d.getTime());
+                    return (
+                      <div className="td-schedrow" key={sch.id}>
+                        <div className="td-datesq">
+                          <b>{valid ? d.getDate() : "—"}</b>
+                          <span>{valid ? d.toLocaleString(undefined, { month: "short" }) : ""}</span>
+                        </div>
+                        <div className="td-listmeta">
+                          <div className="td-listname">{sch.title}</div>
+                          {sch.description && <div className="td-listsub">{sch.description}</div>}
+                          <div className="td-listsub">{valid ? d.toLocaleString() : ""}</div>
+                        </div>
+                        <button className="td-delbtn" onClick={() => handleDeleteSchedule(sch.id)}>Delete</button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </div>
         </div>

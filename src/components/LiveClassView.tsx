@@ -7,7 +7,7 @@ interface Props {
 }
 
 export default function LiveClassView({ material, page }: Props) {
-  // Aggressively check for file data. 
+  // Aggressively check for file data.
   // Sometimes it's mapped to file_data, fileUrl, or file_url
   const rawFileData: string = material.file_data || material.fileUrl || (material as any).file_url || "";
   const fileType: string = material.fileType || (material as any).file_type || "";
@@ -41,10 +41,10 @@ export default function LiveClassView({ material, page }: Props) {
         height: "100%",
         overflow: "hidden",
         background: "#FFFFFF",
-        borderRadius: "12px"
+        borderRadius: 0
       }}>
         <iframe
-          src={`${pdfSrc}#page=${page}&zoom=page-fit&view=FitH&toolbar=0&navpanes=0`}
+          src={`${pdfSrc}#page=${page}&zoom=page-width&view=FitH&toolbar=0&navpanes=0`}
           title={material.title || "PDF"}
           style={{
             width: "100%",
@@ -208,10 +208,10 @@ export default function LiveClassView({ material, page }: Props) {
         height: "100%",
         overflow: "hidden",
         background: "#FFFFFF",
-        borderRadius: "12px"
+        borderRadius: 0
       }}>
         <iframe
-          src={`${pdfSrc}#page=${page}&zoom=page-fit&view=FitH&toolbar=0&navpanes=0`}
+          src={`${pdfSrc}#page=${page}&zoom=page-width&view=FitH&toolbar=0&navpanes=0`}
           title={material.title || "PDF"}
           style={{
             width: "100%",

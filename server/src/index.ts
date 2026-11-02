@@ -6,6 +6,7 @@ import dotenv from "dotenv";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 import { createClient } from "@supabase/supabase-js";
+import { randomUUID } from "crypto";
 
 const africastalking = require("africastalking");
 
@@ -64,6 +65,103 @@ function formatPhoneNumber(phone: string): string {
   return cleanPhone;
 }
 
+
+// ==========================================
+// MTN MoMo PREPAID WALLET — CONFIG & HELPERS
+// (Collections API: pulls money FROM the payer's MoMo account INTO the wallet.
+//  Prepaid contract: usage debits the wallet; hard stop at zero.)
+// ==========================================
+const MTN_TARGET_ENV = process.env.MTN_TARGET_ENV || "sandbox";
+const MTN_IS_SANDBOX = MTN_TARGET_ENV === "sandbox";
+const MTN_BASE_URL = MTN_IS_SANDBOX
+  ? "https://sandbox.momodeveloper.mtn.com"
+  : "https://proxy.momoapi.mtn.com";
+const MTN_SUBSCRIPTION_KEY = process.env.MTN_SUBSCRIPTION_KEY || "";
+const MTN_API_USER = process.env.MTN_API_USER || "";
+const MTN_API_KEY = process.env.MTN_API_KEY || "";
+const MTN_CURRENCY = MTN_IS_SANDBOX ? "EUR" : "UGX"; // sandbox is EUR-only
+const MIN_TOPUP_UGX = 1000;
+const MAX_TOPUP_UGX = 10000000;
+
+function momoConfigured(): boolean {
+  return Boolean(MTN_SUBSCRIPTION_KEY && MTN_API_USER && MTN_API_KEY);
+}
+
+let momoTokenCache: { value: string; expiresAt: number } | null = null;
+
+async function getMomoToken(): Promise<string> {
+  if (momoTokenCache && momoTokenCache.expiresAt > Date.now() + 30000) {
+    return momoTokenCache.value;
+  }
+  const basic = Buffer.from(`${MTN_API_USER}:${MTN_API_KEY}`).toString("base64");
+  const res = await fetch(`${MTN_BASE_URL}/collection/token/`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Basic ${basic}`,
+      "X-Reference-Id": MTN_API_USER,
+      "Ocp-Apim-Subscription-Key": MTN_SUBSCRIPTION_KEY,
+    },
+  });
+  if (!res.ok) throw new Error(`MTN token request failed (${res.status}): ${(await res.text()).slice(0, 200)}`);
+  const data: any = await res.json();
+  momoTokenCache = { value: data.access_token, expiresAt: Date.now() + (Number(data.expires_in) || 3600) * 1000 };
+  return momoTokenCache.value;
+}
+
+// MoMo MSISDN: digits only — 0772123456 / +256772123456 -> 256772123456
+function normalizeMsisdn(raw: string): string {
+  let digits = (raw || "").replace(/\D/g, "");
+  if (digits.startsWith("0")) digits = "256" + digits.slice(1);
+  if (!digits.startsWith("256") && digits.length === 9) digits = "256" + digits;
+  return digits;
+}
+
+/** Latest active UGX rate for a tenant + service code (0 = free / unpriced). */
+async function getActiveUnitPrice(tenantId: string, serviceCode: string): Promise<number> {
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const { data: svc } = await supabase
+      .from("billing_services")
+      .select("id")
+      .eq("tenant_id", tenantId)
+      .eq("code", serviceCode)
+      .eq("is_active", true)
+      .maybeSingle();
+    if (!svc) return 0;
+    const { data: rate } = await supabase
+      .from("billing_rates")
+      .select("rate_ugx")
+      .eq("service_id", svc.id)
+      .eq("is_active", true)
+      .lte("valid_from", today)
+      .or(`valid_to.is.null,valid_to.gte.${today}`)
+      .order("valid_from", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    return rate?.rate_ugx ?? 0;
+  } catch (e: any) {
+    console.error("Wallet pricing lookup failed (continuing unpriced):", e?.message);
+    return 0; // pricing lookup must never block business flows
+  }
+}
+
+/** Bill the wallet: fn_record_usage prices the quantity and debits atomically.
+ *  Throws/returns the Postgres error when the balance cannot cover it. */
+async function chargeWalletUsage(tenantId: string, serviceCode: string, quantity: number, description?: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const { error } = await supabase.rpc("fn_record_usage", {
+      p_tenant_id: tenantId,
+      p_service_code: serviceCode,
+      p_quantity: quantity,
+      p_description: description ?? null,
+      p_reference: null,
+    });
+    if (error) return { ok: false, error: error.message };
+    return { ok: true };
+  } catch (e: any) {
+    return { ok: false, error: e?.message || "Wallet charge failed" };
+  }
+}
 // ==========================================
 // MIDDLEWARE
 // ==========================================
@@ -99,7 +197,7 @@ app.post("/api/create-daily-room", async (req: Request, res: Response) => {
       headers: { Authorization: `Bearer ${DAILY_API_KEY}`, "Content-Type": "application/json" },
     });
     if (checkResponse.ok) {
-      const existingRoom = await checkResponse.json();
+      const existingRoom: any = await checkResponse.json();
       return res.status(200).json({ url: existingRoom.url });
     }
     const createResponse = await fetch("https://api.daily.co/v1/rooms", {
@@ -110,7 +208,7 @@ app.post("/api/create-daily-room", async (req: Request, res: Response) => {
         properties: { enable_screenshare: true, enable_chat: true, autojoin: true, exp: Math.floor(Date.now() / 1000) + 60 * 60 * 2 },
       }),
     });
-    const newRoom = await createResponse.json();
+    const newRoom: any = await createResponse.json();
     if (!createResponse.ok) throw new Error(newRoom?.info || "Failed to create room");
     res.status(200).json({ url: newRoom.url });
   } catch (error: any) {
@@ -300,7 +398,15 @@ app.post("/api/auth/login", async (req: Request, res: Response) => {
 
   const { data: user } = await supabase.from("users").select("*").eq("tenant_id", finalTenantId).eq("username", username).single();
   if (!user) return res.status(401).json({ error: "Invalid credentials" });
-  if (!(await bcrypt.compare(password, user.password))) return res.status(401).json({ error: "Invalid credentials" });
+  // bcrypt for hashed passwords, plus a legacy fallback for rows that are
+  // still plaintext (bcrypt.compare always fails on those). Hash them with the
+  // README's one-time SQL so this fallback can eventually be removed.
+  const typed = String(password ?? "");
+  const stored = String(user.password ?? "");
+  const passwordOk =
+    stored === typed || // legacy plaintext rows ("0987", "1234", …)
+    (/^\$2[abxy]\$/.test(stored) && (await bcrypt.compare(typed, stored)));
+  if (!passwordOk) return res.status(401).json({ error: "Invalid credentials" });
 
   const authToken = jwt.sign({ userId: user.id, tenantId: user.tenant_id, role: user.role }, JWT_SECRET, { expiresIn: "7d" });
   res.json({
@@ -336,6 +442,23 @@ app.post("/api/sms/send", requireAuth, async (req: Request, res: Response) => {
   try {
     // Format all phone numbers
     const formattedRecipients = recipients.map((p: string) => formatPhoneNumber(p));
+
+    // ===== PREPAID GATE — block sending when the wallet can't cover it =====
+    const unitPrice = await getActiveUnitPrice(_auth.tenantId, "sms");
+    if (unitPrice > 0) {
+      const { data: walletRow } = await supabase
+        .from("wallets")
+        .select("balance_ugx")
+        .eq("tenant_id", _auth.tenantId)
+        .maybeSingle();
+      const balance = walletRow?.balance_ugx ?? 0;
+      const estimatedCost = formattedRecipients.length * unitPrice;
+      if (balance < estimatedCost) {
+        return res.status(402).json({
+          error: `Insufficient wallet balance: UGX ${balance.toLocaleString("en-US")} available, UGX ${estimatedCost.toLocaleString("en-US")} needed for ${formattedRecipients.length} SMS. Load money via MTN MoMo in the Wallet dashboard.`,
+        });
+      }
+    }
     
     let finalLogs: Array<{ phone: string; status: string }> = [];
     let numbersToRetry: string[] = [];
@@ -389,12 +512,22 @@ app.post("/api/sms/send", requireAuth, async (req: Request, res: Response) => {
       }
     }
 
+
+    // ---------------------------------------------------------
+    // PREPAID CHARGE — bill the wallet for delivered SMS (till zero)
+    // ---------------------------------------------------------
+    const delivered = finalLogs.filter((log) => log.status === "Success").length;
+    if (delivered > 0 && unitPrice > 0) {
+      const charge = await chargeWalletUsage(_auth.tenantId, "sms", delivered, `Bulk SMS — ${delivered} delivered`);
+      if (!charge.ok) console.error("Wallet charge failed for SMS send:", charge.error);
+    }
+
     // ---------------------------------------------------------
     // SAVE LOGS TO SUPABASE
     // ---------------------------------------------------------
     const logsToInsert = finalLogs.map((log) => {
       return {
-        id: crypto.randomUUID(),
+        id: randomUUID(),
         tenant_id: _auth.tenantId,
         phone: log.phone,
         message: message,
@@ -428,6 +561,233 @@ app.post("/api/sms/send", requireAuth, async (req: Request, res: Response) => {
   }
 });
 
+
+// ==========================================
+// PREPAID WALLET — MTN MoMo TOP-UP & LEDGER (ADMIN)
+// ==========================================
+
+// Public (no auth): lets the UI show sandbox banners / setup warnings
+app.get("/api/wallet/config", (req: Request, res: Response) => {
+  res.json({ environment: MTN_TARGET_ENV, currency: MTN_CURRENCY, configured: momoConfigured() });
+});
+
+app.get("/api/wallet/balance", requireAuth, async (req: Request, res: Response) => {
+  const { _auth } = req.body;
+  try {
+    const { data, error } = await supabase.from("wallets").select("*").eq("tenant_id", _auth.tenantId).maybeSingle();
+    if (error) return res.status(400).json({ error: error.message });
+    if (!data) return res.status(404).json({ error: "Wallet not initialized — run the prepaid wallet migration." });
+    res.json({ wallet: data });
+  } catch (error: any) { res.status(500).json({ error: error.message }); }
+});
+
+app.get("/api/wallet/transactions", requireAuth, async (req: Request, res: Response) => {
+  const { _auth } = req.body;
+  const limit = Math.min(Number(req.query.limit) || 60, 200);
+  try {
+    const { data, error } = await supabase
+      .from("wallet_transactions")
+      .select("*")
+      .eq("tenant_id", _auth.tenantId)
+      .order("created_at", { ascending: false })
+      .limit(limit);
+    if (error) return res.status(400).json({ error: error.message });
+    res.json({ transactions: data || [] });
+  } catch (error: any) { res.status(500).json({ error: error.message }); }
+});
+
+app.get("/api/wallet/usage", requireAuth, async (req: Request, res: Response) => {
+  const { _auth } = req.body;
+  const limit = Math.min(Number(req.query.limit) || 25, 100);
+  try {
+    const { data, error } = await supabase
+      .from("usage_records")
+      .select("*, service:billing_services(name, unit_label)")
+      .eq("tenant_id", _auth.tenantId)
+      .order("created_at", { ascending: false })
+      .limit(limit);
+    if (error) return res.status(400).json({ error: error.message });
+    res.json({ usage: data || [] });
+  } catch (error: any) { res.status(500).json({ error: error.message }); }
+});
+
+app.get("/api/wallet/services", requireAuth, async (req: Request, res: Response) => {
+  const { _auth } = req.body;
+  try {
+    const { data, error } = await supabase
+      .from("billing_services")
+      .select("*, rates:billing_rates(rate_ugx, valid_from, valid_to, is_active)")
+      .eq("tenant_id", _auth.tenantId)
+      .eq("is_active", true)
+      .order("name", { ascending: true });
+    if (error) return res.status(400).json({ error: error.message });
+    res.json({ services: data || [] });
+  } catch (error: any) { res.status(500).json({ error: error.message }); }
+});
+
+// Record usage manually (custom services) — bills the wallet, stops at zero
+app.post("/api/wallet/usage", requireAuth, async (req: Request, res: Response) => {
+  const { _auth } = req.body;
+  const { serviceCode, quantity, description, reference } = req.body;
+  if (!serviceCode || !quantity || Number(quantity) <= 0) {
+    return res.status(400).json({ error: "serviceCode and a positive quantity are required" });
+  }
+  const result = await chargeWalletUsage(_auth.tenantId, String(serviceCode), Number(quantity), description ? String(description) : undefined);
+  if (!result.ok) {
+    const insufficient = (result.error || "").includes("INSUFFICIENT_FUNDS");
+    return res.status(insufficient ? 402 : 400).json({ error: result.error });
+  }
+  res.json({ success: true });
+});
+
+// Start a top-up: MTN prompts the admin's phone; wallet credited on approval
+app.post("/api/wallet/topup", requireAuth, async (req: Request, res: Response) => {
+  const { _auth } = req.body;
+  if (_auth.role !== "admin") return res.status(403).json({ error: "Only admins can load the wallet." });
+  if (!momoConfigured()) {
+    return res.status(500).json({ error: "MTN MoMo is not configured on the server (missing MTN_* environment variables)." });
+  }
+
+  const amount = Math.round(Number(req.body?.amount));
+  const msisdn = normalizeMsisdn(String(req.body?.msisdn ?? ""));
+  const description = String(req.body?.description ?? "Wallet top-up").slice(0, 120);
+
+  if (!Number.isFinite(amount) || amount < MIN_TOPUP_UGX) {
+    return res.status(400).json({ error: `Minimum top-up is UGX ${MIN_TOPUP_UGX.toLocaleString("en-US")}.` });
+  }
+  if (amount > MAX_TOPUP_UGX) {
+    return res.status(400).json({ error: `Maximum single top-up is UGX ${MAX_TOPUP_UGX.toLocaleString("en-US")}.` });
+  }
+  // Production: strictly MTN Uganda mobile numbers. Sandbox: lenient (MTN's
+  // documented test payer, e.g. 46733123450, is not a Ugandan number).
+  if (MTN_IS_SANDBOX) {
+    if (msisdn.length < 8) return res.status(400).json({ error: "Enter a valid payer phone number." });
+  } else if (!/^2567\d{8}$/.test(msisdn)) {
+    return res.status(400).json({ error: "Enter a valid MTN Uganda number, e.g. 0772123456." });
+  }
+
+  const referenceId = randomUUID();
+
+  // 1. Record the pending top-up in the ledger first
+  const { data: tx, error: txError } = await supabase
+    .from("wallet_transactions")
+    .insert([{
+      tenant_id: _auth.tenantId,
+      direction: "credit",
+      tx_type: "topup",
+      amount_ugx: amount,
+      status: "pending",
+      provider: "mtn_momo",
+      external_reference: referenceId,
+      payer_msisdn: msisdn,
+      description,
+    }])
+    .select()
+    .single();
+  if (txError) return res.status(400).json({ error: txError.message });
+
+  // 2. Ask MTN to prompt the payer (Collections request-to-pay)
+  try {
+    const token = await getMomoToken();
+    const momoRes = await fetch(`${MTN_BASE_URL}/collection/v1_0/requesttopay`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        "X-Reference-Id": referenceId, // becomes the status key
+        "X-Target-Environment": MTN_TARGET_ENV,
+        "Ocp-Apim-Subscription-Key": MTN_SUBSCRIPTION_KEY,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        amount: String(amount), // sandbox: EUR, prod: UGX
+        currency: MTN_CURRENCY,
+        externalId: String(tx.id),
+        payer: { partyIdType: "MSISDN", partyId: msisdn },
+        payerMessage: description,
+        payeeNote: "Prepaid wallet top-up",
+      }),
+    });
+
+    if (momoRes.status !== 202) {
+      const detail = (await momoRes.text()).slice(0, 200);
+      await supabase.from("wallet_transactions")
+        .update({ status: "failed", completed_at: new Date().toISOString(), description: `${description} — rejected by MTN: ${detail}` })
+        .eq("id", tx.id);
+      return res.status(502).json({ error: `MTN rejected the request (${momoRes.status}). ${detail}` });
+    }
+  } catch (e: any) {
+    await supabase.from("wallet_transactions")
+      .update({ status: "failed", completed_at: new Date().toISOString(), description: `${description} — error: ${String(e?.message || e).slice(0, 180)}` })
+      .eq("id", tx.id);
+    return res.status(502).json({ error: `Could not reach MTN: ${e?.message || e}` });
+  }
+
+  res.json({
+    referenceId,
+    transactionId: tx.id,
+    status: "PENDING",
+    environment: MTN_TARGET_ENV,
+    currency: MTN_CURRENCY,
+    message: `Approval prompt sent to ${msisdn}. Enter your MoMo PIN to approve.`,
+  });
+});
+
+// Poll top-up status (dashboard polls ~3s) — confirms the ledger exactly once
+app.post("/api/wallet/topup/status", requireAuth, async (req: Request, res: Response) => {
+  const { _auth } = req.body;
+  const reference = String(req.body?.reference ?? "");
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(reference)) {
+    return res.status(400).json({ error: "Invalid reference." });
+  }
+
+  // Scoped to the caller's tenant — nobody can confirm someone else's top-up
+  const { data: rows, error: txError } = await supabase
+    .from("wallet_transactions")
+    .select("id, status, provider_tx_id")
+    .eq("external_reference", reference)
+    .eq("tenant_id", _auth.tenantId)
+    .limit(1);
+  if (txError) return res.status(400).json({ error: txError.message });
+  if (!rows || rows.length === 0) return res.status(404).json({ error: "Unknown reference." });
+  const tx = rows[0];
+
+  // Already final (confirmed by an earlier poll) — just report it.
+  if (tx.status !== "pending") {
+    return res.json({ status: String(tx.status).toUpperCase(), providerTxId: tx.provider_tx_id ?? null });
+  }
+  if (!momoConfigured()) return res.json({ status: "PENDING" });
+
+  try {
+    const token = await getMomoToken();
+    const momoRes = await fetch(`${MTN_BASE_URL}/collection/v1_0/requesttopay/${reference}`, {
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        "X-Target-Environment": MTN_TARGET_ENV,
+        "Ocp-Apim-Subscription-Key": MTN_SUBSCRIPTION_KEY,
+      },
+    });
+    if (!momoRes.ok) return res.status(502).json({ error: `MTN status check failed (${momoRes.status}).` });
+
+    const st: any = await momoRes.json();
+    // st: { status: "PENDING" | "SUCCESSFUL" | "FAILED", reason?, financialTransactionId? }
+    if (st.status === "SUCCESSFUL" || st.status === "FAILED") {
+      const { error: rpcError } = await supabase.rpc("fn_confirm_topup", {
+        p_reference: reference,
+        p_status: st.status,
+        p_provider_tx_id: st.financialTransactionId ?? null,
+      });
+      if (rpcError) return res.status(400).json({ error: rpcError.message });
+      return res.json({
+        status: st.status,
+        providerTxId: st.financialTransactionId ?? null,
+        reason: st.reason?.code ?? null,
+      });
+    }
+    return res.json({ status: st.status ?? "PENDING" });
+  } catch (e: any) {
+    return res.status(502).json({ error: `Could not reach MTN: ${e?.message || e}` });
+  }
+});
 // ==========================================
 // DATA API - SECURE ENDPOINTS
 // ==========================================

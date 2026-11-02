@@ -1,4 +1,3 @@
-// src/admin/AdminLayout.tsx
 import { Outlet, useNavigate, useLocation, Navigate } from "react-router-dom";
 import { useEffect, useState } from "react";
 import type { User } from "../types";
@@ -151,7 +150,7 @@ export default function AdminLayout({ user }: Props) {
                 button:focus-visible { outline: 2px solid ${C.medBlue}; outline-offset: 1px; }
             `}</style>
 
-            {/* UNIFIED APP BAR — fully transparent, clean top edge (no accent strip, no line) */}
+            {/* UNIFIED APP BAR — solid white to match the bottom nav, logo stays visible */}
             <div
                 style={{
                     display: "flex",
@@ -165,12 +164,15 @@ export default function AdminLayout({ user }: Props) {
                     width: "100%",
                     boxSizing: "border-box",
                     position: "relative",
+                    background: "#FFFFFF",
+                    borderBottom: `1px solid ${C.separator}`,
+                    boxShadow: "0 2px 12px rgba(16,24,40,0.04)",
                 }}
             >
                 {/* Left Side - Business Info */}
                 <div style={{ display: "flex", alignItems: "center", gap: 10, flex: "1 1 160px", minWidth: 0, overflow: "hidden" }}>
                     {businessLogo ? (
-                        <img src={businessLogo} alt="Logo" style={{ width: 34, height: 34, borderRadius: 9, objectFit: "cover", flexShrink: 0, boxShadow: S.shadowXs }} />
+                        <img src={businessLogo} alt="Logo" style={{ width: 34, height: 34, borderRadius: 9, objectFit: "cover", flexShrink: 0, background: "#FFFFFF", boxShadow: "0 0 0 1px rgba(16,24,40,0.08), 0 1px 2px rgba(16,24,40,0.06)" }} />
                     ) : (
                         <div style={{ width: 34, height: 34, borderRadius: 9, background: C.medBlueBg, color: C.medBlue, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, fontWeight: 700, flexShrink: 0 }}>
                             {(businessName || "B").charAt(0).toUpperCase()}

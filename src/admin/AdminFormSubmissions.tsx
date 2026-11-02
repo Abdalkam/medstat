@@ -1,10 +1,16 @@
 // src/admin/AdminFormSubmissions.tsx
+// OFFLINE-FIRST responses viewer:
+//   1. Hydrate form meta + questions + submissions from the last online visit
+//      (localStorage — questions share the `cachedFormFields_<id>` key the
+//      builder writes, so an offline-created/edited form still renders)
+//   2. Online: refresh from Supabase and re-cache everything
 import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { supabase } from "../auth/supabase";
+import { setAllowDownloadOfflineFirst } from "../database/formDB";
 
 // Hardened fetch: never let a hung Supabase request spin the page forever.
-function withTimeout<T>(p: PromiseLike<T>, ms = 8000): Promise<T> {
+function withTimeout<T = any>(p: any, ms = 8000): Promise<T> {
   return Promise.race([
     Promise.resolve(p),
     new Promise<T>((_, rej) => setTimeout(() => rej(new Error("supabase-timeout")), ms)),
@@ -28,7 +34,7 @@ const TS = {
   input: { fontSize: 16, fontFamily: FONT, color: C.textPrimary },
 };
 
-interface FieldConfig { min?: number; max?: number; step?: number; unit?: string; unitOptions?: string[]; labelColor?: string; sectionColor?: string; }
+interface FieldConfig { min?: number; max?: number; step?: number; unit?: string; unitOptions?: string[]; labelColor?: string; sectionColor?: string; width?: "full" | "half"; required?: boolean; placeholder?: string; }
 interface FormField { id: string; type: string; label: string; options?: string[] | null; config?: FieldConfig | null; }
 interface Submission { id: string; user_id: string; username: string; role: string | null; answers: Record<string, any>; submitted_at: string | null; }
 
@@ -60,9 +66,28 @@ function csvEscape(v: any): string {
   return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
 }
 
+// Collapses to a single column on phones; the 2-per-line layout is desktop/tablet.
+function useIsNarrow(px = 720): boolean {
+  const [narrow, setNarrow] = useState<boolean>(() =>
+    typeof window !== "undefined" && typeof window.matchMedia === "function"
+      ? window.matchMedia(`(max-width: ${px}px)`).matches
+      : false
+  );
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+    const mq = window.matchMedia(`(max-width: ${px}px)`);
+    const fn = () => setNarrow(mq.matches);
+    try { mq.addEventListener("change", fn); } catch { /* older engines */ }
+    return () => { try { mq.removeEventListener("change", fn); } catch { /* noop */ } };
+  }, [px]);
+  return narrow;
+}
+
 export default function AdminFormSubmissions() {
-  const { formId } = useParams();
+  // Typed for react-router-dom v5 (useParams(): {}) and v6+ alike — formId can never 2339.
+  const { formId } = useParams() as { formId?: string };
   const navigate = useNavigate();
+  const isNarrow = useIsNarrow();
 
   const [form, setForm] = useState<any>(null);
   const [questions, setQuestions] = useState<FormField[]>([]);
@@ -73,21 +98,24 @@ export default function AdminFormSubmissions() {
   const [loadError, setLoadError] = useState<string | null>(null);
 
   // OFFLINE-FIRST load:
-  //   1. Hydrate form meta + submissions from the last online visit (localStorage)
+  //   1. Hydrate form meta + questions + submissions from the last online visit (localStorage)
   //   2. Online: refresh from Supabase and re-cache
   useEffect(() => {
     if (!formId) { setLoading(false); return; }
     const SUBS_KEY = `cachedFormSubs_${formId}`;
     const META_KEY = `cachedFormMeta_${formId}`;
+    const FIELDS_KEY = `cachedFormFields_${formId}`; // shared with AdminFormBuilder
 
     // STEP 1: cached render (offline-safe)
     try {
       const cachedSubs = JSON.parse(localStorage.getItem(SUBS_KEY) || "[]");
       const cachedForm = JSON.parse(localStorage.getItem(META_KEY) || "null");
+      const cachedQs = JSON.parse(localStorage.getItem(FIELDS_KEY) || "null");
       if (cachedForm) {
         setForm(cachedForm);
         setAllowDownload(cachedForm.allow_download ?? true);
       }
+      if (Array.isArray(cachedQs) && cachedQs.length > 0) setQuestions(cachedQs as FormField[]);
       if (Array.isArray(cachedSubs) && cachedSubs.length > 0) {
         setSubmissions(cachedSubs);
         setLoading(false);
@@ -101,11 +129,12 @@ export default function AdminFormSubmissions() {
       try {
         const { data: f } = await withTimeout(supabase.from("forms").select("*").eq("id", formId).maybeSingle());
         if (f) { setForm(f); setAllowDownload(f.allow_download ?? true); localStorage.setItem(META_KEY, JSON.stringify(f)); }
-        // options + config included so unit/toggle answers render correctly
+        // options + config included so unit/toggle/width answers render correctly
         const { data: ff } = await withTimeout(
           supabase.from("form_fields").select("id, type, label, options, config").eq("form_id", formId).order("sort_order", { ascending: true })
         );
         setQuestions((ff || []) as FormField[]);
+        try { localStorage.setItem(FIELDS_KEY, JSON.stringify(ff || [])); } catch { /* quota — ignore */ }
         const { data: subs } = await withTimeout(
           supabase.from("form_submissions").select("*").eq("form_id", formId).order("submitted_at", { ascending: false })
         );
@@ -123,19 +152,18 @@ export default function AdminFormSubmissions() {
     })();
   }, [formId]);
 
-  // Admin can flip the download gate right from this page (online only)
+  // Admin can flip the download gate right from this page — offline-first:
+  // local caches flip instantly (formDB also updates cachedFormMeta_), the
+  // cloud write is attempted when online and queued automatically when
+  // offline or on failure (shared formDB engine).
   async function toggleAllowDownload() {
-    if (!navigator.onLine) {
-      setLoadError("Toggling downloads requires a connection. Try again when online.");
-      return;
-    }
     const next = !allowDownload;
     setAllowDownload(next);
-    const { error } = await supabase.from("forms").update({ allow_download: next, updated_at: new Date().toISOString() }).eq("id", formId);
-    if (error) { setAllowDownload(!next); setLoadError("Could not update downloads: " + error.message); }
-    else {
-      try { localStorage.setItem(`cachedFormMeta_${formId}`, JSON.stringify({ ...form, allow_download: next })); } catch {}
-    }
+    const ok = await setAllowDownloadOfflineFirst(formId!, next);
+    if (ok) { setLoadError(null); return; }
+    setLoadError(navigator.onLine
+      ? "Server rejected the downloads change — it stays queued and will retry automatically."
+      : "Offline — the change is saved on this device and will sync when you reconnect.");
   }
 
   // Admin CSV export — works from cached data too; always allowed regardless of allow_download.
@@ -211,18 +239,24 @@ export default function AdminFormSubmissions() {
               </div>
             </div>
 
-            <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-              {questions.map((q, i) => (
-                <div key={q.id} style={{ background: C.card, borderRadius: 12, padding: "20px 24px", border: `1px solid ${C.separator}` }}>
-                  <span style={{ ...TS.caption, fontSize: 12, color: "#fff", background: C.medBlue, padding: "3px 10px", borderRadius: 8 }}>{q.type === "header" || q.type === "note" ? "—" : `Q${i + 1}`}</span>
-                  <h3 style={{ ...TS.h3, margin: "10px 0 10px", color: q.config?.labelColor || C.textPrimary }}>{q.label || "(untitled)"}</h3>
-                  <div style={{ background: C.bg, borderRadius: 10, padding: "14px 16px", border: `1px solid ${C.separator}` }}>
-                    <div style={{ ...TS.caption, fontSize: 10, marginBottom: 4 }}>Answer:</div>
-                    {/* answer flattened via field config/options (units, toggles, arrays) */}
-                    <div style={{ ...TS.body, fontSize: 15, whiteSpace: "pre-wrap" }}>{answerText(q, selectedSub.answers[q.id])}</div>
+            {/* Mirrors the builder layout: ½-width fields sit two per row,
+                Full-width fields / section headers / notes span the whole line. */}
+            <div style={{ display: "grid", gridTemplateColumns: isNarrow ? "1fr" : "repeat(2, minmax(0, 1fr))", gap: 16, alignItems: "start" }}>
+              {questions.map((q, i) => {
+                const isStatic = q.type === "header" || q.type === "note";
+                const half = !isNarrow && !isStatic && q.config?.width === "half";
+                return (
+                  <div key={q.id} style={{ background: C.card, borderRadius: 12, padding: "20px 24px", border: `1px solid ${C.separator}`, gridColumn: half ? undefined : "1 / -1" }}>
+                    <span style={{ ...TS.caption, fontSize: 12, color: "#fff", background: C.medBlue, padding: "3px 10px", borderRadius: 8 }}>{isStatic ? "—" : `Q${i + 1}`}</span>
+                    <h3 style={{ ...TS.h3, margin: "10px 0 10px", color: q.config?.labelColor || C.textPrimary }}>{q.label || "(untitled)"}</h3>
+                    <div style={{ background: C.bg, borderRadius: 10, padding: "14px 16px", border: `1px solid ${C.separator}` }}>
+                      <div style={{ ...TS.caption, fontSize: 10, marginBottom: 4 }}>Answer:</div>
+                      {/* answer flattened via field config/options (units, toggles, arrays) */}
+                      <div style={{ ...TS.body, fontSize: 15, whiteSpace: "pre-wrap" }}>{answerText(q, selectedSub.answers[q.id])}</div>
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         ) : (

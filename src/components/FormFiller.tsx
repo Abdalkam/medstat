@@ -50,7 +50,7 @@ const TS = {
 
 interface FieldConfig { min?: number; max?: number; step?: number; unit?: string; unitOptions?: string[]; labelColor?: string; sectionColor?: string; }
 interface FormField { id: string; type: string; label: string; required: boolean; options: string[]; placeholder: string; config?: FieldConfig; }
-interface BusinessData { business_name: string | null; phone: string | null; logo: string | null; }
+interface BusinessData { business_name: string | null; phone: string | null; }
 
 // A submission made offline, waiting to sync
 interface PendingSub {
@@ -242,9 +242,9 @@ function AppBar({ onBack }: { onBack?: () => void }) {
         const localSettings = localStorage.getItem("localBusinessSettings");
         if (localSettings) {
           const p = JSON.parse(localSettings);
-          if (!cancelled) setBusiness({ business_name: p.businessName || null, phone: p.phone || null, logo: p.logo || null });
+          if (!cancelled) setBusiness({ business_name: p.businessName || null, phone: p.phone || null });
         }
-        const { data } = await withTimeout(supabase.from("business_settings").select("business_name, phone, logo").eq("tenant_id", currentUser.tenantId).maybeSingle());
+        const { data } = await withTimeout(supabase.from("business_settings").select("business_name, phone").eq("tenant_id", currentUser.tenantId).maybeSingle());
         if (!cancelled && data) setBusiness(data as BusinessData);
       } catch { /* offline — localStorage business info already shown */ }
     })();
@@ -310,11 +310,6 @@ function AppBar({ onBack }: { onBack?: () => void }) {
         </button>
       )}
       <div style={{ display: "flex", alignItems: "center", gap: 12, flex: 1, minWidth: 0 }}>
-        {business?.logo ? (
-          <img src={business.logo} alt={business.business_name || "Business"} style={{ width: 36, height: 36, borderRadius: 9, objectFit: "cover", flexShrink: 0, boxShadow: S.shadowXs }} />
-        ) : (
-          <div style={{ ...TS.h3, width: 36, height: 36, borderRadius: 9, background: C.medBlueBg, color: C.medBlue, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, flexShrink: 0 }}>{(business?.business_name || "B").charAt(0).toUpperCase()}</div>
-        )}
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ ...TS.h3, fontSize: 15, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{business?.business_name || "Business"}</div>
           {business?.phone && (

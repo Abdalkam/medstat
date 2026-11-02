@@ -1,13 +1,12 @@
 // src/admin/AdminFormBuilder.tsx
-import React, { useEffect, useRef, useState } from "react";
-import { useParams, useNavigate } from "react-router-dom";
-import { supabase } from "../auth/supabase";
-import { getFormFromCache, saveFormOnlineFirst, deleteFormOnlineFirst } from "../database/formDB";
 
-// ======================= RICHTEXT INTEGRATION =======================
-import RichTextEditor from "../components/RichTextEditor";
-const USE_RICHTEXT = true;
-// ====================================================================
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties } from "react";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
+import { supabase } from "../auth/supabase";
+import { saveFormOfflineFirst, flushPendingFormOps, countPendingFormOps, queueFormOp } from "../database/formDB";
+
+// ============================ design tokens (same system as AdminForms) ============================
 
 const C = {
   textPrimary: "#1C1C1E", textSecondary: "#3C3C43", textTertiary: "#8E8E93",
@@ -16,12 +15,8 @@ const C = {
   red: "#FF3B30", redBg: "#FFEFEE", green: "#34C759", greenBg: "#EAF9EE",
   orange: "#FF9F0A", orangeBg: "#FFF6EB", purple: "#AF52DE", purpleBg: "#F5F0FF",
 };
-
 const FONT = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif";
-
 const TS = {
-  h1: { fontSize: 28, fontWeight: 800, letterSpacing: "-0.03em", lineHeight: 1.15, color: C.textPrimary, fontFamily: FONT },
-  h2: { fontSize: 22, fontWeight: 700, letterSpacing: "-0.02em", lineHeight: 1.25, color: C.textPrimary, fontFamily: FONT },
   h3: { fontSize: 17, fontWeight: 600, letterSpacing: "-0.015em", lineHeight: 1.3, color: C.textPrimary, fontFamily: FONT },
   body: { fontSize: 16, fontWeight: 400, letterSpacing: "-0.005em", lineHeight: 1.75, color: C.textPrimary, fontFamily: FONT },
   bodySm: { fontSize: 14, fontWeight: 400, letterSpacing: "-0.005em", lineHeight: 1.5, color: C.textTertiary, fontFamily: FONT },
@@ -29,925 +24,805 @@ const TS = {
   input: { fontSize: 16, fontWeight: 400, letterSpacing: "-0.005em", lineHeight: 1.5, fontFamily: FONT, color: C.textPrimary },
 };
 
-type FieldType =
-  | "header" | "note"
-  | "text" | "textarea"
-  | "number" | "range"
-  | "radio" | "checkbox" | "dropdown" | "toggle"
-  | "date" | "time"
-  | "phone" | "email";
+// ============================ types ============================
 
-interface FieldConfig {
+export type FieldType = "header" | "note" | "text" | "longtext" | "number" | "date" | "select" | "multiselect" | "toggle";
+export type FormStatus = "draft" | "published" | "closed";
+export type AudienceKey = "everyone" | "trainers" | "trainees";
+export type WidthKey = "full" | "half";
+
+export interface FieldConfig {
+  width?: WidthKey;            // "half" → two fields share one row; "full" → whole line
+  required?: boolean;
+  placeholder?: string;
   min?: number; max?: number; step?: number;
   unit?: string; unitOptions?: string[];
-  labelColor?: string;
   sectionColor?: string;
 }
-interface FormField {
-  id: string; type: FieldType; label: string; required: boolean;
-  options: string[];
-  placeholder: string;
-  config: FieldConfig;
+export interface BuilderField { id: string; type: FieldType; label: string; options: string[] | null; config: FieldConfig; }
+export interface FormMetaRow {
+  id: string; tenant_id?: string | null; created_by?: string | null;
+  title: string; description: string | null; status: FormStatus;
+  visible_to: string[] | null; allow_download: boolean; updated_at?: string;
 }
+interface MetaState { title: string; description: string; status: FormStatus; audience: AudienceKey; allowDownload: boolean; }
 
-const TYPE_META: Record<FieldType, { icon: string; label: string; group: string }> = {
-  header:   { icon: "▤", label: "Section",        group: "Layout" },
-  note:     { icon: "✎", label: "Rich Note",      group: "Layout" },
-  text:     { icon: "Ab", label: "Short Text",    group: "Basic" },
-  textarea: { icon: "¶", label: "Long Text",      group: "Basic" },
-  number:   { icon: "#", label: "Number",         group: "Basic" },
-  range:    { icon: "⬌", label: "Slider",         group: "Basic" },
-  dropdown: { icon: "▾", label: "Dropdown",       group: "Choices" },
-  radio:    { icon: "◯", label: "Radio Buttons",  group: "Choices" },
-  checkbox: { icon: "☑", label: "Checkboxes",     group: "Choices" },
-  toggle:   { icon: "⇄", label: "Toggle",         group: "Choices" },
-  date:     { icon: "📅", label: "Date",          group: "Date & Time" },
-  time:     { icon: "🕐", label: "Time",          group: "Date & Time" },
-  phone:    { icon: "📞", label: "Phone",         group: "Contact" },
-  email:    { icon: "✉️", label: "Email",         group: "Contact" },
+const FIELD_TYPES: { type: FieldType; label: string; icon: string }[] = [
+  { type: "header", label: "Section title", icon: "H" },
+  { type: "note", label: "Note text", icon: "¶" },
+  { type: "text", label: "Short text", icon: "Ab" },
+  { type: "longtext", label: "Paragraph", icon: "≡" },
+  { type: "number", label: "Number", icon: "#" },
+  { type: "date", label: "Date", icon: "📅" },
+  { type: "select", label: "Dropdown", icon: "▾" },
+  { type: "multiselect", label: "Multi-select", icon: "☑" },
+  { type: "toggle", label: "Toggle", icon: "⏻" },
+];
+const ANSWERABLE: FieldType[] = ["text", "longtext", "number", "date", "select", "multiselect", "toggle"];
+const needsOptions = (t: FieldType) => t === "select" || t === "multiselect" || t === "toggle";
+
+const STATUS_META: Record<FormStatus, { label: string; bg: string; fg: string }> = {
+  draft: { label: "Draft", bg: C.orangeBg, fg: C.orange },
+  published: { label: "Published", bg: C.greenBg, fg: C.green },
+  closed: { label: "Closed", bg: C.redBg, fg: C.red },
 };
+const AUDIENCE_META: Record<AudienceKey, { label: string; bg: string; fg: string }> = {
+  everyone: { label: "Everyone", bg: C.medBlueBg, fg: C.medBlue },
+  trainers: { label: "Trainers", bg: C.orangeBg, fg: C.orange },
+  trainees: { label: "Trainees", bg: C.greenBg, fg: C.green },
+};
+const SECTION_COLORS = [C.medBlue, C.green, C.orange, C.purple, C.textPrimary];
 
-function f(type: FieldType, label: string, o: Partial<{ required: boolean; placeholder: string; options: string[]; cfg: FieldConfig }> = {}): FormField {
-  return {
-    id: crypto.randomUUID(),
-    type,
-    label,
-    required: o.required || false,
-    options: o.options || (type === "toggle" ? ["F", "M"] : []),
-    placeholder: o.placeholder || "",
-    config: o.cfg || {},
-  };
+// ============================ small utilities ============================
+
+let __seq = 0;
+export function uid(): string {
+  try {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  } catch { /* older engine */ }
+  __seq += 1;
+  return `f-${Date.now().toString(36)}-${__seq}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function buildMedicalExample(): { title: string; description: string; fields: FormField[] } {
-  return {
-    title: "Medical Assessment Form",
-    description: "Please complete all required (*) fields before your visit. All information is confidential.",
-    fields: [
-      f("header", "Patient Information", { cfg: { sectionColor: "#FF3B30" } }),
-      f("text", "Full Name", { required: true, placeholder: "First and last name" }),
-      f("toggle", "Sex", { required: true, options: ["F", "M"] }),
-      f("date", "Date of Birth", { required: true, placeholder: "DD/MM/YYYY" }),
-      f("number", "Age", { required: true, cfg: { min: 0, max: 120, unit: "years" } }),
-      f("dropdown", "Blood Group", { options: ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-", "Unknown"] }),
-      f("number", "Weight", { cfg: { min: 0, max: 400, unit: "kg", unitOptions: ["kg", "lb"] } }),
-      f("number", "Height", { cfg: { min: 0, max: 260, unit: "cm", unitOptions: ["cm", "m"] } }),
-      f("range", "Pain Level (0 = none, 10 = worst)", { cfg: { min: 0, max: 10, step: 1 } }),
-      f("phone", "Phone Number", { required: true }),
-      f("email", "Email"),
-      f("checkbox", "Known Allergies", { options: ["Penicillin", "Peanuts", "Latex", "Dust", "None"] }),
-      f("textarea", "Current Medications"),
-      f("textarea", "Medical History / Notes"),
-      f("header", "Appointment", { cfg: { sectionColor: "#007AFF" } }),
-      f("date", "Appointment Date", { placeholder: "DD/MM/YYYY" }),
-      f("time", "Arrival Time"),
-      f("checkbox", "Consent", { required: true, options: ["I consent to examination and treatment"] }),
-    ],
-  };
+export function isOnline(): boolean {
+  try { return typeof navigator === "undefined" ? true : navigator.onLine !== false; } catch { return true; }
 }
 
-function buildSchoolExample(): { title: string; description: string; fields: FormField[] } {
-  return {
-    title: "School Admission Application",
-    description: "Complete this admission application. Fields marked * are required.",
-    fields: [
-      f("header", "Student Details", { cfg: { sectionColor: "#007AFF" } }),
-      f("text", "Student Full Name", { required: true }),
-      f("date", "Date of Birth", { required: true, placeholder: "DD/MM/YYYY" }),
-      f("toggle", "Sex", { options: ["F", "M"] }),
-      f("dropdown", "Class Applying For", { required: true, options: ["Nursery", "KG 1", "KG 2", "Grade 1", "Grade 2", "Grade 3", "Grade 4", "Grade 5", "Grade 6"] }),
-      f("text", "Previous School"),
-      f("header", "Guardian Information", { cfg: { sectionColor: "#34C759" } }),
-      f("text", "Parent / Guardian Name", { required: true }),
-      f("phone", "Guardian Phone", { required: true }),
-      f("email", "Guardian Email"),
-      f("textarea", "Home Address"),
-      f("header", "Academics", { cfg: { sectionColor: "#FF9F0A" } }),
-      f("checkbox", "Subjects / Stream", { options: ["Sciences", "Arts", "Commercial", "Languages"] }),
-      f("number", "Age", { cfg: { min: 2, max: 20, unit: "years" } }),
-      f("date", "Preferred Start Date", { placeholder: "DD/MM/YYYY" }),
-      f("note", "📎 Supporting documents (birth certificate, previous report card) are submitted at the school office."),
-      f("checkbox", "Declaration", { required: true, options: ["I confirm the information provided is accurate"] }),
-    ],
-  };
+function withTimeout<T = any>(p: any, ms = 8000): Promise<T> {
+  return Promise.race([Promise.resolve(p), new Promise<T>((_, rej) => setTimeout(() => rej(new Error("supabase-timeout")), ms))]);
 }
 
-function NoteEditor({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder?: string }) {
-  if (!USE_RICHTEXT) {
-    return (
-      <textarea placeholder={placeholder || "Type your note..."} value={value || ""} onChange={(e) => onChange(e.target.value)}
-        style={{ width: "100%", minHeight: 90, padding: 12, border: `1px solid ${C.separator}`, borderRadius: 12, outline: "none", background: C.bg, fontFamily: FONT, fontSize: 15, resize: "vertical", boxSizing: "border-box" }} />
-    );
+// localStorage with in-memory fallback (keeps pure helpers testable everywhere)
+const __mem = new Map<string, string>();
+function lsGet(key: string): string | null { try { return localStorage.getItem(key); } catch { return __mem.get(key) ?? null; } }
+function lsSet(key: string, val: string): void { try { localStorage.setItem(key, val); } catch { __mem.set(key, val); } }
+
+export function audienceKeyOf(vt?: string[] | null): AudienceKey {
+  const arr = Array.isArray(vt) ? vt : [];
+  return arr.length === 0 || (arr.includes("trainer") && arr.includes("trainee")) ? "everyone"
+    : arr.includes("trainer") ? "trainers" : "trainees";
+}
+export function visibleToOf(key: AudienceKey): string[] {
+  return key === "trainers" ? ["trainer"] : key === "trainees" ? ["trainee"] : ["trainer", "trainee"];
+}
+
+export function newField(type: FieldType): BuilderField {
+  const base: BuilderField = {
+    id: uid(), type, label: "",
+    options: null,
+    config: { width: type === "header" || type === "note" ? "full" : "half" },
+  };
+  if (type === "number") base.config.step = 1;
+  if (type === "select" || type === "multiselect") base.options = ["Option 1", "Option 2"];
+  if (type === "toggle") base.options = ["Yes", "No"]; // [true-label, false-label]
+  return base;
+}
+
+// Applied when the admin switches a field's TYPE after creation.
+// Never touches width (the admin controls layout explicitly).
+export function ensureTypeDefaults(f: BuilderField): BuilderField {
+  const out: BuilderField = { ...f, config: { ...f.config } };
+  if (f.type === "header" || f.type === "note") {
+    out.config.width = "full";
+    out.options = null;
+    return out;
   }
-  const R = RichTextEditor as unknown as React.ComponentType<{ value: string; onChange: (v: string) => void; placeholder?: string }>;
-  return <R value={value} onChange={onChange} placeholder={placeholder} />;
+  if (needsOptions(f.type)) {
+    if (f.type === "toggle") {
+      if (!Array.isArray(out.options) || out.options.length !== 2) out.options = ["Yes", "No"];
+    } else if (!Array.isArray(out.options)) {
+      out.options = ["Option 1", "Option 2"];
+    }
+  }
+  if (f.type === "number" && out.config.step === undefined) out.config.step = 1;
+  return out;
 }
 
-// Maps a raw field row (cache or Supabase) into the editor's FormField shape
-function mapFieldRow(x: any): FormField {
+export function moveField(list: BuilderField[], idx: number, dir: -1 | 1): BuilderField[] {
+  const to = idx + dir;
+  if (idx < 0 || idx >= list.length || to < 0 || to >= list.length) return [...list];
+  const next = [...list];
+  const [item] = next.splice(idx, 1);
+  next.splice(to, 0, item);
+  return next;
+}
+
+export function duplicateField(list: BuilderField[], idx: number): BuilderField[] {
+  const src = list[idx];
+  if (!src) return [...list];
+  const clone: BuilderField = { ...src, id: uid(), options: src.options ? [...src.options] : null, config: { ...src.config } };
+  const next = [...list];
+  next.splice(idx + 1, 0, clone);
+  return next;
+}
+
+export function buildFieldRows(formId: string, fields: BuilderField[], tenantId?: string | null): Record<string, any>[] {
+  return fields.map((f, i) => ({
+    id: f.id,
+    form_id: formId,
+    tenant_id: tenantId ?? null,
+    type: f.type,
+    label: f.label,
+    options: f.options,
+    config: f.config,
+    sort_order: i,
+  }));
+}
+
+function normalizeFieldRow(r: any): BuilderField {
+  const cfg: FieldConfig = r && typeof r.config === "object" && r.config !== null ? { ...r.config } : {};
+  const type = (r?.type as FieldType) || "text";
   return {
-    id: x.id,
-    type: (x.type === "paragraph" ? "textarea" : x.type) as FieldType,
-    label: x.label || "",
-    required: x.required || false,
-    options: Array.isArray(x.options) ? x.options : (x.type === "toggle" ? ["F", "M"] : []),
-    placeholder: x.placeholder || "",
-    config: (x.config && typeof x.config === "object") ? x.config : {},
+    id: r?.id || uid(),
+    type,
+    label: r?.label || "",
+    options: Array.isArray(r?.options) ? r.options.map(String) : null,
+    config: cfg,
   };
 }
+
+function snapshotOf(m: MetaState, list: BuilderField[]): string {
+  return JSON.stringify({
+    t: m.title, d: m.description, s: m.status, a: m.audience, dl: m.allowDownload,
+    f: list.map((f) => ({ id: f.id, type: f.type, label: f.label, options: f.options, config: f.config })),
+  });
+}
+
+// ============================ cloud persistence (hardened, offline-queued) ============================
+
+// The cloud persistence + offline queue now live in formDB.ts — one shared
+// offline-first engine for the Forms list, this builder and the responses
+// page. The helpers below are kept for compatibility and route through it.
+export { upsertRows } from "../database/formDB";
+
+// Compatibility wrapper: persists via the shared engine (local caches update
+// instantly; cloud write attempted when online; queued automatically when
+// offline or on failure).
+export async function persistForm(form: FormMetaRow, fields: BuilderField[], removedFieldIds: string[], isExisting: boolean): Promise<void> {
+  await saveFormOfflineFirst(form, fields, removedFieldIds, isExisting);
+}
+
+// ============================ responsive hook (2-per-row collapses on phones) ============================
+
+function useIsNarrow(px = 720): boolean {
+  const [narrow, setNarrow] = useState<boolean>(() =>
+    typeof window !== "undefined" && typeof window.matchMedia === "function"
+      ? window.matchMedia(`(max-width: ${px}px)`).matches
+      : false
+  );
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+    const mq = window.matchMedia(`(max-width: ${px}px)`);
+    const fn = () => setNarrow(mq.matches);
+    try { mq.addEventListener("change", fn); } catch { /* older engines */ }
+    return () => { try { mq.removeEventListener("change", fn); } catch { /* noop */ } };
+  }, [px]);
+  return narrow;
+}
+
+// ============================ shared inline styles ============================
+
+const bigInput: CSSProperties = { ...TS.input, width: "100%", padding: "12px 14px", fontSize: 18, fontWeight: 700, border: `1px solid ${C.separator}`, borderRadius: 12, background: C.card, outline: "none", boxSizing: "border-box" };
+const metaInput: CSSProperties = { ...TS.input, width: "100%", padding: "10px 14px", border: `1px solid ${C.separator}`, borderRadius: 10, background: C.card, outline: "none", boxSizing: "border-box" };
+const previewInput: CSSProperties = { ...TS.input, width: "100%", padding: "10px 12px", border: `1px solid ${C.separator}`, borderRadius: 10, background: "#fff", outline: "none", boxSizing: "border-box" };
+const smallInput: CSSProperties = { ...TS.input, fontSize: 13, padding: "7px 10px", border: `1px solid ${C.separator}`, borderRadius: 8, background: "#fff", outline: "none", boxSizing: "border-box", width: "100%" };
+const iconBtn: CSSProperties = { width: 30, height: 30, borderRadius: 8, border: `1px solid ${C.separator}`, background: C.card, color: C.textSecondary, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, fontFamily: FONT, flexShrink: 0, lineHeight: 1, padding: 0 };
+const cardShell: CSSProperties = { background: C.card, borderRadius: 14, border: `1px solid ${C.separator}`, padding: "18px 20px", boxSizing: "border-box" };
+
+// ============================ component ============================
 
 export default function AdminFormBuilder() {
-  const { formId } = useParams<{ formId: string }>();
+  const params = useParams();
+  const routeFormId: string | undefined = params.formId;
   const navigate = useNavigate();
-  const currentUser = JSON.parse(localStorage.getItem("currentUser") || "{}");
+  const location = useLocation();
 
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
-  const [fields, setFields] = useState<FormField[]>([]);
-  const [status, setStatus] = useState<"draft" | "published" | "closed">("draft");
-  const [allowDownload, setAllowDownload] = useState(true);
-  const [allowMultiple, setAllowMultiple] = useState(true); // submission mode
-  const [visibleTo, setVisibleTo] = useState<string[]>(["trainer", "trainee"]); // audience
-  const [saving, setSaving] = useState(false);
-  const [deleting, setDeleting] = useState(false);
-  const [loadingData, setLoadingData] = useState(!!formId);
-  const [isEditing, setIsEditing] = useState(false);
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
-  const [offlineSaved, setOfflineSaved] = useState(false);
-  const titleRef = useRef<HTMLInputElement>(null);
-  const [previewOpen, setPreviewOpen] = useState(false);
-  const [previewAnswers, setPreviewAnswers] = useState<Record<string, any>>({});
+  const currentUser = useMemo<any>(() => {
+    try { return JSON.parse(lsGet("currentUser") || "{}"); } catch { return {}; }
+  }, []);
 
-  const dragArmed = useRef(false);
-  const dragFrom = useRef<number | null>(null);
-  const [dragFromIdx, setDragFromIdx] = useState<number | null>(null);
-  const [dropIndex, setDropIndex] = useState<number | null>(null);
-  const [hoverId, setHoverId] = useState<string | null>(null);
+  const generatedIdRef = useRef<string>(uid());
+  const formId: string = routeFormId || generatedIdRef.current;
+  const isNewRoute = !routeFormId;
 
-  const gutter = "clamp(12px, 3vw, 24px)";
-  const canvasPad = "clamp(18px, 4vw, 40px)";
-  const PAGE_MAX = 1440;
+  const [meta, setMeta] = useState<MetaState>({ title: "", description: "", status: "draft", audience: "everyone", allowDownload: true });
+  const [fields, setFields] = useState<BuilderField[]>([]);
+  const [loading, setLoading] = useState<boolean>(!!routeFormId);
+  const [notFound, setNotFound] = useState<boolean>(false);
+  const [banner, setBanner] = useState<{ kind: "info" | "warn" | "ok" | "error"; text: string } | null>(null);
+  const [pendingCount, setPendingCount] = useState<number>(0);
+  const [tab, setTab] = useState<"edit" | "preview">("edit");
+  const [preview, setPreview] = useState<Record<string, any>>({});
+  const [testOut, setTestOut] = useState<string | null>(null);
+  const [saving, setSaving] = useState<boolean>(false);
+  const [savedSnapshot, setSavedSnapshot] = useState<string>("");
 
-  // OFFLINE-FIRST load:
-  //   1. Hydrate instantly from Dexie cache (works fully offline)
-  //   2. Silent refresh from Supabase when online
+  const dirty = useMemo(() => snapshotOf(meta, fields) !== savedSnapshot, [meta, fields, savedSnapshot]);
+  const dirtyRef = useRef<boolean>(false);
+  useEffect(() => { dirtyRef.current = dirty; }, [dirty]);
+
+  const savedFieldIdsRef = useRef<Set<string>>(new Set());
+  const removedIdsRef = useRef<Set<string>>(new Set());
+  const isExistingRef = useRef<boolean>(!!routeFormId);
+  const titleRef = useRef<HTMLInputElement | null>(null);
+
+  // -------- hydration helpers --------
+  function hydrateFromRow(row: any, list: any[]): void {
+    const m: MetaState = {
+      title: row?.title || "",
+      description: row?.description || "",
+      status: (row?.status as FormStatus) || "draft",
+      audience: audienceKeyOf(row?.visible_to),
+      allowDownload: row?.allow_download !== false,
+    };
+    const list2 = (Array.isArray(list) ? list : []).map(normalizeFieldRow);
+    setMeta(m);
+    setFields(list2);
+    setSavedSnapshot(snapshotOf(m, list2));
+    savedFieldIdsRef.current = new Set(list2.map((f) => f.id));
+  }
+
+  // -------- OFFLINE-FIRST load (cached render → online refresh) --------
   useEffect(() => {
     let cancelled = false;
-    if (formId) setIsEditing(true);
+    setPendingCount(countPendingFormOps());
+    // "Saved ✓" survives the new→edit remount via history state (set in handleSave)
+    const justSaved = !!(location.state as any)?.justSaved;
+    setBanner(justSaved
+      ? { kind: "ok", text: "Saved ✓" }
+      : (isOnline() ? null : { kind: "warn", text: "You're offline — you can keep editing; saves will sync when you reconnect." }));
+
+    if (isOnline()) {
+      flushPendingFormOps()
+        .then((n) => { if (n > 0 && !cancelled) setPendingCount(countPendingFormOps()); })
+        .catch(() => { /* kept queued */ });
+    }
+
+    if (!routeFormId) { setLoading(false); return; } // NEW form — nothing to load
+
     (async () => {
-      if (formId) {
-        const cached = await getFormFromCache(formId);
-        if (cached && !cancelled) {
-          setTitle(cached.title || "");
-          setDescription(cached.description || "");
-          setStatus((cached.status as any) || "draft");
-          setAllowDownload(cached.allow_download ?? true);
-          setAllowMultiple(cached.allow_multiple_submissions !== false);
-          setVisibleTo(Array.isArray(cached.visible_to) && cached.visible_to.length > 0 ? cached.visible_to : ["trainer", "trainee"]);
-          setFields((cached.fields || []).map(mapFieldRow));
-          setLoadingData(false);
+      // STEP 1: cached render (offline-safe)
+      let hadCache = false;
+      try {
+        const cm = lsGet(`cachedFormMeta_${routeFormId}`);
+        const cf = lsGet(`cachedFormFields_${routeFormId}`);
+        if (cm) {
+          hadCache = true;
+          if (!dirtyRef.current) hydrateFromRow(JSON.parse(cm), cf ? JSON.parse(cf) : []);
+          setLoading(false);
         }
-      }
+      } catch { /* corrupt cache — ignore */ }
 
-      if (formId && navigator.onLine) {
-        try {
-          const { data: fData } = await supabase.from("forms").select("*").eq("id", formId).maybeSingle();
-          if (fData && !cancelled) {
-            setTitle(fData.title || "");
-            setDescription(fData.description || "");
-            setStatus(fData.status || "draft");
-            setAllowDownload(fData.allow_download ?? true);
-            setAllowMultiple(fData.allow_multiple_submissions !== false);
-            setVisibleTo(Array.isArray(fData.visible_to) && fData.visible_to.length > 0 ? fData.visible_to : ["trainer", "trainee"]);
-          }
-          const { data: ff } = await supabase.from("form_fields").select("*").eq("form_id", formId).order("sort_order", { ascending: true });
-          if (ff && !cancelled) setFields(ff.map(mapFieldRow));
-        } catch (e) { console.warn("Form refresh failed, using cache:", e); }
-      }
+      if (!isOnline()) { if (!cancelled) setLoading(false); return; }
 
-      if (!cancelled) setLoadingData(false);
+      // STEP 2: online refresh + re-cache
+      try {
+        const { data: row } = (await withTimeout(
+          supabase.from("forms").select("*").eq("id", routeFormId).maybeSingle(), 8000
+        )) as any;
+        const { data: ff } = (await withTimeout(
+          supabase.from("form_fields").select("id, type, label, options, config")
+            .eq("form_id", routeFormId).order("sort_order", { ascending: true }), 8000
+        )) as any;
+        if (cancelled) return;
+        const list = (ff || []).map(normalizeFieldRow);
+        if (row) {
+          if (!dirtyRef.current) hydrateFromRow(row, list);
+          isExistingRef.current = true;
+          try {
+            lsSet(`cachedFormMeta_${routeFormId}`, JSON.stringify(row));
+            lsSet(`cachedFormFields_${routeFormId}`, JSON.stringify(list));
+          } catch { /* storage full — ignore */ }
+        } else if (!hadCache && !dirtyRef.current) {
+          setNotFound(true);
+        }
+      } catch (e) {
+        console.warn("AdminFormBuilder: load failed; using cache:", e);
+        if (!cancelled && !hadCache) setBanner({ kind: "warn", text: "Couldn't reach the server — showing the last saved copy." });
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
     })();
+
     return () => { cancelled = true; };
-  }, [formId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeFormId]);
 
-  const addField = (type: FieldType) => setFields((p) => [...p, {
-    id: crypto.randomUUID(), type, label: "", required: false,
-    options: type === "radio" || type === "checkbox" || type === "dropdown" ? ["Option 1", "Option 2"]
-      : type === "toggle" ? ["F", "M"] : [],
-    placeholder: "", config: type === "range" ? { min: 0, max: 10, step: 1 } : {},
-  }]);
-  const updateField = (id: string, key: keyof FormField, value: any) => setFields((p) => p.map((x) => (x.id === id ? { ...x, [key]: value } : x)));
-  const updateConfig = (id: string, key: keyof FieldConfig, value: any) => setFields((p) => p.map((x) => (x.id === id ? { ...x, config: { ...x.config, [key]: value } } : x)));
-  const setColorKey = (id: string, key: "labelColor" | "sectionColor", value?: string) =>
-    setFields((p) => p.map((x) => {
-      if (x.id !== id) return x;
-      const cfg: FieldConfig = { ...x.config };
-      if (!value) delete (cfg as any)[key];
-      else (cfg as any)[key] = value;
-      return { ...x, config: cfg };
-    }));
-  const removeField = (id: string) => setFields((p) => p.filter((x) => x.id !== id));
-  const duplicateField = (id: string) => setFields((p) => {
-    const i = p.findIndex((x) => x.id === id);
-    if (i === -1) return p;
-    const copy: FormField = { ...p[i], id: crypto.randomUUID() };
-    const n = [...p];
-    n.splice(i + 1, 0, copy);
-    return n;
-  });
-  const moveField = (i: number, dir: "up" | "down") => {
-    const j = dir === "up" ? i - 1 : i + 1;
-    if (j < 0 || j >= fields.length) return;
-    const n = [...fields];
-    [n[i], n[j]] = [n[j], n[i]];
-    setFields(n);
-  };
-  const moveTo = (from: number, insertAt: number) => {
-    if (from < 0 || from >= fields.length) return;
-    if (insertAt === from || insertAt === from + 1) return;
-    const n = [...fields];
-    const [m] = n.splice(from, 1);
-    const adjusted = insertAt > from ? insertAt - 1 : insertAt;
-    n.splice(adjusted, 0, m);
-    setFields(n);
-  };
-  const handleDragStart = (e: React.DragEvent, index: number) => {
-    if (!dragArmed.current) { e.preventDefault(); return; }
-    try { e.dataTransfer.setData("text/plain", String(index)); } catch {}
-    e.dataTransfer.effectAllowed = "move";
-    dragFrom.current = index;
-    setDragFromIdx(index);
-  };
-  const handleDragEnd = () => {
-    dragArmed.current = false;
-    dragFrom.current = null;
-    setDragFromIdx(null);
-    setDropIndex(null);
-  };
-  const handleDragOverCard = (e: React.DragEvent, index: number) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = "move";
-    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    const before = e.clientY < rect.top + rect.height / 2;
-    setDropIndex(before ? index : index + 1);
-  };
-  const handleDropOnCanvas = (e: React.DragEvent) => {
-    e.preventDefault();
-    if (dragFrom.current !== null && dropIndex !== null) moveTo(dragFrom.current, dropIndex);
-    handleDragEnd();
+  // -------- silent re-flush when the device comes back online --------
+  useEffect(() => {
+    const onOnline = () => {
+      setBanner((b) => (b && b.kind === "warn" ? null : b));
+      flushPendingFormOps()
+        .then(() => setPendingCount(countPendingFormOps()))
+        .catch(() => { /* kept queued */ });
+    };
+    window.addEventListener("online", onOnline);
+    return () => window.removeEventListener("online", onOnline);
+  }, []);
+
+  // -------- field operations --------
+  const addField = (type: FieldType) => setFields((p) => [...p, newField(type)]);
+  const updateField = (id: string, patch: Partial<BuilderField>) => setFields((p) => p.map((f) => (f.id === id ? { ...f, ...patch } : f)));
+  const updateConfig = (id: string, patch: Partial<FieldConfig>) => setFields((p) => p.map((f) => (f.id === id ? { ...f, config: { ...f.config, ...patch } } : f)));
+  const changeType = (id: string, type: FieldType) => setFields((p) => p.map((f) => (f.id === id ? ensureTypeDefaults({ ...f, type }) : f)));
+  const removeField = (idx: number) => {
+    const f = fields[idx];
+    if (!f) return;
+    if (savedFieldIdsRef.current.has(f.id)) removedIdsRef.current.add(f.id);
+    setFields((p) => p.filter((x) => x.id !== f.id));
   };
 
-  const addOption = (fid: string) => setFields((p) => p.map((x) => (x.id === fid ? { ...x, options: [...x.options, `Option ${x.options.length + 1}`] } : x)));
-  const removeOption = (fid: string, oi: number) => setFields((p) => p.map((x) => { if (x.id !== fid) return x; const o = [...x.options]; o.splice(oi, 1); return { ...x, options: o }; }));
-  const updateOption = (fid: string, oi: number, v: string) => setFields((p) => p.map((x) => { if (x.id !== fid) return x; const o = [...x.options]; o[oi] = v; return { ...x, options: o }; }));
-
-  const setPreviewAnswer = (id: string, v: any) => setPreviewAnswers((p) => ({ ...p, [id]: v }));
-
-  function loadExample(kind: "medical" | "school") {
-    const ex = kind === "medical" ? buildMedicalExample() : buildSchoolExample();
-    setTitle(ex.title); setDescription(ex.description); setFields(ex.fields); setSaveError(null);
-  }
-
-  // Audience helpers
-  const everyoneVisible = visibleTo.includes("trainer") && visibleTo.includes("trainee");
-  function toggleVisibleRole(role: "trainer" | "trainee") {
-    setVisibleTo((cur) => {
-      if (cur.includes(role)) {
-        const next = cur.filter((r) => r !== role);
-        return next.length > 0 ? next : ["trainer", "trainee"]; // never allow a zero audience
-      }
-      return [...cur, role];
-    });
-  }
-
-  // OFFLINE-AWARE save: cloud when possible, queued + local-cache when not.
+  // -------- SAVE (online → cloud; offline/failed → queue + cache) --------
+  // -------- SAVE (offline-first: local instantly, cloud when possible) --------
   async function handleSave() {
-    setSaveError(null);
-    setOfflineSaved(false);
-    if (!title.trim()) {
-      setSaveError('Please enter the form title at the top (e.g. "Incident Report"), then press Save again.');
+    if (!meta.title.trim()) {
+      setBanner({ kind: "error", text: "Please give the form a name before saving." });
       titleRef.current?.focus();
-      titleRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
       return;
     }
+    const nextMeta: MetaState = { ...meta, title: meta.title.trim() };
+    const form: FormMetaRow = {
+      id: formId,
+      tenant_id: currentUser?.tenantId ?? null,
+      created_by: currentUser?.id ?? null,
+      title: nextMeta.title,
+      description: nextMeta.description || null,
+      status: nextMeta.status,
+      visible_to: visibleToOf(nextMeta.audience),
+      allow_download: nextMeta.allowDownload,
+    };
+    const removed = Array.from(removedIdsRef.current);
+
     setSaving(true);
+    setBanner(null);
     try {
-      const now = new Date().toISOString();
-      const payload: any = {
-        id: formId || crypto.randomUUID(),
-        tenant_id: currentUser.tenantId,
-        title: title.trim(),
-        description: description.trim(),
-        status,
-        allow_download: allowDownload,
-        allow_multiple_submissions: allowMultiple,
-        visible_to: visibleTo,
-        created_by: currentUser.id,
-        updated_at: now,
-      };
-      if (!isEditing) payload.created_at = now;
-
-      const fieldRows = fields.map((x, i) => ({
-        id: x.id, tenant_id: currentUser.tenantId, form_id: payload.id, type: x.type,
-        label: x.label || "", required: x.required,
-        options: (["radio", "checkbox", "dropdown", "toggle"].includes(x.type) && x.options.length > 0) ? x.options : null,
-        sort_order: i, placeholder: x.placeholder || null,
-        config: (x.config && Object.keys(x.config).length > 0) ? x.config : null,
-      }));
-
-      // Cloud when online; mirrors to local cache + queues silently when offline
-      const reachedCloud = await saveFormOnlineFirst(payload, fieldRows);
-      if (!reachedCloud) setOfflineSaved(true);
-      navigate("/admin/forms");
-    } catch (e: unknown) {
-      const err = e as Error;
-      if (err.message.includes("JWT") || err.message.includes("401")) window.location.href = "/";
-      else {
-        const rlsHint = /row-level|permission denied/i.test(err.message) ? " — check the RLS policies on forms / form_fields in Supabase." : "";
-        const colHint = /allow_multiple_submissions/i.test(err.message) ? " — run the SQL: alter table forms add column if not exists allow_multiple_submissions boolean not null default true;" : "";
-        const cfgHint = /config/i.test(err.message) ? " — run the SQL: alter table form_fields add column if not exists config jsonb;" : "";
-        const visHint = /visible_to/i.test(err.message) ? " — run the SQL: alter table forms add column if not exists visible_to text[] not null default '{trainer,trainee}';" : "";
-        setSaveError("Save failed: " + err.message + rlsHint + colHint + cfgHint + visHint);
-      }
-    } finally { setSaving(false); }
-  }
-
-  // OFFLINE-AWARE delete: local immediately, cloud or queued
-  async function handleDelete() {
-    if (!formId) return;
-    try {
-      setDeleting(true);
-      await deleteFormOnlineFirst(formId);
-      navigate("/admin/forms");
-    } catch (e: unknown) {
-      setSaveError("Delete failed: " + (e as Error).message);
-      setShowDeleteConfirm(false);
+      // One shared offline-first engine (formDB.ts): local caches update
+      // instantly (Dexie + localStorage), the cloud write is attempted when
+      // online, and the whole intent is queued automatically on failure —
+      // nothing is ever lost and the UI never blocks on the network.
+      const reachedCloud = await saveFormOfflineFirst(form, fields, removed, isExistingRef.current);
+      removedIdsRef.current.clear();
+      setMeta(nextMeta);
+      setSavedSnapshot(snapshotOf(nextMeta, fields));
+      setPendingCount(countPendingFormOps());
+      setBanner(
+        reachedCloud
+          ? { kind: "ok", text: "Saved to cloud \u2713" }
+          : isOnline()
+            ? { kind: "warn", text: "Cloud save failed \u2014 kept on this device and queued to retry." }
+            : { kind: "info", text: "Saved on this device \u2014 it will sync automatically when you're back online." }
+      );
+    } catch (e: any) {
+      // Never lose work, even if the local cache layer itself throws.
+      queueFormOp({ kind: "upsert_form", payload: form, fields, removedFieldIds: removed });
+      removedIdsRef.current.clear();
+      setMeta(nextMeta);
+      setSavedSnapshot(snapshotOf(nextMeta, fields));
+      setPendingCount(countPendingFormOps());
+      setBanner({ kind: "info", text: "Saved on this device \u2014 it will sync automatically when you're back online." });
     } finally {
-      setDeleting(false);
+      setSaving(false);
+      if (!isExistingRef.current) {
+        isExistingRef.current = true;
+        navigate(`/admin/forms/${formId}/edit`, { replace: true, state: { justSaved: true } });
+      }
     }
   }
 
-  const inputStyle: React.CSSProperties = { ...TS.input, width: "100%", padding: "12px 16px", border: `1px solid ${C.separator}`, borderRadius: 10, outline: "none", background: C.bg, boxSizing: "border-box" };
-  const miniLabel: React.CSSProperties = { ...TS.caption, fontSize: 10, color: C.textTertiary, display: "block", marginBottom: 4 };
-  const miniInput: React.CSSProperties = { ...TS.input, width: "100%", padding: "7px 10px", border: `1px solid ${C.separator}`, borderRadius: 8, fontSize: 13, outline: "none", background: C.card, boxSizing: "border-box" };
-  const hoverBtn: React.CSSProperties = { background: C.bg, border: `1px solid ${C.separator}`, borderRadius: 7, padding: "4px 8px", cursor: "pointer", color: C.textSecondary, fontSize: 12, display: "flex", alignItems: "center", gap: 4 };
-  const paletteChip: React.CSSProperties = { ...TS.input, padding: "6px 11px", background: C.card, color: C.textSecondary, border: `1px solid ${C.separator}`, borderRadius: 20, fontSize: 12, fontWeight: 600, cursor: "pointer" };
+  // -------- preview helpers (mirrors exactly what trainees/trainers fill) --------
+  const narrow = useIsNarrow();
+  const gridStyle: CSSProperties = { display: "grid", gridTemplateColumns: narrow ? "1fr" : "repeat(2, minmax(0, 1fr))", gap: 16, alignItems: "start" };
+  const spanStyle = (f: BuilderField): CSSProperties =>
+    !narrow && f.config.width === "half" && ANSWERABLE.includes(f.type) ? {} : { gridColumn: "1 / -1" };
 
-  const segBtn = (active: boolean, activeColor: string): React.CSSProperties => ({
-    border: "none", cursor: "pointer", padding: "5px 12px", borderRadius: 6,
-    fontSize: 12, fontWeight: 700, fontFamily: FONT,
-    background: active ? activeColor : "transparent",
-    color: active ? "#fff" : C.textTertiary,
-    transition: "background 0.15s, color 0.15s", whiteSpace: "nowrap",
-  });
+  function setPreviewValue(id: string, value: any) { setPreview((p) => ({ ...p, [id]: value })); }
 
-  if (loadingData) return <div style={{ minHeight: "100%", background: C.bg, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: FONT }}><span style={{ ...TS.body, fontWeight: 500 }}>Loading form...</span></div>;
-
-  const groups = Array.from(new Set(Object.values(TYPE_META).map((m) => m.group)));
-
-  const DropLine = ({ slot }: { slot: number }) =>
-    dropIndex === slot && dragFromIdx !== null ? (
-      <div style={{ height: 4, borderRadius: 2, background: C.medBlue, margin: "2px 0", boxShadow: "0 0 0 3px " + C.medBlue + "22", transition: "all 0.1s" }} />
-    ) : null;
-
-  return (
-    <div style={{ minHeight: "100%", background: C.bg, fontFamily: FONT, WebkitFontSmoothing: "antialiased" }}>
-      <style>{`
-        button:focus-visible { outline: 2px solid ${C.medBlue}; outline-offset: 1px; }
-      `}</style>
-
-      {/* ===== STICKY TOOLBAR — back · context · Save ===== */}
-      <div
-        style={{
-          position: "sticky", top: 0, zIndex: 20, width: "100%", boxSizing: "border-box",
-          background: C.bg,
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: 12, padding: `10px ${gutter}`, width: "100%", boxSizing: "border-box" }}>
-
-          {/* BACK → Forms list */}
-          <button
-            onClick={() => navigate("/admin/forms")}
-            title="Back to Forms"
-            style={{ background: C.card, border: `1px solid ${C.separator}`, borderRadius: 10, color: C.medBlue, cursor: "pointer", width: 40, height: 40, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}
-          >
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="15 18 9 12 15 6" /></svg>
-          </button>
-
-          {/* CONTEXT — title truncates */}
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ ...TS.h3, fontSize: 15, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-              {title || (isEditing ? "Editing form" : "New form")}
-            </div>
-            <div style={{ ...TS.bodySm, fontSize: 12, color: C.textTertiary }}>
-              {isEditing ? "Editing form" : "New form"}
-            </div>
-          </div>
-
-          {/* SAVE — always visible */}
-          <button
-            onClick={handleSave}
-            disabled={saving}
-            title="Save this form"
-            style={{ height: 38, padding: "0 18px", borderRadius: 10, border: "none", background: saving ? C.textTertiary : C.medBlue, color: "#fff", fontSize: 13, fontWeight: 700, fontFamily: FONT, cursor: saving ? "default" : "pointer", flexShrink: 0, boxShadow: "0 2px 8px rgba(0,122,255,0.25)", transition: "transform 0.12s ease" }}
-            onMouseEnter={(e) => { if (!saving) e.currentTarget.style.transform = "translateY(-1px)"; }}
-            onMouseLeave={(e) => { e.currentTarget.style.transform = "none"; }}
-          >
-            {saving ? "Saving…" : "Save Form"}
-          </button>
+  function renderPreviewField(f: BuilderField) {
+    const label = f.label || "(untitled field)";
+    if (f.type === "header") {
+      return (
+        <div key={f.id} style={{ ...spanStyle(f), paddingTop: 6 }}>
+          <div style={{ fontSize: 20, fontWeight: 800, letterSpacing: "-0.02em", color: f.config.sectionColor || C.textPrimary, fontFamily: FONT }}>{label}</div>
+          <div style={{ height: 1, background: C.separator, marginTop: 8 }} />
         </div>
-      </div>
-
-      {/* ===== SETTINGS TOOLBAR ===== */}
-      <div
-        style={{
-          borderBottom: `1px solid ${C.separator}`, background: C.card,
-          padding: "10px 24px", display: "flex", alignItems: "center",
-          justifyContent: "flex-start", gap: 14, flexWrap: "wrap", width: "100%", boxSizing: "border-box",
-        }}
-      >
-        {/* STATUS */}
-        <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }} title="Draft = hidden from users · Published = live · Closed = visible but locked">
-          <span style={{ fontSize: 12, fontWeight: 700, color: C.textTertiary }}>Status</span>
-          <select value={status} onChange={(e) => setStatus(e.target.value as any)} style={{ ...TS.input, padding: "7px 10px", border: `1px solid ${C.separator}`, borderRadius: 8, fontSize: 13, background: C.bg, cursor: "pointer", outline: "none" }}>
-            <option value="draft">Draft</option><option value="published">Published</option><option value="closed">Closed</option>
-          </select>
+      );
+    }
+    if (f.type === "note") {
+      return (
+        <div key={f.id} style={{ ...spanStyle(f), ...TS.bodySm, fontSize: 14 }}>{label}</div>
+      );
+    }
+    const asterisk = f.config.required ? <span style={{ color: C.red }}> *</span> : null;
+    return (
+      <div key={f.id} style={{ ...cardShell, padding: "16px 18px", ...spanStyle(f) }}>
+        <div style={{ ...TS.bodySm, color: C.textSecondary, fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
+          {label}{asterisk}
         </div>
 
-        {/* SUBMISSION MODE */}
-        <div
-          title={allowMultiple
-            ? "Multiple: the same person can submit this form many times"
-            : "Single: each person can submit this form only once"}
-          style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}
-        >
-          <span style={{ fontSize: 12, fontWeight: 700, color: C.textTertiary }}>Submissions</span>
-          <div style={{ display: "flex", background: C.bg, border: `1px solid ${C.separator}`, borderRadius: 8, padding: 3, gap: 2 }}>
-            <button onClick={() => setAllowMultiple(false)} style={segBtn(!allowMultiple, C.medBlue)}>Single</button>
-            <button onClick={() => setAllowMultiple(true)} style={segBtn(allowMultiple, C.medBlue)}>Multiple</button>
-          </div>
-        </div>
-
-        {/* VISIBILITY */}
-        <div
-          title="Choose which roles see this form in their Forms list. 'Everyone' = trainers + trainees."
-          style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}
-        >
-          <span style={{ fontSize: 12, fontWeight: 700, color: C.textTertiary }}>Visible to</span>
-          <div style={{ display: "flex", background: C.bg, border: `1px solid ${C.separator}`, borderRadius: 8, padding: 3, gap: 2 }}>
-            <button onClick={() => setVisibleTo(["trainer", "trainee"])} style={segBtn(everyoneVisible, C.medBlue)}>👥 All</button>
-            <button onClick={() => toggleVisibleRole("trainer")} style={segBtn(visibleTo.includes("trainer"), C.purple)}>🎓 Trainers</button>
-            <button onClick={() => toggleVisibleRole("trainee")} style={segBtn(visibleTo.includes("trainee"), C.green)}>🧑‍🎓 Trainees</button>
-          </div>
-        </div>
-
-        {/* DOWNLOADS */}
-        <div
-          onClick={() => setAllowDownload(!allowDownload)}
-          title="Allow users to download the blank form and their filled copy"
-          style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none", padding: "7px 12px", background: allowDownload ? C.greenBg : C.bg, border: `1px solid ${allowDownload ? C.green + "44" : C.separator}`, borderRadius: 8, flexShrink: 0 }}
-        >
-          <div style={{ width: 30, height: 18, borderRadius: 9, background: allowDownload ? C.green : C.separator, position: "relative", flexShrink: 0 }}>
-            <div style={{ width: 14, height: 14, borderRadius: "50%", background: "#fff", position: "absolute", top: 2, left: allowDownload ? 14 : 2, transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.2)" }} />
-          </div>
-          <span style={{ fontSize: 12, fontWeight: 700, color: allowDownload ? C.green : C.textTertiary }}>⬇ Downloads {allowDownload ? "ON" : "OFF"}</span>
-        </div>
-
-        <div style={{ flex: 1, minWidth: 0 }} />
-
-        {/* PREVIEW + DELETE */}
-        <button onClick={() => { setPreviewAnswers({}); setPreviewOpen(true); }} style={{ ...TS.input, padding: "8px 14px", background: C.medBlueSoft, color: C.medBlue, border: `1px solid ${C.medBlue}22`, borderRadius: 8, fontWeight: 600, cursor: "pointer", fontSize: 13, flexShrink: 0 }} title="Preview the form as users will see it">👁 Preview</button>
-        {isEditing && (
-          <button onClick={() => setShowDeleteConfirm(true)} style={{ ...TS.input, padding: "8px 14px", background: C.redBg, color: C.red, border: `1px solid ${C.red}22`, borderRadius: 8, fontWeight: 600, cursor: "pointer", fontSize: 13, flexShrink: 0 }} title="Delete this form permanently">Delete</button>
+        {f.type === "text" && (
+          <input type="text" value={preview[f.id] ?? ""} placeholder={f.config.placeholder || ""} onChange={(e) => setPreviewValue(f.id, e.target.value)} style={previewInput} />
         )}
-      </div>
 
-      {saveError && (
-        <div style={{ width: "100%", maxWidth: PAGE_MAX, margin: "0 auto", padding: `16px ${gutter} 0`, boxSizing: "border-box" }}>
-          <div style={{ background: C.redBg, color: C.red, borderRadius: 12, padding: "14px 20px", fontWeight: 600, fontSize: 14, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-            <span>⚠ {saveError}</span>
-            <button onClick={() => setSaveError(null)} style={{ background: "none", border: "none", color: C.red, cursor: "pointer", fontWeight: 700, fontSize: 14 }}>✕</button>
-          </div>
-        </div>
-      )}
+        {f.type === "longtext" && (
+          <textarea rows={3} value={preview[f.id] ?? ""} placeholder={f.config.placeholder || ""} onChange={(e) => setPreviewValue(f.id, e.target.value)} style={{ ...previewInput, resize: "vertical" }} />
+        )}
 
-      {offlineSaved && (
-        <div style={{ width: "100%", maxWidth: PAGE_MAX, margin: "0 auto", padding: `16px ${gutter} 0`, boxSizing: "border-box" }}>
-          <div style={{ background: C.greenBg, color: C.green, borderRadius: 12, padding: "14px 20px", fontWeight: 600, fontSize: 14 }}>
-            ✓ Saved offline — this form is stored on this device and will sync automatically when you're back online.
-          </div>
-        </div>
-      )}
+        {f.type === "number" && (() => {
+          const pv = preview[f.id] ?? {};
+          const units = Array.isArray(f.config.unitOptions) ? f.config.unitOptions : [];
+          const v = pv?.v ?? "";
+          const u = pv?.u ?? f.config.unit ?? "";
+          return (
+            <div style={{ display: "flex", gap: 8 }}>
+              <input type="number" value={v} min={f.config.min} max={f.config.max} step={f.config.step || 1} onChange={(e) => setPreviewValue(f.id, { v: e.target.value, u: u || null })} style={previewInput} />
+              {units.length > 0 && (
+                <select value={u} onChange={(e) => setPreviewValue(f.id, { v, u: e.target.value })} style={{ ...previewInput, width: 96, flexShrink: 0 }}>
+                  <option value="">—</option>
+                  {units.map((un) => <option key={un} value={un}>{un}</option>)}
+                </select>
+              )}
+            </div>
+          );
+        })()}
 
-      {/* ============ CONTENT ============ */}
-      <div style={{ width: "100%", maxWidth: PAGE_MAX, margin: "0 auto", padding: `20px ${gutter} 72px`, boxSizing: "border-box" }}>
+        {f.type === "date" && (
+          <input type="date" value={preview[f.id] ?? ""} onChange={(e) => setPreviewValue(f.id, e.target.value)} style={previewInput} />
+        )}
 
-        {/* PALETTE BAR */}
-        <div style={{ background: C.card, borderRadius: 14, border: `1px solid ${C.separator}`, padding: "10px 16px", marginBottom: 18, display: "flex", gap: 16, flexWrap: "wrap", alignItems: "center", boxShadow: "0 2px 12px rgba(0,0,0,0.04)" }}>
-          {groups.map((g, gi) => (
-            <React.Fragment key={g}>
-              {gi > 0 && <div style={{ width: 1, height: 22, background: C.separator, flexShrink: 0 }} />}
-              <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-                <span style={{ ...TS.caption, fontSize: 10, color: C.textTertiary }}>{g}</span>
-                {(Object.keys(TYPE_META) as FieldType[]).filter((t) => TYPE_META[t].group === g).map((t) => (
-                  <button key={t} onClick={() => addField(t)} title={`Add ${TYPE_META[t].label}`} style={{ ...paletteChip, display: "flex", alignItems: "center", gap: 5 }}>
-                    <span style={{ color: C.medBlue }}>{TYPE_META[t].icon}</span> {TYPE_META[t].label}
-                  </button>
-                ))}
+        {f.type === "select" && (
+          <select value={preview[f.id] ?? ""} onChange={(e) => setPreviewValue(f.id, e.target.value)} style={previewInput}>
+            <option value="">Select…</option>
+            {(f.options || []).map((o) => <option key={o} value={o}>{o}</option>)}
+          </select>
+        )}
+
+        {f.type === "multiselect" && (() => {
+          const arr: string[] = Array.isArray(preview[f.id]) ? preview[f.id] : [];
+          return (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {(f.options || []).map((o) => (
+                <label key={o} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14, fontFamily: FONT, color: C.textPrimary, cursor: "pointer" }}>
+                  <input type="checkbox" checked={arr.includes(o)} onChange={(e) => setPreviewValue(f.id, e.target.checked ? [...arr, o] : arr.filter((x) => x !== o))} />
+                  {o}
+                </label>
+              ))}
+            </div>
+          );
+        })()}
+
+        {f.type === "toggle" && (() => {
+          const opts = Array.isArray(f.options) && f.options.length === 2 ? f.options : ["Yes", "No"];
+          const on = preview[f.id] === true;
+          return (
+            <div onClick={() => setPreviewValue(f.id, !on)} style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", userSelect: "none" }}>
+              <div style={{ width: 40, height: 24, borderRadius: 12, background: on ? C.green : C.separator, position: "relative", flexShrink: 0, transition: "background 0.2s" }}>
+                <div style={{ width: 20, height: 20, borderRadius: "50%", background: "#fff", position: "absolute", top: 2, left: on ? 18 : 2, transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.2)" }} />
               </div>
-            </React.Fragment>
-          ))}
+              <span style={{ ...TS.body, fontSize: 15 }}>{on ? opts[0] : opts[1]}</span>
+            </div>
+          );
+        })()}
+      </div>
+    );
+  }
+
+  // -------- edit-mode field card --------
+  function renderFieldCard(f: BuilderField, idx: number) {
+    const staticType = f.type === "header" || f.type === "note";
+    const width: WidthKey = f.config.width === "half" ? "half" : "full";
+    return (
+      <div key={f.id} style={{ ...cardShell, display: "flex", flexDirection: "column", gap: 12 }}>
+        {/* row 1: type · label · actions */}
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <select value={f.type} onChange={(e) => changeType(f.id, e.target.value as FieldType)} title="Field type" style={{ ...smallInput, width: 128, flexShrink: 0, fontWeight: 700 }}>
+            {FIELD_TYPES.map((t) => <option key={t.type} value={t.type}>{t.icon} {t.label}</option>)}
+          </select>
+          <input value={f.label} onChange={(e) => updateField(f.id, { label: e.target.value })} placeholder={staticType ? (f.type === "header" ? "Section title (e.g. Vital Signs)" : "Note text shown to the user") : "Field label (e.g. Weight)"} style={{ ...smallInput, flex: 1, minWidth: 160, fontSize: 14, fontWeight: 600 }} />
+          <button onClick={() => setFields((p) => moveField(p, idx, -1))} disabled={idx === 0} title="Move up" style={{ ...iconBtn, opacity: idx === 0 ? 0.35 : 1 }}>↑</button>
+          <button onClick={() => setFields((p) => moveField(p, idx, 1))} disabled={idx === fields.length - 1} title="Move down" style={{ ...iconBtn, opacity: idx === fields.length - 1 ? 0.35 : 1 }}>↓</button>
+          <button onClick={() => setFields((p) => duplicateField(p, idx))} title="Duplicate field" style={iconBtn}>⧉</button>
+          <button onClick={() => removeField(idx)} title="Delete field" style={{ ...iconBtn, color: C.red, background: C.redBg, borderColor: `${C.red}22` }}>✕</button>
         </div>
 
-        <div
-          onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; }}
-          onDrop={handleDropOnCanvas}
-          style={{ width: "100%", background: C.card, borderRadius: 16, border: `1px solid ${C.separator}`, boxShadow: "0 2px 12px rgba(0,0,0,0.04)", overflow: "hidden", boxSizing: "border-box", minWidth: 0 }}
-        >
-          {/* Form header */}
-          <div style={{ padding: `28px ${canvasPad} 20px`, borderBottom: `3px solid ${C.medBlue}` }}>
-            <input ref={titleRef} value={title} onChange={(e) => { setTitle(e.target.value); setSaveError(null); }} placeholder="Form title" style={{ ...TS.h1, width: "100%", border: "none", outline: "none", background: "transparent" }} />
-            <textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Form description or instructions (optional)" style={{ ...TS.body, width: "100%", minHeight: 24, border: "none", outline: "none", background: "transparent", resize: "none", color: C.textSecondary, marginTop: 4 }} />
-            <div style={{ marginTop: 8 }}>
-              <span style={{ ...TS.caption, fontSize: 10, display: "inline-block", color: everyoneVisible ? C.green : C.medBlue, background: everyoneVisible ? C.greenBg : C.medBlueBg, padding: "3px 9px", borderRadius: 20 }}>
-                👁 Visible to: {everyoneVisible ? "Everyone (trainers + trainees)" : visibleTo.includes("trainer") ? "Trainers only" : "Trainees only"}
-              </span>
+        {/* row 2: layout width · required */}
+        <div style={{ display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
+          {!staticType && (
+            <div style={{ display: "inline-flex", border: `1px solid ${C.separator}`, borderRadius: 9, overflow: "hidden" }}>
+              {(["full", "half"] as WidthKey[]).map((w) => (
+                <button key={w} onClick={() => updateConfig(f.id, { width: w })} title={w === "full" ? "Takes the whole line" : "Two fields share one row"}
+                  style={{ padding: "6px 12px", fontSize: 12, fontWeight: 700, fontFamily: FONT, cursor: "pointer", border: "none", background: width === w ? C.medBlue : C.card, color: width === w ? "#fff" : C.textSecondary }}>
+                  {w === "full" ? "▭ Full (1/1)" : "◨ Half (1/2)"}
+                </button>
+              ))}
+            </div>
+          )}
+          {ANSWERABLE.includes(f.type) && (
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, fontWeight: 600, fontFamily: FONT, color: C.textSecondary, cursor: "pointer" }}>
+              <input type="checkbox" checked={!!f.config.required} onChange={(e) => updateConfig(f.id, { required: e.target.checked })} />
+              Required
+            </label>
+          )}
+        </div>
+
+        {/* row 3: type-specific config */}
+        {f.type === "number" && (
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {([["Min", "min"], ["Max", "max"], ["Step", "step"]] as const).map(([lbl, key]) => (
+              <div key={key} style={{ width: 84 }}>
+                <div style={{ ...TS.caption, fontSize: 9, color: C.textTertiary, marginBottom: 3 }}>{lbl}</div>
+                <input type="number" value={f.config[key] ?? ""} onChange={(e) => { const s = e.target.value.trim(); updateConfig(f.id, { [key]: s === "" ? undefined : Number(s) } as Partial<FieldConfig>); }} style={smallInput} />
+              </div>
+            ))}
+            <div style={{ flex: 1, minWidth: 180 }}>
+              <div style={{ ...TS.caption, fontSize: 9, color: C.textTertiary, marginBottom: 3 }}>Units (comma separated)</div>
+              <input value={(f.config.unitOptions || []).join(", ")} onChange={(e) => {
+                const units = e.target.value.split(",").map((s) => s.trim()).filter(Boolean);
+                updateConfig(f.id, { unitOptions: units.length ? units : undefined, unit: units.length ? (f.config.unit && units.includes(f.config.unit) ? f.config.unit : units[0]) : undefined });
+              }} placeholder="e.g. kg, g, mg" style={smallInput} />
             </div>
           </div>
+        )}
 
-          {/* Fields */}
-          <div style={{ padding: `20px ${canvasPad} 32px` }}>
-            <DropLine slot={0} />
-
-            {fields.length === 0 && (
-              <div style={{ padding: "48px 24px", textAlign: "center", border: `2px dashed ${C.separator}`, borderRadius: 12, background: C.bg }}>
-                <p style={{ ...TS.bodySm, margin: "0 0 12px" }}>This form is empty. Add a field from the bar above{!isEditing ? ", or load a ready-made example." : "."}</p>
-                {!isEditing && (
-                  <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap" }}>
-                    <button onClick={() => loadExample("medical")} style={{ ...TS.input, padding: "9px 16px", background: C.redBg, color: C.red, border: `1px solid ${C.red}22`, borderRadius: 10, fontSize: 13, fontWeight: 600, cursor: "pointer" }}>🩺 Medical Form example</button>
-                    <button onClick={() => loadExample("school")} style={{ ...TS.input, padding: "9px 16px", background: C.medBlueBg, color: C.medBlue, border: "none", borderRadius: 10, fontSize: 13, fontWeight: 600, cursor: "pointer" }}>🏫 School Admission example</button>
-                  </div>
-                )}
+        {needsOptions(f.type) && f.type !== "toggle" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <div style={{ ...TS.caption, fontSize: 9, color: C.textTertiary }}>{f.type === "select" ? "Dropdown options" : "Checkbox options"}</div>
+            {(f.options || []).map((o, oi) => (
+              <div key={oi} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                <input value={o} onChange={(e) => { const arr = [...(f.options || [])]; arr[oi] = e.target.value; updateField(f.id, { options: arr }); }} placeholder={`Option ${oi + 1}`} style={smallInput} />
+                <button onClick={() => updateField(f.id, { options: (f.options || []).filter((_, x) => x !== oi) })} title="Remove option" style={{ ...iconBtn, color: C.red }}>✕</button>
               </div>
-            )}
+            ))}
+            <button onClick={() => updateField(f.id, { options: [...(f.options || []), `Option ${(f.options?.length || 0) + 1}`] })} style={{ ...smallInput, width: "auto", alignSelf: "flex-start", background: C.medBlueSoft, color: C.medBlue, border: `1px solid ${C.medBlue}22`, fontWeight: 700, cursor: "pointer", padding: "6px 12px" }}>+ Add option</button>
+          </div>
+        )}
 
-            {fields.map((field, index) => {
-              const meta = TYPE_META[field.type] || { icon: "?", label: field.type, group: "" };
-              const isHover = hoverId === field.id;
-              const isDragging = dragFromIdx === index;
-              const cfg = field.config || {};
-
-              const labelColor = cfg.labelColor;
-              const sectionColor = cfg.sectionColor || C.purple;
-
-              const toolbar = (
-                <div
-                  onMouseDown={(e) => e.stopPropagation()}
-                  style={{ position: "absolute", top: 8, right: 10, display: "flex", gap: 5, alignItems: "center", background: C.card, border: `1px solid ${C.separator}`, borderRadius: 10, padding: "4px 6px", boxShadow: "0 4px 14px rgba(0,0,0,0.10)", opacity: isHover || isDragging ? 1 : 0, pointerEvents: isHover || isDragging ? "auto" : "none", transition: "opacity 0.15s", zIndex: 5 }}
-                >
-                  <span
-                    title="Drag to move"
-                    onMouseDown={() => { dragArmed.current = true; }}
-                    onMouseUp={() => { dragArmed.current = false; }}
-                    style={{ cursor: "grab", color: C.textTertiary, fontSize: 14, padding: "2px 4px" }}
-                  >⠿</span>
-                  <label title="Text colour" style={{ ...hoverBtn, position: "relative", overflow: "hidden" }}>
-                    🎨
-                    <input
-                      type="color"
-                      value={labelColor || "#1C1C1E"}
-                      onChange={(e) => setColorKey(field.id, "labelColor", e.target.value)}
-                      style={{ position: "absolute", inset: 0, opacity: 0, cursor: "pointer", width: "100%", height: "100%" }}
-                    />
-                  </label>
-                  {labelColor && (
-                    <button onClick={() => setColorKey(field.id, "labelColor", undefined)} title="Reset colour to default" style={{ ...hoverBtn, color: C.textTertiary }}>⟲</button>
-                  )}
-                  <button onClick={() => updateField(field.id, "required", !field.required)} title="Required" style={{ ...hoverBtn, color: field.required ? C.red : C.textTertiary, borderColor: field.required ? C.red + "55" : C.separator, fontWeight: 700 }}>*</button>
-                  <button onClick={() => duplicateField(field.id)} title="Duplicate" style={hoverBtn}>⧉</button>
-                  <button onClick={() => moveField(index, "up")} disabled={index === 0} style={{ ...hoverBtn, opacity: index === 0 ? 0.35 : 1 }}>↑</button>
-                  <button onClick={() => moveField(index, "down")} disabled={index === fields.length - 1} style={{ ...hoverBtn, opacity: index === fields.length - 1 ? 0.35 : 1 }}>↓</button>
-                  <button onClick={() => removeField(field.id)} title="Remove" style={{ ...hoverBtn, color: C.red }}>✕</button>
-                </div>
-              );
-
-              const dragProps = {
-                draggable: true,
-                onDragStart: (e: React.DragEvent) => handleDragStart(e, index),
-                onDragEnd: handleDragEnd,
-                onDragOver: (e: React.DragEvent) => handleDragOverCard(e, index),
-                onDrop: handleDropOnCanvas,
-              };
-
-              /* ---------- SECTION ---------- */
-              if (field.type === "header") {
-                return (
-                  <React.Fragment key={field.id}>
-                    <div
-                      {...dragProps}
-                      onMouseEnter={() => setHoverId(field.id)}
-                      onMouseLeave={() => setHoverId((h) => (h === field.id ? null : h))}
-                      style={{ position: "relative", margin: `26px calc(-1 * ${canvasPad}) 4px`, padding: `14px ${canvasPad} 14px 28px`, background: sectionColor + "14", borderLeft: `5px solid ${sectionColor}`, borderTop: `1px solid ${C.separator}`, borderBottom: `1px solid ${C.separator}`, cursor: dragArmed.current ? "grabbing" : "default", opacity: isDragging ? 0.35 : 1, transition: "opacity 0.15s" }}
-                    >
-                      {toolbar}
-                      <div style={{ ...TS.caption, fontSize: 10, color: sectionColor, marginBottom: 4 }}>Section</div>
-                      <input placeholder="Section title (e.g. Patient Information)" value={field.label || ""} onChange={(e) => updateField(field.id, "label", e.target.value)} style={{ ...TS.h2, width: "100%", border: "none", outline: "none", background: "transparent", color: sectionColor }} />
-                    </div>
-                    <DropLine slot={index + 1} />
-                  </React.Fragment>
-                );
-              }
-
-              /* ---------- RICH NOTE ---------- */
-              if (field.type === "note") {
-                return (
-                  <React.Fragment key={field.id}>
-                    <div
-                      {...dragProps}
-                      onMouseEnter={() => setHoverId(field.id)}
-                      onMouseLeave={() => setHoverId((h) => (h === field.id ? null : h))}
-                      style={{ position: "relative", margin: "10px 0 4px", padding: 16, background: C.orangeBg, borderRadius: 12, border: `1px solid ${C.orange}33`, opacity: isDragging ? 0.35 : 1, transition: "opacity 0.15s" }}
-                    >
-                      {toolbar}
-                      <div style={{ ...TS.caption, fontSize: 10, color: C.orange, marginBottom: 8 }}>Rich Note</div>
-                      <NoteEditor value={field.label} onChange={(v: string) => updateField(field.id, "label", v)} placeholder="Note shown to users — add formatting, images or video..." />
-                    </div>
-                    <DropLine slot={index + 1} />
-                  </React.Fragment>
-                );
-              }
-
-              /* ---------- ANSWERABLE FIELDS ---------- */
+        {f.type === "toggle" && (
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {([["ON label (true)", 0], ["OFF label (false)", 1]] as const).map(([lbl, i]) => {
+              const opts = Array.isArray(f.options) && f.options.length === 2 ? f.options : ["Yes", "No"];
               return (
-                <React.Fragment key={field.id}>
-                  <div
-                    {...dragProps}
-                    onMouseEnter={() => setHoverId(field.id)}
-                    onMouseLeave={() => setHoverId((h) => (h === field.id ? null : h))}
-                    style={{ position: "relative", margin: "10px 0 4px", padding: "16px 16px 14px", borderRadius: 12, border: `1px solid ${isHover ? C.medBlue + "55" : C.separator}`, background: isDragging ? C.bg : (isHover ? "#FBFDFF" : C.card), opacity: isDragging ? 0.45 : 1, transition: "border-color 0.15s, background 0.15s, opacity 0.15s", cursor: dragArmed.current ? "grabbing" : "default" }}
-                  >
-                    {toolbar}
-
-                    <div style={{ display: "flex", alignItems: "baseline", gap: 6, marginBottom: 10, minWidth: 0 }}>
-                      <input
-                        placeholder="Field label (e.g. Age, Height, Sex)"
-                        value={field.label}
-                        onChange={(e) => updateField(field.id, "label", e.target.value)}
-                        style={{ ...TS.h3, flex: 1, minWidth: 0, border: "none", outline: "none", background: "transparent", padding: 0, color: labelColor || C.textPrimary }}
-                      />
-                      {field.required && <span style={{ color: labelColor || C.red, fontWeight: 700, fontSize: 16, flexShrink: 0 }}>*</span>}
-                      <span title={meta.label} style={{ ...TS.caption, fontSize: 9, color: C.textTertiary, background: C.bg, border: `1px solid ${C.separator}`, padding: "2px 7px", borderRadius: 6, flexShrink: 0 }}>{meta.icon} {meta.label}</span>
-                    </div>
-
-                    {field.type === "textarea" ? (
-                      <textarea readOnly placeholder={field.placeholder || "Long answer"} value="" style={{ ...inputStyle, minHeight: 64, resize: "none", color: C.textTertiary }} />
-                    ) : field.type === "dropdown" ? (
-                      <div>
-                        <div style={{ ...inputStyle, color: C.textTertiary, display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "default" }}>
-                          <span>{field.placeholder || "Select an option"}</span><span style={{ color: C.textTertiary }}>▾</span>
-                        </div>
-                        <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 5 }}>
-                          {field.options.map((opt, i) => (
-                            <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-                              <span style={{ width: 15, height: 15, borderRadius: "50%", border: `2px solid ${C.separator}`, flexShrink: 0 }} />
-                              <input style={{ flex: 1, minWidth: 0, border: "none", outline: "none", background: "transparent", fontSize: 14, color: C.textPrimary }} value={opt} onChange={(e) => updateOption(field.id, i, e.target.value)} placeholder={`Option ${i + 1}`} />
-                              {field.options.length > 1 && <button onMouseDown={(e) => e.preventDefault()} onClick={() => removeOption(field.id, i)} style={{ background: "none", border: "none", color: C.red, cursor: "pointer", opacity: 0.6, fontSize: 13, flexShrink: 0 }}>✕</button>}
-                            </div>
-                          ))}
-                          <button onMouseDown={(e) => e.preventDefault()} onClick={() => addOption(field.id)} style={{ alignSelf: "flex-start", background: "none", border: "none", color: C.medBlue, cursor: "pointer", fontSize: 13, fontWeight: 600, padding: 0 }}>+ Add option</button>
-                        </div>
-                      </div>
-                    ) : field.type === "radio" ? (
-                      <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-                        {field.options.map((opt, i) => (
-                          <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-                            <span style={{ width: 15, height: 15, borderRadius: "50%", border: `2px solid ${C.separator}`, flexShrink: 0 }} />
-                            <input style={{ flex: 1, minWidth: 0, border: "none", outline: "none", background: "transparent", fontSize: 14, color: C.textPrimary }} value={opt} onChange={(e) => updateOption(field.id, i, e.target.value)} placeholder={`Option ${i + 1}`} />
-                            {field.options.length > 1 && <button onMouseDown={(e) => e.preventDefault()} onClick={() => removeOption(field.id, i)} style={{ background: "none", border: "none", color: C.red, cursor: "pointer", opacity: 0.6, fontSize: 13, flexShrink: 0 }}>✕</button>}
-                          </div>
-                        ))}
-                        <button onMouseDown={(e) => e.preventDefault()} onClick={() => addOption(field.id)} style={{ alignSelf: "flex-start", background: "none", border: "none", color: C.medBlue, cursor: "pointer", fontSize: 13, fontWeight: 600, padding: 0 }}>+ Add option</button>
-                      </div>
-                    ) : field.type === "checkbox" ? (
-                      <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-                        {field.options.map((opt, i) => (
-                          <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-                            <span style={{ width: 15, height: 15, borderRadius: 4, border: `2px solid ${C.separator}`, flexShrink: 0 }} />
-                            <input style={{ flex: 1, minWidth: 0, border: "none", outline: "none", background: "transparent", fontSize: 14, color: C.textPrimary }} value={opt} onChange={(e) => updateOption(field.id, i, e.target.value)} placeholder={`Option ${i + 1}`} />
-                            {field.options.length > 1 && <button onMouseDown={(e) => e.preventDefault()} onClick={() => removeOption(field.id, i)} style={{ background: "none", border: "none", color: C.red, cursor: "pointer", opacity: 0.6, fontSize: 13, flexShrink: 0 }}>✕</button>}
-                          </div>
-                        ))}
-                        <button onMouseDown={(e) => e.preventDefault()} onClick={() => addOption(field.id)} style={{ alignSelf: "flex-start", background: "none", border: "none", color: C.medBlue, cursor: "pointer", fontSize: 13, fontWeight: 600, padding: 0 }}>+ Add option</button>
-                      </div>
-                    ) : field.type === "toggle" ? (
-                      <div>
-                        <div style={{ display: "flex", background: C.bg, borderRadius: 10, padding: 4, gap: 4, maxWidth: 240 }}>
-                          <span style={{ flex: 1, textAlign: "center", padding: "8px 0", borderRadius: 8, background: labelColor || C.medBlue, color: "#fff", fontWeight: 700, fontSize: 13 }}>{field.options[0] || "F"}</span>
-                          <span style={{ flex: 1, textAlign: "center", padding: "8px 0", borderRadius: 8, color: C.textTertiary, fontWeight: 700, fontSize: 13 }}>{field.options[1] || "M"}</span>
-                        </div>
-                        <div style={{ display: "flex", gap: 8, marginTop: 8, maxWidth: 340 }}>
-                          <input value={field.options[0] ?? ""} onChange={(e) => { const o = [...field.options]; o[0] = e.target.value; updateField(field.id, "options", o); }} style={miniInput} placeholder="Left label (e.g. F)" />
-                          <input value={field.options[1] ?? ""} onChange={(e) => { const o = [...field.options]; o[1] = e.target.value; updateField(field.id, "options", o); }} style={miniInput} placeholder="Right label (e.g. M)" />
-                        </div>
-                      </div>
-                    ) : field.type === "range" ? (
-                      <div>
-                        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                          <div style={{ flex: 1, height: 4, borderRadius: 2, background: C.separator, position: "relative" }}>
-                            <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: "50%", background: labelColor || C.medBlue, borderRadius: 2 }} />
-                            <div style={{ position: "absolute", left: "50%", top: "50%", transform: "translate(-50%, -50%)", width: 18, height: 18, borderRadius: "50%", background: "#fff", border: `2px solid ${labelColor || C.medBlue}`, boxShadow: "0 1px 4px rgba(0,0,0,0.2)" }} />
-                          </div>
-                          <span style={{ minWidth: 48, fontWeight: 700, fontSize: 14, color: labelColor || C.textTertiary }}>{Math.floor(((cfg.min ?? 0) + (cfg.max ?? 100)) / 2)}{cfg.unit ? ` ${cfg.unit}` : ""}</span>
-                        </div>
-                        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100px, 100%), 1fr))", gap: 8, marginTop: 10, maxWidth: 340 }}>
-                          <div><label style={miniLabel}>Min</label><input type="number" value={cfg.min ?? ""} onChange={(e) => updateConfig(field.id, "min", e.target.value === "" ? undefined : Number(e.target.value))} style={miniInput} /></div>
-                          <div><label style={miniLabel}>Max</label><input type="number" value={cfg.max ?? ""} onChange={(e) => updateConfig(field.id, "max", e.target.value === "" ? undefined : Number(e.target.value))} style={miniInput} /></div>
-                          <div><label style={miniLabel}>Step</label><input type="number" value={cfg.step ?? ""} onChange={(e) => updateConfig(field.id, "step", e.target.value === "" ? undefined : Number(e.target.value))} style={miniInput} /></div>
-                        </div>
-                      </div>
-                    ) : field.type === "number" ? (
-                      <div>
-                        <div style={{ display: "flex", gap: 8 }}>
-                          <div style={{ ...inputStyle, color: C.textTertiary, flex: 1, minWidth: 0 }}>0</div>
-                          {(cfg.unitOptions || []).length > 0 && (
-                            <div style={{ ...inputStyle, width: 90, flexShrink: 0, color: C.textTertiary, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                              <span>{cfg.unit || "unit"}</span><span style={{ color: C.textTertiary }}>▾</span>
-                            </div>
-                          )}
-                        </div>
-                        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(120px, 100%), 1fr))", gap: 8, marginTop: 10 }}>
-                          <div><label style={miniLabel}>Min</label><input type="number" value={cfg.min ?? ""} onChange={(e) => updateConfig(field.id, "min", e.target.value === "" ? undefined : Number(e.target.value))} style={miniInput} /></div>
-                          <div><label style={miniLabel}>Max</label><input type="number" value={cfg.max ?? ""} onChange={(e) => updateConfig(field.id, "max", e.target.value === "" ? undefined : Number(e.target.value))} style={miniInput} /></div>
-                          <div><label style={miniLabel}>Decimals (step)</label><input type="number" value={cfg.step ?? ""} onChange={(e) => updateConfig(field.id, "step", e.target.value === "" ? undefined : Number(e.target.value))} style={miniInput} placeholder="1 = whole" /></div>
-                          <div><label style={miniLabel}>Unit</label><input value={cfg.unit ?? ""} onChange={(e) => updateConfig(field.id, "unit", e.target.value)} style={miniInput} placeholder="cm / kg" /></div>
-                          <div><label style={miniLabel}>Unit choices</label><input value={(cfg.unitOptions || []).join(", ")} onChange={(e) => updateConfig(field.id, "unitOptions", e.target.value.split(",").map((s) => s.trim()).filter(Boolean))} style={miniInput} placeholder="cm, m" /></div>
-                        </div>
-                      </div>
-                    ) : (
-                      <div style={{ display: "flex", gap: 8 }}>
-                        <div style={{ ...inputStyle, flex: 1, minWidth: 0, color: C.textTertiary }}>
-                          {field.placeholder || (field.type === "date" ? "DD/MM/YYYY" : field.type === "time" ? "--:--" : field.type === "phone" ? "+1 555 000 0000" : field.type === "email" ? "name@example.com" : "Short answer")}
-                        </div>
-                      </div>
-                    )}
-
-                    {(field.type === "text" || field.type === "phone" || field.type === "email" || field.type === "textarea" || field.type === "date" || field.type === "time") && (
-                      <input
-                        placeholder={field.type === "date" ? 'Hint — date format e.g. "DD/MM/YYYY"' : "Hint / placeholder (optional)"}
-                        value={field.placeholder}
-                        onChange={(e) => updateField(field.id, "placeholder", e.target.value)}
-                        style={{ marginTop: 10, width: "100%", padding: "6px 10px", border: "none", outline: "none", background: "transparent", fontSize: 12, color: C.textTertiary, borderBottom: `1px dashed ${C.separator}`, boxSizing: "border-box" }}
-                      />
-                    )}
-                  </div>
-                  <DropLine slot={index + 1} />
-                </React.Fragment>
+                <div key={i} style={{ flex: 1, minWidth: 140 }}>
+                  <div style={{ ...TS.caption, fontSize: 9, color: C.textTertiary, marginBottom: 3 }}>{lbl}</div>
+                  <input value={opts[i]} onChange={(e) => { const arr = [...opts]; arr[i] = e.target.value; updateField(f.id, { options: arr }); }} style={smallInput} />
+                </div>
               );
             })}
           </div>
-        </div>
+        )}
 
-        <p style={{ ...TS.bodySm, margin: "12px 4px 0", fontSize: 12 }}>
-          Tip: grab the ⠿ handle and drag any field to reorder it — a blue drop line shows where it will land. Hover a field to reveal its toolbar (colour, required, duplicate, move, delete).
-        </p>
+        {(f.type === "text" || f.type === "longtext") && (
+          <div>
+            <div style={{ ...TS.caption, fontSize: 9, color: C.textTertiary, marginBottom: 3 }}>Placeholder (optional)</div>
+            <input value={f.config.placeholder || ""} onChange={(e) => updateConfig(f.id, { placeholder: e.target.value || undefined })} placeholder="e.g. Type here…" style={smallInput} />
+          </div>
+        )}
+
+        {f.type === "header" && (
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <div style={{ ...TS.caption, fontSize: 9, color: C.textTertiary }}>Title colour</div>
+            {SECTION_COLORS.map((col) => (
+              <button key={col} onClick={() => updateConfig(f.id, { sectionColor: col })} title={col}
+                style={{ width: 24, height: 24, borderRadius: "50%", background: col, cursor: "pointer", border: (f.config.sectionColor || C.textPrimary) === col ? "2px solid #fff" : "none", boxShadow: (f.config.sectionColor || C.textPrimary) === col ? `0 0 0 2px ${col}` : "0 0 0 1px rgba(0,0,0,0.08)", padding: 0 }} />
+            ))}
+          </div>
+        )}
       </div>
+    );
+  }
 
-      {/* ============ PREVIEW MODAL ============ */}
-      {previewOpen && (
-        <div onClick={() => setPreviewOpen(false)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
-          <div onClick={(e) => e.stopPropagation()} style={{ background: C.card, borderRadius: 16, width: "100%", maxWidth: 640, maxHeight: "85vh", overflowY: "auto", boxSizing: "border-box" }}>
-            <div style={{ position: "sticky", top: 0, background: C.card, padding: "20px 24px 14px", borderBottom: `1px solid ${C.separator}`, display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, zIndex: 2 }}>
-              <div style={{ minWidth: 0 }}>
-                <div style={TS.h2}>{title || "Untitled form"}</div>
-                {description && <div style={{ ...TS.bodySm, marginTop: 4 }}>{description}</div>}
-              </div>
-              <button onClick={() => setPreviewOpen(false)} title="Close preview" style={{ background: C.bg, border: `1px solid ${C.separator}`, borderRadius: 8, width: 32, height: 32, cursor: "pointer", color: C.textSecondary, fontSize: 14, flexShrink: 0 }}>✕</button>
+  // ============================ render ============================
+
+  if (loading) {
+    return (
+      <div style={{ minHeight: "100%", background: C.bg, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: FONT }}>
+        <span style={{ ...TS.body, fontWeight: 500 }}>Loading form…</span>
+      </div>
+    );
+  }
+
+  const bannerColors: Record<string, { bg: string; fg: string }> = {
+    info: { bg: C.medBlueBg, fg: C.medBlue },
+    warn: { bg: C.orangeBg, fg: C.orange },
+    ok: { bg: C.greenBg, fg: C.green },
+    error: { bg: C.redBg, fg: C.red },
+  };
+
+  const answerableFields = fields.filter((f) => ANSWERABLE.includes(f.type));
+
+  return (
+    <div style={{ minHeight: "100%", background: C.bg, fontFamily: FONT, WebkitFontSmoothing: "antialiased" }}>
+      <style>{`button:focus-visible { outline: 2px solid ${C.medBlue}; outline-offset: 1px; }`}</style>
+
+      {/* ===== STICKY TOOLBAR — back · mode · save ===== */}
+      <div style={{ position: "sticky", top: 0, zIndex: 20, background: C.bg }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 24px", maxWidth: 940, margin: "0 auto", width: "100%", boxSizing: "border-box" }}>
+          <button onClick={() => navigate("/admin/forms")} title="Back to Forms" style={{ background: C.card, border: `1px solid ${C.separator}`, borderRadius: 10, color: C.medBlue, cursor: "pointer", width: 36, height: 36, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="15 18 9 12 15 6" /></svg>
+          </button>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ ...TS.h3, fontSize: 15, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+              {isNewRoute ? "New form" : "Edit form"}{dirty ? " •" : ""}
             </div>
-
-            <div style={{ padding: "20px 24px 28px", display: "flex", flexDirection: "column", gap: 16 }}>
-              {fields.length === 0 && (
-                <p style={{ ...TS.bodySm, margin: 0 }}>Nothing to preview yet — add some fields first.</p>
-              )}
-
-              {fields.map((f) => {
-                if (f.type === "header") {
-                  const sc = f.config?.sectionColor || C.purple;
-                  return (
-                    <div key={f.id} style={{ margin: "10px -24px 0", padding: "12px 24px", background: sc + "14", borderLeft: `5px solid ${sc}`, borderTop: `1px solid ${C.separator}`, borderBottom: `1px solid ${C.separator}` }}>
-                      <h2 style={{ ...TS.h2, margin: 0, color: sc }}>{f.label || "Untitled section"}</h2>
-                    </div>
-                  );
-                }
-                if (f.type === "note") {
-                  const html = /<[a-z][\s\S]*>/i.test(f.label || "");
-                  return html
-                    ? <div key={f.id} style={{ background: C.orangeBg, borderRadius: 10, padding: "14px 18px", fontSize: 14, color: "#7A4A00" }} dangerouslySetInnerHTML={{ __html: f.label }} />
-                    : <div key={f.id} style={{ background: C.orangeBg, borderRadius: 10, padding: "14px 18px", whiteSpace: "pre-wrap", fontSize: 14, color: "#7A4A00" }}>{f.label}</div>;
-                }
-
-                const val = previewAnswers[f.id];
-                const c = f.config || {};
-                const isObj = val && typeof val === "object" && !Array.isArray(val);
-                const numVal = isObj ? (val as any).v : (typeof val === "number" ? val : "");
-                const unitVal = isObj ? ((val as any).u || c.unit || "") : (c.unit || "");
-                const dispUnit = f.type === "range" ? (c.unit || "") : unitVal;
-
-                return (
-                  <div key={f.id} style={{ background: C.bg, borderRadius: 12, padding: "18px 22px", border: `1px solid ${C.separator}` }}>
-                    <div style={{ marginBottom: 10 }}>
-                      <span style={{ ...TS.h3, color: c.labelColor || undefined }}>{f.label || "(untitled)"}</span>
-                      {f.required && <span style={{ color: c.labelColor || C.red, fontWeight: 700 }}> *</span>}
-                    </div>
-
-                    {f.type === "textarea" ? (
-                      <textarea placeholder={f.placeholder || "Type your answer..."} value={typeof val === "string" ? val : ""} onChange={(e) => setPreviewAnswer(f.id, e.target.value)} style={{ ...inputStyle, minHeight: 90, resize: "vertical" }} />
-                    ) : f.type === "dropdown" ? (
-                      <select value={typeof val === "string" ? val : ""} onChange={(e) => setPreviewAnswer(f.id, e.target.value)} style={{ ...inputStyle, cursor: "pointer" }}>
-                        <option value="">{f.placeholder || "Select an option..."}</option>
-                        {f.options.map((o) => <option key={o} value={o}>{o}</option>)}
-                      </select>
-                    ) : f.type === "radio" ? (
-                      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                        {f.options.map((o) => (
-                          <label key={o} style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", fontSize: 15 }}>
-                            <input type="radio" name={`preview_${f.id}`} checked={val === o} onChange={() => setPreviewAnswer(f.id, o)} style={{ width: 18, height: 18, accentColor: c.labelColor || C.medBlue }} />
-                            {o}
-                          </label>
-                        ))}
-                      </div>
-                    ) : f.type === "checkbox" ? (
-                      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                        {f.options.map((o) => (
-                          <label key={o} style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", fontSize: 15 }}>
-                            <input type="checkbox" checked={Array.isArray(val) && val.includes(o)} onChange={(e) => {
-                              const cur: string[] = Array.isArray(val) ? val : [];
-                              setPreviewAnswer(f.id, e.target.checked ? [...cur, o] : cur.filter((x) => x !== o));
-                            }} style={{ width: 18, height: 18, accentColor: c.labelColor || C.green }} />
-                            {o}
-                          </label>
-                        ))}
-                      </div>
-                    ) : f.type === "toggle" ? (
-                      <div style={{ display: "flex", background: C.card, borderRadius: 10, padding: 4, gap: 4, maxWidth: 260 }}>
-                        {(f.options.length === 2 ? f.options : ["F", "M"]).map((o) => (
-                          <button key={o} type="button" onClick={() => setPreviewAnswer(f.id, o)} style={{ flex: 1, padding: "10px 0", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 14, cursor: "pointer", background: val === o ? (c.labelColor || C.medBlue) : "transparent", color: val === o ? "#fff" : C.textTertiary }}>{o}</button>
-                        ))}
-                      </div>
-                    ) : f.type === "range" ? (
-                      <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-                        <input type="range" min={c.min ?? 0} max={c.max ?? 100} step={c.step ?? 1} value={typeof numVal === "number" ? numVal : (c.min ?? 0)} onChange={(e) => setPreviewAnswer(f.id, Number(e.target.value))} style={{ flex: 1, accentColor: c.labelColor || C.medBlue }} />
-                        <span style={{ minWidth: 64, textAlign: "right", fontWeight: 700, fontSize: 15, color: c.labelColor || undefined }}>{typeof numVal === "number" ? numVal : (c.min ?? 0)}{dispUnit ? ` ${dispUnit}` : ""}</span>
-                      </div>
-                    ) : (
-                      <div style={{ display: "flex", gap: 8 }}>
-                        <input
-                          type={f.type === "date" ? "date" : f.type === "time" ? "time" : f.type === "number" ? "number" : f.type === "phone" ? "tel" : f.type === "email" ? "email" : "text"}
-                          step={f.type === "number" ? (c.step && c.step < 1 ? c.step : 1) : undefined}
-                          inputMode={f.type === "number" ? "numeric" : undefined}
-                          placeholder={f.placeholder || ""}
-                          value={f.type === "number" ? (numVal ?? "") : (typeof val === "string" ? val : "")}
-                          onChange={(e) => {
-                            if (f.type === "number") {
-                              const raw = e.target.value;
-                              if (raw === "") { setPreviewAnswer(f.id, { v: "", u: unitVal }); return; }
-                              const n = Number(raw);
-                              if (!Number.isNaN(n)) setPreviewAnswer(f.id, { v: n, u: unitVal });
-                            } else setPreviewAnswer(f.id, e.target.value);
-                          }}
-                          style={{ ...inputStyle, flex: 1, minWidth: 0 }}
-                        />
-                        {f.type === "number" && (c.unitOptions || []).length > 0 && (
-                          <select value={unitVal} onChange={(e) => setPreviewAnswer(f.id, { v: numVal, u: e.target.value })} style={{ ...inputStyle, width: 100, flexShrink: 0, padding: "8px 10px", cursor: "pointer" }}>
-                            <option value="">{c.unit || "unit"}</option>
-                            {(c.unitOptions || []).map((u) => <option key={u} value={u}>{u}</option>)}
-                          </select>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-
-            <div style={{ position: "sticky", bottom: 0, background: C.card, borderTop: `1px solid ${C.separator}`, padding: "12px 24px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
-              <span style={{ ...TS.bodySm, fontSize: 12 }}>Preview only — nothing is saved.</span>
-              <button onClick={() => setPreviewAnswers({})} style={{ ...TS.input, padding: "8px 14px", background: C.bg, border: `1px solid ${C.separator}`, borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Reset answers</button>
+            <div style={{ ...TS.bodySm, fontSize: 12, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+              {meta.title || "Untitled form"} · {fields.length} field{fields.length === 1 ? "" : "s"}
             </div>
           </div>
+          <button onClick={handleSave} disabled={saving} style={{ background: C.medBlue, color: "#fff", border: "none", borderRadius: 10, cursor: saving ? "default" : "pointer", padding: "9px 22px", fontSize: 14, fontWeight: 700, fontFamily: FONT, flexShrink: 0, boxShadow: "0 2px 8px rgba(0,122,255,0.25)", opacity: saving ? 0.7 : 1 }}>
+            {saving ? "Saving…" : "Save"}
+          </button>
         </div>
-      )}
+      </div>
 
-      {/* ============ DELETE CONFIRM MODAL ============ */}
-      {showDeleteConfirm && (
-        <div onClick={() => setShowDeleteConfirm(false)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 120, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
-          <div onClick={(e) => e.stopPropagation()} style={{ background: C.card, borderRadius: 16, width: "100%", maxWidth: 420, padding: 24, boxSizing: "border-box" }}>
-            <div style={TS.h3}>Delete this form?</div>
-            <p style={{ ...TS.bodySm, margin: "10px 0 18px" }}>This permanently removes the form, its fields and all submissions. This action cannot be undone.</p>
-            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
-              <button onClick={() => setShowDeleteConfirm(false)} style={{ ...TS.input, padding: "9px 16px", background: C.bg, border: `1px solid ${C.separator}`, borderRadius: 10, fontWeight: 600, cursor: "pointer", fontSize: 13 }}>Cancel</button>
-              <button onClick={handleDelete} disabled={deleting} style={{ ...TS.input, padding: "9px 16px", background: C.red, color: "#fff", border: "none", borderRadius: 10, fontWeight: 700, cursor: deleting ? "default" : "pointer", fontSize: 13, opacity: deleting ? 0.6 : 1 }}>{deleting ? "Deleting…" : "Delete"}</button>
+      <div style={{ maxWidth: 940, margin: "0 auto", padding: "16px 24px 110px", width: "100%", boxSizing: "border-box" }}>
+        {/* ===== status banners ===== */}
+        {pendingCount > 0 && (
+          <div style={{ background: C.medBlueBg, color: C.medBlue, borderRadius: 12, padding: "12px 18px", marginBottom: 12, fontSize: 13, fontWeight: 600 }}>
+            ⇅ {pendingCount} unsynced form change{pendingCount === 1 ? "" : "s"} — they'll upload automatically when you're online.
+          </div>
+        )}
+        {banner && (
+          <div style={{ background: bannerColors[banner.kind].bg, color: bannerColors[banner.kind].fg, borderRadius: 12, padding: "12px 18px", marginBottom: 12, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+            <span style={{ fontSize: 13, fontWeight: 600 }}>{banner.text}</span>
+            <button onClick={() => setBanner(null)} title="Dismiss" style={{ background: "none", border: "none", color: bannerColors[banner.kind].fg, cursor: "pointer", fontSize: 14, fontWeight: 700, padding: 2 }}>✕</button>
+          </div>
+        )}
+
+        {notFound ? (
+          <div style={{ ...cardShell, padding: "60px 40px", textAlign: "center" }}>
+            <h3 style={{ ...TS.h3, fontSize: 20, fontWeight: 700, margin: "0 0 8px" }}>Form not found</h3>
+            <p style={{ ...TS.bodySm, margin: 0 }}>This form may have been deleted. <button onClick={() => navigate("/admin/forms")} style={{ background: "none", border: "none", color: C.medBlue, fontWeight: 700, cursor: "pointer", fontSize: 14, fontFamily: FONT, padding: 0 }}>Back to Forms</button></p>
+          </div>
+        ) : (
+          <>
+            {/* ===== FORM META — name · description · settings ===== */}
+            <div style={{ ...cardShell, display: "flex", flexDirection: "column", gap: 14, marginBottom: 18 }}>
+              <div>
+                <div style={{ ...TS.caption, fontSize: 10, color: C.textTertiary, marginBottom: 6 }}>Form name</div>
+                <input ref={titleRef} value={meta.title} onChange={(e) => setMeta((m) => ({ ...m, title: e.target.value }))} placeholder="e.g. Patient Vitals Intake" style={bigInput} />
+              </div>
+              <div>
+                <div style={{ ...TS.caption, fontSize: 10, color: C.textTertiary, marginBottom: 6 }}>Description (optional)</div>
+                <input value={meta.description} onChange={(e) => setMeta((m) => ({ ...m, description: e.target.value }))} placeholder="Short instructions shown at the top of the form" style={metaInput} />
+              </div>
+              <div style={{ display: "flex", gap: 18, alignItems: "center", flexWrap: "wrap" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <div style={{ ...TS.caption, fontSize: 10, color: C.textTertiary }}>Status</div>
+                  <div style={{ display: "inline-flex", gap: 4 }}>
+                    {(["draft", "published", "closed"] as FormStatus[]).map((s) => (
+                      <button key={s} onClick={() => setMeta((m) => ({ ...m, status: s }))}
+                        style={{ padding: "6px 12px", fontSize: 12, fontWeight: 700, fontFamily: FONT, cursor: "pointer", borderRadius: 8, border: meta.status === s ? `1px solid ${STATUS_META[s].fg}44` : `1px solid ${C.separator}`, background: meta.status === s ? STATUS_META[s].bg : C.card, color: meta.status === s ? STATUS_META[s].fg : C.textSecondary }}>
+                        {STATUS_META[s].label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <div style={{ ...TS.caption, fontSize: 10, color: C.textTertiary }}>Audience</div>
+                  <div style={{ display: "inline-flex", gap: 4 }}>
+                    {(["everyone", "trainers", "trainees"] as AudienceKey[]).map((a) => (
+                      <button key={a} onClick={() => setMeta((m) => ({ ...m, audience: a }))}
+                        style={{ padding: "6px 12px", fontSize: 12, fontWeight: 700, fontFamily: FONT, cursor: "pointer", borderRadius: 8, border: meta.audience === a ? `1px solid ${AUDIENCE_META[a].fg}44` : `1px solid ${C.separator}`, background: meta.audience === a ? AUDIENCE_META[a].bg : C.card, color: meta.audience === a ? AUDIENCE_META[a].fg : C.textSecondary }}>
+                        {AUDIENCE_META[a].label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div onClick={() => setMeta((m) => ({ ...m, allowDownload: !m.allowDownload }))} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
+                  <div style={{ width: 34, height: 20, borderRadius: 10, background: meta.allowDownload ? C.green : C.separator, position: "relative", flexShrink: 0, transition: "background 0.2s" }}>
+                    <div style={{ width: 16, height: 16, borderRadius: "50%", background: "#fff", position: "absolute", top: 2, left: meta.allowDownload ? 16 : 2, transition: "left 0.2s" }} />
+                  </div>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: meta.allowDownload ? C.green : C.textTertiary }}>⬇ User downloads {meta.allowDownload ? "allowed" : "blocked"}</span>
+                </div>
+              </div>
             </div>
+
+            {/* ===== TABS — edit fields | preview ===== */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 14, flexWrap: "wrap" }}>
+              <div style={{ display: "inline-flex", background: C.card, border: `1px solid ${C.separator}`, borderRadius: 10, overflow: "hidden" }}>
+                {([["edit", "✎ Edit fields"], ["preview", "▷ Preview"]] as const).map(([key, lbl]) => (
+                  <button key={key} onClick={() => setTab(key)}
+                    style={{ padding: "9px 18px", fontSize: 13, fontWeight: 700, fontFamily: FONT, cursor: "pointer", border: "none", background: tab === key ? C.medBlue : C.card, color: tab === key ? "#fff" : C.textSecondary }}>
+                    {lbl}
+                  </button>
+                ))}
+              </div>
+              <span style={{ ...TS.bodySm, fontSize: 12 }}>◨ Half = two fields share a row · ▭ Full = whole line</span>
+            </div>
+
+            {tab === "edit" ? (
+              <>
+                <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                  {fields.length === 0 && (
+                    <div style={{ padding: "40px 24px", textAlign: "center", border: `2px dashed ${C.separator}`, borderRadius: 14, background: C.card }}>
+                      <p style={{ ...TS.body, margin: "0 0 4px", fontWeight: 600 }}>No fields yet</p>
+                      <p style={{ ...TS.bodySm, margin: 0 }}>Add your first entry field below — e.g. Short text for a name, Number for a measurement.</p>
+                    </div>
+                  )}
+                  {fields.map((f, idx) => renderFieldCard(f, idx))}
+                </div>
+
+                {/* add-field palette */}
+                <div style={{ ...cardShell, marginTop: 14 }}>
+                  <div style={{ ...TS.caption, fontSize: 10, color: C.textTertiary, marginBottom: 10 }}>Add a field</div>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    {FIELD_TYPES.map((t) => (
+                      <button key={t.type} onClick={() => addField(t.type)} title={`Add a ${t.label.toLowerCase()} field`}
+                        style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "8px 14px", fontSize: 13, fontWeight: 600, fontFamily: FONT, cursor: "pointer", borderRadius: 9, border: `1px solid ${C.medBlue}22`, background: C.medBlueSoft, color: C.medBlue }}>
+                        <span style={{ fontWeight: 800 }}>{t.icon}</span> {t.label}
+                      </button>
+                    ))}
+                  </div>
+                  <p style={{ ...TS.bodySm, fontSize: 12, margin: "10px 0 0" }}>New entry fields start at ½ width, so two of them sit side by side on one line.</p>
+                </div>
+              </>
+            ) : (
+              <>
+                {/* ===== LIVE PREVIEW — exactly how users will see & fill the form ===== */}
+                <div style={{ ...cardShell, marginBottom: 14 }}>
+                  <div style={{ fontSize: 22, fontWeight: 800, letterSpacing: "-0.02em", color: C.textPrimary, fontFamily: FONT }}>{meta.title || "Untitled form"}</div>
+                  {meta.description && <div style={{ ...TS.bodySm, marginTop: 4 }}>{meta.description}</div>}
+                </div>
+                <div style={gridStyle}>
+                  {fields.length === 0 && (
+                    <div style={{ gridColumn: "1 / -1", padding: "40px 24px", textAlign: "center", border: `2px dashed ${C.separator}`, borderRadius: 14, background: C.card }}>
+                      <p style={{ ...TS.bodySm, margin: 0 }}>Add fields in the Edit tab to see the form preview here.</p>
+                    </div>
+                  )}
+                  {fields.map((f) => renderPreviewField(f))}
+                </div>
+                {answerableFields.length > 0 && (
+                  <div style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 10, alignItems: "flex-start" }}>
+                    <button onClick={() => {
+                      const answers: Record<string, any> = {};
+                      fields.forEach((f) => {
+                        if (!ANSWERABLE.includes(f.type)) return;
+                        const a = preview[f.id];
+                        if (a !== undefined && a !== "" && !(Array.isArray(a) && a.length === 0)) answers[f.id] = a;
+                      });
+                      setTestOut(JSON.stringify(answers, null, 2));
+                      console.log("AdminFormBuilder test submit payload:", answers);
+                    }} style={{ background: C.medBlue, color: "#fff", border: "none", borderRadius: 10, padding: "10px 20px", fontSize: 14, fontWeight: 700, fontFamily: FONT, cursor: "pointer" }}>
+                      ▷ Test submit
+                    </button>
+                    {testOut && (
+                      <pre style={{ width: "100%", boxSizing: "border-box", background: C.textPrimary, color: "#7CFC9B", borderRadius: 12, padding: 14, fontSize: 12, fontFamily: "Menlo, monospace", overflowX: "auto", margin: 0 }}>{testOut}</pre>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* ===== UNSAVED-CHANGES BAR ===== */}
+      {dirty && (
+        <div style={{ position: "fixed", bottom: 16, left: 0, right: 0, display: "flex", justifyContent: "center", zIndex: 60, pointerEvents: "none" }}>
+          <div style={{ pointerEvents: "auto", background: C.textPrimary, color: "#fff", borderRadius: 14, padding: "10px 14px", display: "flex", gap: 12, alignItems: "center", boxShadow: "0 8px 30px rgba(0,0,0,0.25)" }}>
+            <span style={{ fontSize: 13, fontWeight: 600, fontFamily: FONT }}>Unsaved changes</span>
+            <button onClick={handleSave} disabled={saving} style={{ background: C.medBlue, border: "none", color: "#fff", borderRadius: 9, padding: "8px 16px", fontWeight: 700, fontSize: 13, fontFamily: FONT, cursor: saving ? "default" : "pointer", opacity: saving ? 0.7 : 1 }}>
+              {saving ? "Saving…" : "Save form"}
+            </button>
           </div>
         </div>
       )}

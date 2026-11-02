@@ -82,6 +82,7 @@ export default function PhoneEntry({ onSent, onBack }: { onSent: (phone: string)
       
       <div style={{ position: "relative", zIndex: 1, width: "100%", maxWidth: "400px", display: "flex", flexDirection: "column", alignItems: "center", animation: "fadeUp 0.6s ease-out" }}>
         <img src="/applogo.png" alt="App Logo" style={{ width: "96px", height: "96px", borderRadius: "20px", marginBottom: "32px", objectFit: "contain" }} />
+                <img src="/loadlogo.png" alt="App logo" style={{ width: 80, height: 80, objectFit: "contain", display: "block", margin: "0 auto 24px", borderRadius: 20 }} />
         <h1 style={{ fontSize: "24px", color: "#1C1C1E", fontWeight: "700", marginBottom: "8px" }}>Create Account</h1>
         <p style={{ color: "#8E8E93", fontSize: "15px", marginBottom: "32px", textAlign: "center" }}>Enter your phone number to get started</p>
         

@@ -48,7 +48,6 @@ export default function TrainerLiveClassroom() {
   const [activeLearners, setActiveLearners] = useState<User[]>([]);
   const [settings, setSettings] = useState<BusinessSettings | null>(null);
   const [trainer, setTrainer] = useState<Record<string, unknown> | null>(null);
-  // Per-learner granular classroom permissions (mic + cam)
   const [speakerPerms, setSpeakerPerms] = useState<Record<string, { can_audio: boolean; can_video: boolean }>>({});
 
   const [isBlackboardMode, setIsBlackboardMode] = useState(false);
@@ -71,7 +70,6 @@ export default function TrainerLiveClassroom() {
   const [isVoiceJoined, setIsVoiceJoined] = useState(false);
   const [videoTrack, setVideoTrack] = useState<MediaStreamTrack | null>(null);
 
-  // In-app media problem modal (replaces suppressed window.alert)
   const [mediaProblem, setMediaProblem] = useState<MediaProblem | null>(null);
 
   useDailyEvent("track-started", (event) => { if (event.participant?.local && event.track?.kind === "video") setVideoTrack(event.track as unknown as MediaStreamTrack); });
@@ -163,7 +161,6 @@ export default function TrainerLiveClassroom() {
         setActiveLearners(attUsers ? attUsers.map((u: Record<string, unknown>) => ({ id: u.id as string, username: u.username as string, email: (u.email as string) || "", password: (u.password as string) || "", role: (u.role as "trainer" | "trainee" | "admin"), profilePic: (u.profile_pic as string) || "", phone: (u.phone as string) || "", assignedCourses: (u.assigned_courses as string[]) || [], tenantId: u.tenant_id as string, createdAt: u.created_at as string })) : []);
       } else setActiveLearners([]);
 
-      // Granular mic/cam permissions for every learner in this course
       const { data: speakers } = await supabase.from("allowed_speakers").select("user_id, can_audio, can_video, allowed").eq("course_id", courseId);
       const permsMap: Record<string, { can_audio: boolean; can_video: boolean }> = {};
       (speakers || []).forEach((s: Record<string, unknown>) => {
@@ -191,8 +188,6 @@ export default function TrainerLiveClassroom() {
 
   async function getDailyRoomUrl() { if (!courseId) return null; const API_BASE = import.meta.env.VITE_API_URL || "https://medstat-3rxl.onrender.com"; try { const response = await fetch(`${API_BASE}/api/create-daily-room`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ courseId }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error); return data.url; } catch (error) { return null; } }
 
-  // ---- CLASSROOM AV (trainer's own devices) ----
-  // Controlled from the floating classroom bar — NOT from the chat sidebar.
   async function ensureJoined(): Promise<boolean> {
     if (!daily) return false;
     if (isVoiceJoined) return true;
@@ -209,9 +204,6 @@ export default function TrainerLiveClassroom() {
     finally { setIsConnecting(false); }
   }
 
-  // OS-level device probe before switching ON — surfaces the Windows privacy
-  // toggle / device-in-use / no-device cases via the in-app modal.
-  // (Trainers are never app-locked, so there is no "locked" case here.)
   async function toggleMic() {
     const ok = await ensureJoined();
     if (!ok) return;
@@ -235,7 +227,6 @@ export default function TrainerLiveClassroom() {
   async function toggleBlackboard() {
     if (!courseId || !tenantId) return; setActiveTool("pen"); const newMode = !isBlackboardMode; setIsBlackboardMode(newMode);
     if (newMode) setPresentation(null); else if (materials.length > 0) { const currentMatId = liveState?.materialId || materials[0].id; setPresentation(materials.find(m => m.id === currentMatId) || materials[0]); }
-
     if (liveState?.id) {
       const updated = { ...liveState, isBlackboard: newMode, updatedAt: new Date().toISOString() };
       setLiveState(updated);
@@ -289,7 +280,6 @@ export default function TrainerLiveClassroom() {
     await supabase.from("live_presentations").update({ material_id: nextMat.id, current_page: 1, updated_at: new Date().toISOString() }).eq("id", liveState.id);
   }
 
-  // Grant a specific classroom capability ("audio" | "video") to a learner.
   async function grantPermission(userId: string, kind: "audio" | "video") {
     if (!courseId || !tenantId) return;
     try {
@@ -301,7 +291,6 @@ export default function TrainerLiveClassroom() {
     } catch (error) { console.warn("Could not grant permission:", error); }
   }
 
-  // Revoke a specific capability — force-stops the learner's track remotely.
   async function revokePermission(userId: string, kind: "audio" | "video") {
     if (!courseId || !daily) return;
     try {
@@ -321,18 +310,15 @@ export default function TrainerLiveClassroom() {
     if (!courseId || !tenantId) return;
     await startLiveSession(courseId, currentUser.id);
     const { data: existing } = await supabase.from("live_session").select("id").eq("course_id", courseId).maybeSingle();
-    if (existing) { await supabase.from("live_session").update({ active: true, updated_at: new Date().toISOString() }).eq("id", existing.id); } 
+    if (existing) { await supabase.from("live_session").update({ active: true, updated_at: new Date().toISOString() }).eq("id", existing.id); }
     else { await supabase.from("live_session").insert({ id: crypto.randomUUID(), tenant_id: tenantId, course_id: courseId, trainer_id: currentUser.id, active: true, started_at: new Date().toISOString(), updated_at: new Date().toISOString(), created_at: new Date().toISOString() }); }
     setSessionActive(true);
-
     if (materials.length > 0 && !presentation) {
       const firstMat = materials[0]; setPresentation(firstMat); setIsBlackboardMode(false);
       await startPresentation(courseId, firstMat.id, currentUser.id);
       await supabase.from("live_presentations").delete().eq("course_id", courseId);
       await supabase.from("live_presentations").insert({ id: crypto.randomUUID(), tenant_id: tenantId, course_id: courseId, started_by: currentUser.id, material_id: firstMat.id, current_page: 1, is_blackboard: false, blackboard_strokes: [], blackboard_lines: [], blackboard_labels: [], updated_at: new Date().toISOString() });
     }
-    // Trainer activates classroom mic/cam from the floating bar in the classroom area.
-    // Learners join muted/camera-off and must be granted mic/cam via Raised Hands / Attending Now.
   }
 
   async function stopSession() {
@@ -341,7 +327,6 @@ export default function TrainerLiveClassroom() {
     await clearPresentation(courseId);
     await supabase.from("live_session").update({ active: false, updated_at: new Date().toISOString() }).eq("course_id", courseId);
     await supabase.from("live_presentations").delete().eq("course_id", courseId);
-    // End of session revokes all classroom mic/cam permissions and clears raised hands
     await supabase.from("allowed_speakers").delete().eq("course_id", courseId);
     await supabase.from("raised_hands").delete().eq("course_id", courseId);
     if (daily && isVoiceJoined) { daily.leave(); setIsVoiceJoined(false); setIsMicOn(false); setIsCamOn(false); setVideoTrack(null); } navigate("/trainer");
@@ -369,7 +354,6 @@ export default function TrainerLiveClassroom() {
   const iosBtnStyle: React.CSSProperties = { display: "flex", alignItems: "center", justifyContent: "center", padding: "10px", border: "none", borderRadius: "10px", flex: 1, cursor: "pointer", transition: "transform 0.1s ease, opacity 0.2s ease", boxShadow: "0 1px 2px rgba(0,0,0,0.05)", WebkitTapHighlightColor: "transparent" };
   const toolBtnStyle = (isActive: boolean): React.CSSProperties => ({ width: "44px", height: "44px", borderRadius: "12px", border: "none", background: isActive ? "rgba(0, 165, 244, 0.2)" : "transparent", color: isActive ? "#00A5F4" : "#8E8E93", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.2s ease", flexShrink: 0 });
   const permBtnStyle = (): React.CSSProperties => ({ border: "none", padding: "4px 8px", borderRadius: "6px", fontSize: "11px", fontWeight: "600", cursor: "pointer" });
-  // Floating classroom AV bar buttons
   const avBtnStyle: React.CSSProperties = { width: "48px", height: "48px", borderRadius: "50%", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", transition: "transform 0.1s ease", WebkitTapHighlightColor: "transparent" };
   const drawingActiveTool = activeTool === "label" ? "pen" as ToolType : activeTool;
 
@@ -394,7 +378,7 @@ export default function TrainerLiveClassroom() {
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "8px", background: C.purpleBg, padding: "4px 12px 4px 4px", borderRadius: "20px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px", background: C.purpleBg, padding: "4px 12px 42px", borderRadius: "20px" }}>
             {trainer?.avatar_url ? (
               <img src={trainer.avatar_url as string} alt="Trainer" style={{ width: "28px", height: "28px", borderRadius: "50%", objectFit: "cover" }} />
             ) : (
@@ -416,7 +400,7 @@ export default function TrainerLiveClassroom() {
               {sessionActive ? <button onClick={stopSession} style={{ padding: "6px 12px", background: C.redBg, color: C.red, border: "none", borderRadius: "8px", fontWeight: "600", cursor: "pointer", fontSize: "12px" }}>End</button> : <button onClick={startSession} disabled={isConnecting} style={{ padding: "6px 12px", background: C.medBlue, color: "#fff", border: "none", borderRadius: "8px", fontWeight: "600", cursor: "pointer", fontSize: "12px", opacity: isConnecting ? 0.6 : 1 }}>Start</button>}
             </div>
             {presentation && !isBlackboardMode && (<div style={{ display: "flex", background: C.bg, borderRadius: "10px", padding: "4px" }}><button onClick={() => changePage(-1)} style={{ flex: 1, padding: "8px", border: "none", background: "transparent", cursor: "pointer", color: C.medBlue, fontWeight: "600", borderRadius: "8px" }}>‹ Prev</button><button onClick={() => changePage(1)} style={{ flex: 1, padding: "8px", border: "none", background: "transparent", cursor: "pointer", color: C.medBlue, fontWeight: "600", borderRadius: "8px" }}>Next ›</button></div>)}
-            
+
             <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
               <button onClick={toggleBlackboard} style={{ ...iosBtnStyle, background: isBlackboardMode ? C.purple : C.iosBtnBg, color: isBlackboardMode ? "#FFFFFF" : C.textPrimary, width: "100%" }}>
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ marginRight: 8 }}><rect x="2" y="4" width="20" height="16" rx="2" ry="2"/><line x1="6" y1="20" x2="18" y2="20"/></svg>
@@ -424,7 +408,6 @@ export default function TrainerLiveClassroom() {
               </button>
             </div>
 
-            {/* Raised Hands — trainer grants classroom mic / cam activation per learner */}
             <div style={{ marginTop: "12px", borderTop: `1px solid ${C.separator}`, paddingTop: "12px" }}>
               <div style={{ fontSize: "13px", color: C.textTertiary, fontWeight: "600", margin: "0 0 8px 0" }}>✋ Raised Hands ({raisedHands.length})</div>
               {raisedHands.length === 0 ? <p style={{ fontSize: "12px", color: C.textTertiary }}>No hands raised.</p> : <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>{raisedHands.map((hand) => (
@@ -465,7 +448,8 @@ export default function TrainerLiveClassroom() {
             </div>
 
             <p style={{ fontSize: "13px", color: C.textTertiary, fontWeight: "600", margin: "0 0 8px 0" }}>Lesson Pages</p>
-            {materials.map((mat) => { const meta = getFileMeta(mat.fileType); const isActive = liveState?.materialId === mat.id && !isBlackboardMode; return (<div key={mat.id} onClick={() => selectPage(mat.id)} style={{ display: "flex", alignItems: "center", padding: "12px", gap: "10px", cursor: "pointer", background: isActive ? C.medBlueBg : C.card, borderRadius: "10px", marginBottom: "6px" }}><div style={{ width: "32px", height: "32px", borderRadius: "8px", background: meta.bg, color: meta.color, display: "flex", alignItems: "center", justifyContent: "center", fontSize: "16px" }}>{meta.icon}</div><div style={{ fontSize: "14px", color: isActive ? C.medBlue : C.textPrimary, fontWeight: isActive ? "600" : "500" }}>{mat.title}</div></div>); })}
+            {/* FIX: mat.fileType can be undefined — use ?? "" for safe fallback */}
+            {materials.map((mat) => { const meta = getFileMeta(mat.fileType ?? ""); const isActive = liveState?.materialId === mat.id && !isBlackboardMode; return (<div key={mat.id} onClick={() => selectPage(mat.id)} style={{ display: "flex", alignItems: "center", padding: "12px", gap: "10px", cursor: "pointer", background: isActive ? C.medBlueBg : C.card, borderRadius: "10px", marginBottom: "6px" }}><div style={{ width: "32px", height: "32px", borderRadius: "8px", background: meta.bg, color: meta.color, display: "flex", alignItems: "center", justifyContent: "center", fontSize: "16px" }}>{meta.icon}</div><div style={{ fontSize: "14px", color: isActive ? C.medBlue : C.textPrimary, fontWeight: isActive ? "600" : "500" }}>{mat.title}</div></div>); })}
           </div>
         </div>
 
@@ -493,7 +477,7 @@ export default function TrainerLiveClassroom() {
             </div>
           </div>
 
-          {/* Floating CLASSROOM AV bar — trainer's own mic/cam (not chat) */}
+          {/* Floating CLASSROOM AV bar */}
           <div style={{ position: "absolute", bottom: "24px", left: "50%", transform: "translateX(-50%)", display: "flex", gap: "16px", padding: "10px", background: "rgba(28, 28, 30, 0.8)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", borderRadius: "32px", border: "1px solid rgba(255,255,255,0.1)", zIndex: 20 }}>
             <button onClick={() => navigate("/trainer")} style={{ ...avBtnStyle, background: "#E5E5EA", color: "#1C1C1E" }} title="Exit classroom">
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
@@ -514,7 +498,7 @@ export default function TrainerLiveClassroom() {
             </button>
           </div>
 
-          {/* Trainer self-view — only while classroom camera is on */}
+          {/* Trainer self-view */}
           {isCamOn && videoTrack && (
             <div style={videoTileContainerStyle}>
               <video autoPlay muted playsInline ref={(el) => { if (el && videoTrack) { const stream = new MediaStream([videoTrack]); if (el.srcObject !== stream) el.srcObject = stream; } }} style={{ width: "100%", height: "100%", objectFit: "cover", transform: "scaleX(-1)" }} />
@@ -525,17 +509,56 @@ export default function TrainerLiveClassroom() {
           )}
         </div>
 
-        {/* Chat Sidebar — TEXT + FILES ONLY. No audio/video controls here. */}
-        <div style={{ width: isChatOpen ? "360px" : "64px", minWidth: 0, transition: "width 0.3s ease", flexShrink: 0, borderLeft: "1px solid #E5E5EA", background: "#1C1C1E" }}>
-          <ClassChat 
-            courseId={courseId || ""} 
+        {/* ── Chat Sidebar: fully collapses to 0px for fullscreen ── */}
+        <div style={{
+          width: isChatOpen ? "360px" : 0,
+          minWidth: 0,
+          transition: "width 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
+          flexShrink: 0,
+          borderLeft: isChatOpen ? "1px solid #E5E5EA" : "none",
+          background: "#1C1C1E",
+          overflow: "hidden",
+        }}>
+          <ClassChat
+            courseId={courseId || ""}
             isChatOpen={isChatOpen}
             toggleChatOpen={() => setIsChatOpen(!isChatOpen)}
           />
         </div>
+
+        {/* ── Floating "Open Chat" FAB when chat is collapsed ── */}
+        {!isChatOpen && (
+          <button
+            onClick={() => setIsChatOpen(true)}
+            title="Open chat"
+            style={{
+              position: "absolute",
+              right: 20,
+              bottom: 100,
+              width: 52,
+              height: 52,
+              borderRadius: "50%",
+              background: "#AF52DE",
+              border: "none",
+              color: "#fff",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              boxShadow: "0 6px 20px rgba(175, 82, 222, 0.4)",
+              zIndex: 20,
+              transition: "transform 0.15s ease, box-shadow 0.15s ease",
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.transform = "scale(1.08)"; e.currentTarget.style.boxShadow = "0 8px 28px rgba(175, 82, 222, 0.5)"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.transform = "scale(1)"; e.currentTarget.style.boxShadow = "0 6px 20px rgba(175, 82, 222, 0.4)"; }}
+          >
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+            </svg>
+          </button>
+        )}
       </div>
 
-      {/* Media help modal (Windows privacy toggle / device busy / missing) */}
       <MediaHelpModal problem={mediaProblem} onClose={() => setMediaProblem(null)} />
     </div>
   );

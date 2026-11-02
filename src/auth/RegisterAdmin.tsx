@@ -105,7 +105,7 @@ export default function RegisterAdmin({ phone, tempToken, onComplete, onBack }: 
         borderRadius: "28px", padding: "40px 32px", boxShadow: "0 20px 60px rgba(0,0,0,0.15)", 
         border: "1px solid rgba(255,255,255,0.6)", animation: "fadeUp 0.6s ease-out" 
       }}>
-        <img src={branding?.logo || "/loadlogo.png"} alt="App Logo" style={{ width: "80px", height: "80px", borderRadius: "20px", marginBottom: "24px", objectFit: "cover", display: "block", margin: "0 auto" }} />
+                <img src="/loadlogo.png" alt="App logo" style={{ width: 80, height: 80, objectFit: "contain", display: "block", margin: "0 auto 24px", borderRadius: 20 }} />
         <h1 style={{ fontSize: "24px", color: "#1C1C1E", fontWeight: "700", marginBottom: "24px", textAlign: "center" }}>Set Up Institution</h1>
         
         <form onSubmit={(e) => { e.preventDefault(); createAdmin(); }} style={{ width: "100%" }}>

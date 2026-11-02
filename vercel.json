@@ -1,8 +1,8 @@
 {
-  "buildCommand": "npm run build",
-  "outputDirectory": "dist",
-  "framework": "vite",
+  "redirects": [{ "source": "/", "destination": "/medstat", "permanent": false }],
   "rewrites": [
-    { "source": "/(.*)", "destination": "/index.html" }
+    { "source": "/medstat/assets/:path*", "destination": "/assets/:path*" },
+    { "source": "/medstat", "destination": "/index.html" },
+    { "source": "/medstat/:path*", "destination": "/index.html" }
   ]
 }

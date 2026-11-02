@@ -379,7 +379,8 @@ export default function UploadMaterials() {
         ) : (
           <div style={{ background: C.card, borderRadius: 16, overflow: "hidden", border: `1px solid ${C.separator}`, boxShadow: "0 4px 24px rgba(0,0,0,0.06)" }}>
             {materials.map((mat, index) => {
-              const meta = getFileMeta(mat.fileType);
+              // FIX: mat.fileType can be undefined — use ?? "" for safe fallback
+              const meta = getFileMeta(mat.fileType ?? "");
               const isDragging = draggedItemId === mat.id;
               const isDragOver = dragOverItemId === mat.id;
               return (

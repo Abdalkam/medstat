@@ -1,9 +1,18 @@
 // src/admin/AdminForms.tsx
+// OFFLINE-FIRST:
+//   1. Instant render from the local forms cache (Dexie + mirror, via formDB)
+//   2. Online: flush queued writes → fetch from Supabase → MERGE → re-cache
+// The merge is the key: remote rows NEVER evict local-only / still-syncing
+// forms, so a freshly created form can't "flash on and off" while its cloud
+// write is queued or propagating. Locally deleted forms are tombstoned, so a
+// refetch can't resurrect them either.
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "../auth/supabase";
-import { db as localDb } from "../database/db";
-import { cacheForms, flushPendingFormOps, deleteFormOnlineFirst } from "../database/formDB";
+import {
+  cacheForms, flushPendingFormOps, deleteFormOnlineFirst,
+  getCachedForms, getDeletedFormIds, readPendingFormOps,
+} from "../database/formDB";
 
 const C = {
   textPrimary: "#1C1C1E", textSecondary: "#3C3C43", textTertiary: "#8E8E93",
@@ -26,6 +35,7 @@ const TS = {
 
 interface FormRow {
   id: string;
+  tenant_id?: string | null;
   title: string;
   description: string | null;
   status: "draft" | "published" | "closed";
@@ -60,15 +70,18 @@ export default function AdminForms() {
   const [confirmId, setConfirmId] = useState<string | null>(null);
 
   // OFFLINE-FIRST list:
-  //   1. Instant render from Dexie cache
-  //   2. Online: flush queued writes → fetch from Supabase → re-cache
+  //   1. Instant render from local cache (Dexie `formCache`, mirror fallback)
+  //   2. Online: flush queued writes → fetch from Supabase → MERGE → re-cache
   async function loadForms() {
     if (!currentUser?.tenantId) { setLoading(false); return; }
+    const tenantId: string = currentUser.tenantId;
 
     // STEP 1: local cache render (offline-safe)
+    let hadCache = false;
     try {
-      const cached = await localDb.formCache.toArray();
+      const cached = await getCachedForms(tenantId);
       if (cached.length > 0) {
+        hadCache = true;
         setForms(cached.map((f: any) => ({ ...f, submission_count: f.submission_count ?? 0 })));
         setLoading(false);
       }
@@ -76,26 +89,60 @@ export default function AdminForms() {
 
     if (!navigator.onLine) { setLoading(false); return; }
 
-    // STEP 2: online refresh + silent sync
-    setLoading(true);
+    // STEP 2: online refresh + silent sync (no loading flash if cache painted)
+    if (!hadCache) setLoading(true);
     try {
       await flushPendingFormOps();
 
       const { data, error } = await supabase
         .from("forms")
-        .select("id, title, description, status, updated_at, visible_to")
-        .eq("tenant_id", currentUser.tenantId)
+        .select("id, tenant_id, title, description, status, updated_at, visible_to")
+        .eq("tenant_id", tenantId)
         .order("updated_at", { ascending: false });
       if (error) throw error;
 
       let counts: Record<string, number> = {};
       try {
-        const { data: subs } = await supabase.from("form_submissions").select("form_id").eq("tenant_id", currentUser.tenantId);
+        const { data: subs } = await supabase.from("form_submissions").select("form_id").eq("tenant_id", tenantId);
         counts = (subs || []).reduce((acc: Record<string, number>, s: any) => { acc[s.form_id] = (acc[s.form_id] || 0) + 1; return acc; }, {});
-      } catch {}
+      } catch { /* counts are cosmetic */ }
 
-      setForms((data || []).map((f: any) => ({ ...f, submission_count: counts[f.id] || 0 })));
-      await cacheForms(currentUser.tenantId);
+      const remoteRows: FormRow[] = (data || []).map((f: any) => ({ ...f, submission_count: counts[f.id] || 0 }));
+
+      // MERGE — the anti "seen on and off" rule for forms:
+      //   • remote rows are the base
+      //   • + local cached rows the cloud doesn't return yet (flush pending)
+      //   • + queued upserts always win (freshest local copy)
+      //   • − tombstoned (locally deleted) forms never come back
+      const tombstones = new Set(getDeletedFormIds());
+      const remoteIds = new Set(remoteRows.map((f) => f.id));
+      const byId = new Map<string, any>();
+      remoteRows.forEach((f) => byId.set(f.id, f));
+
+      try {
+        const cachedNow = await getCachedForms(tenantId);
+        cachedNow.forEach((f: any) => {
+          if (!f?.id || tombstones.has(f.id) || remoteIds.has(f.id)) return;
+          byId.set(f.id, { ...f, submission_count: f.submission_count ?? 0 });
+        });
+      } catch { /* cache unavailable */ }
+
+      readPendingFormOps()
+        .filter((op) => op.kind === "upsert_form" && op.payload?.tenant_id === tenantId)
+        .forEach((op) => {
+          const p = op.payload;
+          if (!p?.id || tombstones.has(p.id)) return;
+          const prev = byId.get(p.id);
+          byId.set(p.id, { ...prev, ...p, submission_count: prev?.submission_count ?? 0 });
+        });
+
+      const merged = Array.from(byId.values())
+        .sort((a: any, b: any) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")));
+
+      setForms(merged);
+      // Re-cache from what we already fetched (no duplicate query); the engine
+      // overlays pending upserts and strips tombstones before writing.
+      await cacheForms(tenantId, { rows: data || [], counts });
     } catch (e) {
       console.error("Failed to load forms:", e);
     } finally {
@@ -115,7 +162,8 @@ export default function AdminForms() {
   async function handleDelete(id: string) {
     setDeletingId(id);
     try {
-      // Local cache delete always; cloud delete attempted or queued silently
+      // Local caches purge instantly (tombstoned), cloud delete attempted or
+      // queued silently by the shared formDB engine.
       await deleteFormOnlineFirst(id);
     } catch (e) {
       console.error("Delete failed:", e);
