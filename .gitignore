@@ -32,3 +32,8 @@ src-tauri/target
 src-tauri/gen
 src-tauri/Cargo.lock
 *.lnk
+
+.env
+.env.*
+node_modules/
+dist/
