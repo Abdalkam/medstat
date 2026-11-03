@@ -1235,29 +1235,40 @@ app.get("/api/sync/pull", requireAuth, async (req: Request, res: Response) => {
 // We mount express.static at /medstat so those URLs resolve directly — no
 // path stripping is needed.
 //
-// In CommonJS mode (ts-node default), `__dirname` is provided natively by
-// Node.js and points to the directory containing this source file (.../src/).
-// Going up one level with '..' lands on the project root, where Vite outputs
-// `dist/`.
-if (process.env.NODE_ENV === 'production') {
-  const distDir = path.join(__dirname, '..', 'dist');
+// In CommonJS mode (ts-node default), `__dirname` points to the directory
+// containing this source file (<repo>/server/src). Going up TWO levels lands
+// on the repo root, where the root Vite build outputs `dist/`. (Also correct
+// if you ever compile with tsc and run server/dist/index.js.)
+//
+// Registered UNCONDITIONALLY — never gate static serving on NODE_ENV.
+// Harmless in dev (the Vite dev server on :1420 handles the UI), essential
+// in production. Gating it on NODE_ENV silently disables the frontend when
+// the env var is missing — the cause of the blank /medstat page.
+const distDir = path.join(__dirname, '..', '..', 'dist');
 
-  // 1. Static assets: /medstat/assets/... → dist/assets/...
-  //    Must be registered before the SPA catch-all so real files win.
-  app.use('/medstat', express.static(distDir));
+// 1. Static assets: /medstat/assets/... → dist/assets/...
+//    Must be registered before the SPA catch-all so real files win.
+app.use('/medstat', express.static(distDir));
 
-  // 2. SPA fallback: /medstat and any /medstat/* client route → index.html.
-  //    Lets React Router own all client-side routing (refresh-safe).
-  app.get(['/medstat', '/medstat/*'], (req: Request, res: Response) => {
-    res.sendFile(path.join(distDir, 'index.html'));
+// 2. SPA fallback: /medstat and any /medstat/* client route → index.html.
+//    Lets React Router own all client-side routing (refresh-safe).
+//    Express 5 (path-to-regexp v8): a bare '*' is ILLEGAL and throws
+//    "Missing parameter name" at boot — wildcards must be named: '*splat'.
+//    Regex alternative: app.get(/^\/medstat(\/.*)?$/, ...)
+app.get(['/medstat', '/medstat/*splat'], (req: Request, res: Response) => {
+  res.sendFile(path.join(distDir, 'index.html'), (err) => {
+    if (err) {
+      console.error('SPA fallback failed to serve index.html from', distDir, '-', err.message);
+      res.status(500).send('Frontend build output not found. Did "vite build" run before start?');
+    }
   });
+});
 
-  // 3. Root redirect → /medstat (replaces the old Vercel "redirects" rule).
-  //    307 preserves method/body in case of POST to /.
-  app.get('/', (req: Request, res: Response) => {
-    res.redirect(307, '/medstat');
-  });
-}
+// 3. Root redirect → /medstat (replaces the old Vercel "redirects" rule).
+//    307 preserves method/body in case of POST to /.
+app.get('/', (req: Request, res: Response) => {
+  res.redirect(307, '/medstat');
+});
 
 // ==========================================
 // START SERVER
