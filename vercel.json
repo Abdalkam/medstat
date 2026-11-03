@@ -1,7 +1,7 @@
 {
   "redirects": [{ "source": "/", "destination": "/medstat", "permanent": false }],
   "rewrites": [
-    { "source": "/medstat/assets/:path*", "destination": "/assets/:path*" },
+    { "source": "/medstat/(.*)\\.(js|css|png|jpg|jpeg|svg|ico|webp|gif|json|txt|xml|woff|woff2|ttf|map)", "destination": "/$1.$2" },
     { "source": "/medstat", "destination": "/index.html" },
     { "source": "/medstat/:path*", "destination": "/index.html" }
   ]

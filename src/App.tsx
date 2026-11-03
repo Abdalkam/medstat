@@ -155,7 +155,7 @@ export default function App() {
 
     return (
         <DailyProvider>
-            <BrowserRouter>
+            <BrowserRouter basename={import.meta.env.BASE_URL.replace(/\/$/, "") || "/"}>
                 {/* ✅ SHOW SYNC LOADING SCREEN FIRST */}
                 {!isSynced ? (
                     <SyncLoadingScreen onSyncComplete={() => setIsSynced(true)} />
