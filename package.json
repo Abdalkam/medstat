@@ -1,7 +1,7 @@
 {
     "name": "medstat",
     "private": true,
-    "version": "1.0.177",
+    "version": "1.0.179",
     "type": "module",
     "scripts": {
         "dev": "vite",
@@ -14,10 +14,11 @@
         "@capacitor/android": "^8.5.0",
         "@capacitor/core": "^8.5.0",
         "@daily-co/daily-react": "^0.26.0",
+        "@supabase/supabase-js": "^2.112.3",
         "@tauri-apps/api": "^2.11.1",
         "@tauri-apps/plugin-dialog": "2.8",
         "@tauri-apps/plugin-fs": "2.6",
-        "@tauri-apps/plugin-opener": "^2.6.0",
+        "@tauri-apps/plugin-opener": "^2.7.0",
         "@tauri-apps/plugin-process": "2.4",
         "@tauri-apps/plugin-updater": "2.13",
         "bcryptjs": "^3.0.3",
@@ -34,7 +35,6 @@
     "devDependencies": {
         "@capacitor/cli": "^8.5.0",
         "@eslint/js": "^10.0.1",
-        "@supabase/supabase-js": "^2.112.3",
         "@tauri-apps/cli": "^2.11.4",
         "@types/bcryptjs": "^2.4.6",
         "@types/node": "^24.13.2",
