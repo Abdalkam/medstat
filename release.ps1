@@ -1,88 +1,81 @@
+[CmdletBinding()]
 param(
-    [string]$Message = ""
+  [Parameter(Position = 0)]
+  [string]$Message = "release update",
+  [switch]$BumpPatch,
+  [switch]$SkipBuild,
+  [switch]$NoDeploy
 )
 
-Set-Location (Split-Path -Parent $MyInvocation.MyCommand.Path)
+ $ErrorActionPreference = "Stop"
 
-# ── Auto-bump version ──
- $confPath = "src-tauri\tauri.conf.json"
- $confRaw = [System.IO.File]::ReadAllText((Resolve-Path $confPath))
-if ($confRaw -match '"version"\s*:\s*"(\d+\.\d+\.\d+)"') {
-    $currentVersion = $Matches[1]
-    $parts = $currentVersion.Split(".")
-    $parts[2] = [int]$parts[2] + 1
-    $newVersion = $parts -join "."
-    $confRaw = $confRaw -replace "(?<=`"version`"\s*:\s*`")\d+\.\d+\.\d+", $newVersion
-    [System.IO.File]::WriteAllText((Resolve-Path $confPath), $confRaw)
+function Fail([string]$msg) { Write-Host "[FAIL] $msg" -ForegroundColor Red;   exit 1 }
+function Step([string]$msg) { Write-Host "==> $msg"  -ForegroundColor Cyan }
+function Ok  ([string]$msg) { Write-Host "[ok]  $msg"  -ForegroundColor Green }
+
+if (-not (Test-Path "package.json")) { Fail "package.json not found - run from project root" }
+if (-not (Test-Path ".git"))         { Fail "not a git repository" }
+
+ $branch = (git rev-parse --abbrev-ref HEAD).Trim()
+if ($branch -notin @("main", "master")) {
+  Write-Host "[warn] on branch '$branch', not main/master" -ForegroundColor Yellow
+}
+if (-not (Test-Path "vercel.json")) {
+  Write-Host "[warn] vercel.json missing - SPA routes will 404 on refresh" -ForegroundColor Yellow
+}
+ $hasVercel = $null -ne (Get-Command vercel -ErrorAction SilentlyContinue)
+if (-not $hasVercel -and -not $NoDeploy) {
+  Write-Host "[warn] vercel CLI not found - git push only" -ForegroundColor Yellow
+}
+
+ $dirty = git status --porcelain
+if ($dirty) {
+  Step "committing: $Message"
+  git add .
+  git commit -m $Message
+  if ($LASTEXITCODE -ne 0) { Fail "git commit failed" }
+  Ok "committed"
 } else {
-    Write-Host "Could not find version in tauri.conf.json" -ForegroundColor Red
-    exit 1
+  Ok "working tree clean"
 }
 
- $pkgPath = "package.json"
- $pkgRaw = [System.IO.File]::ReadAllText((Resolve-Path $pkgPath))
- $pkgRaw = $pkgRaw -replace "(?<=`"version`"\s*:\s*`")\d+\.\d+\.\d+", $newVersion
-[System.IO.File]::WriteAllText((Resolve-Path $pkgPath), $pkgRaw)
-
- $cargoPath = "src-tauri\Cargo.toml"
- $cargoLines = Get-Content $cargoPath
- $foundPkgVersion = $false
-for ($i = 0; $i -lt $cargoLines.Count; $i++) {
-    if (-not $foundPkgVersion -and $cargoLines[$i] -match '^\s*version\s*=\s*"\d+\.\d+\.\d+"') {
-        $cargoLines[$i] = "version = `"$newVersion`""
-        $foundPkgVersion = $true
-    }
+if ($BumpPatch) {
+  Step "npm version patch"
+  npm version patch --no-git-tag-version
+  if ($LASTEXITCODE -ne 0) { Fail "npm version failed" }
+  git add package.json package-lock.json
+  git commit -m "chore: bump version"
 }
-[System.IO.File]::WriteAllText((Resolve-Path $cargoPath), ($cargoLines -join "`r`n"))
 
-if (-not $Message) { $Message = "Release SmartPages v$newVersion" }
+if (-not $SkipBuild) {
+  Step "npm install"
+  npm install
+  if ($LASTEXITCODE -ne 0) { Fail "npm install failed" }
 
-Write-Host ""
-Write-Host "======================================" -ForegroundColor Cyan
-Write-Host "  SmartPages v$newVersion" -ForegroundColor Cyan
-Write-Host "  (was v$currentVersion)" -ForegroundColor DarkGray
-Write-Host "======================================" -ForegroundColor Cyan
-Write-Host ""
+  Step "npm run build"
+  npm run build
+  if ($LASTEXITCODE -ne 0) { Fail "build failed - release aborted (nothing pushed)" }
+  Ok "build succeeded"
+}
 
-# ── 1. Git ──
-Write-Host "[1/3] Git sync..." -ForegroundColor Yellow
- $dirty = cmd /c "git status --porcelain"
-if (-not $dirty) {
-    Write-Host "  Nothing to commit." -ForegroundColor Green
+ $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+ $tag = "v$version"
+Step "tagging $tag"
+git tag -f $tag
+
+Step "git push"
+git push
+if ($LASTEXITCODE -ne 0) { Fail "git push failed" }
+git push origin $tag --force
+Ok "pushed ($tag)"
+
+if ($NoDeploy) { Ok "done - deploy skipped (-NoDeploy)"; exit 0 }
+
+if ($hasVercel) {
+  Step "vercel --prod"
+  vercel --prod
+  if ($LASTEXITCODE -ne 0) { Fail "vercel deploy failed" }
+  Ok "deployed to production"
 } else {
-    cmd /c "git add -A"
-    cmd /c "git commit -m `"$Message`""
-    cmd /c "git push origin main"
-    Write-Host "  Committed & pushed." -ForegroundColor Green
+  Ok "Vercel will auto-deploy if repo is git-connected"
 }
-cmd /c "git pull origin main --rebase"
-
-# ── 2. Build frontend ──
-Write-Host "[2/3] Building frontend..." -ForegroundColor Yellow
-npm run build 2>&1 | ForEach-Object { Write-Host "  $_" }
-if ($LASTEXITCODE -ne 0) { Write-Host "  FAILED." -ForegroundColor Red; exit 1 }
-Write-Host "  Done." -ForegroundColor Green
-
-# ── 3. Tauri .exe ──
-Write-Host "[3/3] Packaging .exe..." -ForegroundColor Yellow
-npx tauri build 2>&1 | ForEach-Object { Write-Host "  $_" }
-if ($LASTEXITCODE -eq 0) {
-    $exe = Get-ChildItem -Path "src-tauri\target\release\bundle" -Recurse -Filter "*.exe" -ErrorAction SilentlyContinue |
-        Sort-Object LastWriteTime -Descending | Select-Object -First 1
-    Write-Host "  Done." -ForegroundColor Green
-    if ($exe) { Write-Host "  EXE: $($exe.FullName)" -ForegroundColor Cyan }
-    Write-Host "  Version: v$newVersion" -ForegroundColor Green
-} else {
-    Write-Host "  FAILED." -ForegroundColor Red; exit 1
-}
-
-# ── 4. Git tag ──
-Write-Host "[extra] Tagging v$newVersion..." -ForegroundColor Yellow
-cmd /c "git tag v$newVersion"
-cmd /c "git push origin v$newVersion"
-
-Write-Host ""
-Write-Host "======================================" -ForegroundColor Green
-Write-Host "  RELEASE COMPLETE  v$newVersion" -ForegroundColor Green
-Write-Host "======================================" -ForegroundColor Green
-Write-Host ""

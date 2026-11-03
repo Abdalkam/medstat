@@ -1,44 +1,66 @@
-// src/api/smsApi.ts
+import { supabase } from "../auth/supabase";
 
-export async function sendSms(recipients: string[], message: string) {
-  const token = localStorage.getItem("authToken");
-  
-  if (!token || token === "offline-mode-pending-sync") {
-    throw new Error("You must be online and logged in to send SMS.");
+export type SmsPreflightFail = "offline" | "not-logged-in";
+
+export class SmsNotReadyError extends Error {
+  readonly reason: SmsPreflightFail;
+  constructor(reason: SmsPreflightFail) {
+    super(
+      reason === "offline"
+        ? "No internet connection. Check your network and try again."
+        : "You must be logged in to send SMS."
+    );
+    this.name = "SmsNotReadyError";
+    this.reason = reason;
+  }
+}
+
+async function isReallyOnline(): Promise<boolean> {
+  if (navigator.onLine) return true;
+  try {
+    await fetch(`${import.meta.env.VITE_SUPABASE_URL}/rest/v1/`, {
+      method: "HEAD",
+      cache: "no-store",
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function canSendSms(): Promise<
+  { ok: true; userId: string } | { ok: false; reason: SmsPreflightFail }
+> {
+  if (!(await isReallyOnline())) {
+    console.warn("[smsApi] blocked: offline");
+    return { ok: false, reason: "offline" };
   }
 
-  // Borrowed exactly from authApi.ts
-  const API_BASE = import.meta.env.VITE_API_URL || 
-    (import.meta.env.PROD 
-      ? "https://medstat-3rxl.onrender.com" 
-      : "http://localhost:10000");
+  const { data, error } = await supabase.auth.getSession();
+  if (error) console.error("[smsApi] getSession failed:", error);
 
-  const response = await fetch(`${API_BASE}/api/sms/send`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify({
-      recipients: recipients,
-      message: message,
-    }),
+  const userId = data.session?.user?.id;
+  if (!userId) {
+    console.warn("[smsApi] blocked: no active session", { error });
+    return { ok: false, reason: "not-logged-in" };
+  }
+
+  return { ok: true, userId };
+}
+
+export async function sendSms(to: string, message: string): Promise<void> {
+  const preflight = await canSendSms();
+  if (!preflight.ok) {
+    throw new SmsNotReadyError(preflight.reason);
+  }
+
+  await deliverSms(preflight.userId, to, message);
+}
+
+async function deliverSms(senderAuthUserId: string, to: string, message: string): Promise<void> {
+  const { error } = await supabase.functions.invoke("send-sms", {
+    body: { to, message },
   });
-
-  const data = await response.json();
-  
-  if (!response.ok) {
-    // Create a custom error so we can attach the partial logs to it
-    const error: any = new Error(data.error || "Failed to send SMS");
-    
-    // If the backend provided logs (e.g., some succeeded, some failed), attach them
-    // so the frontend can still save the successful ones to the local DB.
-    if (data.logs) {
-      error.logs = data.logs;
-    }
-    
-    throw error;
-  }
-  
-  return data;
+  if (error) throw new Error(`SMS failed: ${error.message}`);
+  void senderAuthUserId;
 }
