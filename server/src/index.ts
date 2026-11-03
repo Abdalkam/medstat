@@ -18,8 +18,9 @@ app.use(cors());
 app.use(express.json({ limit: "5mb" }));
 app.use(express.urlencoded({ limit: "5mb", extended: true }));
 
-// Render automatically provides process.env.PORT. Fallback to 3001 for local dev.
-const PORT = process.env.PORT || 3001;
+// Render automatically provides process.env.PORT as a string. Coerce to number
+// (Number(undefined) → NaN → falls back to 3001) so app.listen() typechecks.
+const PORT = Number(process.env.PORT) || 3001;
 const JWT_SECRET = process.env.JWT_SECRET || "super_secret_temp_key_change_me";
 const DAILY_API_KEY = process.env.DAILY_API_KEY;
 
@@ -1227,16 +1228,30 @@ app.get("/api/sync/pull", requireAuth, async (req: Request, res: Response) => {
 });
 
 // ==========================================
-// SERVE REACT APP (FIXED WILDCARD SYNTAX)
+// SERVE REACT APP
 // ==========================================
+// In CommonJS mode (ts-node default), `__dirname` is provided natively by Node.js
+// and points to the directory containing this source file (i.e. .../src/).
+// Going up one level with '..' lands on the project root, where the Vite build
+// outputs `dist/`. The previous `path.resolve()` override broke this because it
+// returned `process.cwd()` instead, which on Render pointed to the repo root,
+// causing `path.join(__dirname, '../dist')` to resolve to a non-existent path.
 if (process.env.NODE_ENV === 'production') {
-  const __dirname = path.resolve();
-  app.use(express.static(path.join(__dirname, '../dist')));
-  
-  // ✅ FIX: Changed '*' to '{*path}' to comply with new path-to-regexp rules
+  const distDir = path.join(__dirname, '..', 'dist');
+  app.use(express.static(distDir));
+
+  // Wildcard route — `{*path}` is the path-to-regexp v8 syntax required by
+  // Express 5. React Router handles client-side routes on top of this.
   app.get('{*path}', (req: Request, res: Response) => {
-    res.sendFile(path.join(__dirname, '../dist', 'index.html'));
+    res.sendFile(path.join(distDir, 'index.html'));
   });
 }
 
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+// ==========================================
+// START SERVER
+// ==========================================
+// Bind explicitly to 0.0.0.0 so Render's port scanner can detect the service.
+// Without the explicit host, Node may bind to `::` (IPv6) or `127.0.0.1`,
+// neither of which Render can reach — causing the "no open ports detected"
+// timeout that fails the deploy.
+app.listen(PORT, "0.0.0.0", () => console.log(`🚀 Server running on port ${PORT}`));
