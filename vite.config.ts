@@ -8,6 +8,9 @@ import dns from 'node:dns'
 dns.setDefaultResultOrder('ipv4first')
 
 export default defineConfig({
+  // In production (no Tauri env vars), base is "/medstat/" so all asset URLs
+  // are prefixed with /medstat/. This must match the Express mount point in
+  // server/src/index.ts (app.use('/medstat', express.static(distDir))).
   base: process.env.TAURI_ENV_PLATFORM || process.env.TAURI_PLATFORM ? undefined : "/medstat/",
   plugins: [
     react(),
@@ -30,8 +33,10 @@ export default defineConfig({
         theme_color: '#007AFF',
         background_color: '#F2F2F7',
         display: 'standalone',
-        start_url: '/',
-        scope: '/',
+        // start_url/scope must match the base path so the service worker
+        // controls the right scope when PWA is re-enabled.
+        start_url: '/medstat/',
+        scope: '/medstat/',
       }
     })
   ],

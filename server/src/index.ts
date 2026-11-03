@@ -1228,22 +1228,34 @@ app.get("/api/sync/pull", requireAuth, async (req: Request, res: Response) => {
 });
 
 // ==========================================
-// SERVE REACT APP
+// SERVE REACT APP (mounted at /medstat)
 // ==========================================
-// In CommonJS mode (ts-node default), `__dirname` is provided natively by Node.js
-// and points to the directory containing this source file (i.e. .../src/).
-// Going up one level with '..' lands on the project root, where the Vite build
-// outputs `dist/`. The previous `path.resolve()` override broke this because it
-// returned `process.cwd()` instead, which on Render pointed to the repo root,
-// causing `path.join(__dirname, '../dist')` to resolve to a non-existent path.
+// Vite builds with base: "/medstat/", so all asset URLs in dist/index.html
+// are already prefixed with /medstat/ (e.g. /medstat/assets/index-abc123.js).
+// We mount express.static at /medstat so those URLs resolve directly — no
+// path stripping is needed.
+//
+// In CommonJS mode (ts-node default), `__dirname` is provided natively by
+// Node.js and points to the directory containing this source file (.../src/).
+// Going up one level with '..' lands on the project root, where Vite outputs
+// `dist/`.
 if (process.env.NODE_ENV === 'production') {
   const distDir = path.join(__dirname, '..', 'dist');
-  app.use(express.static(distDir));
 
-  // Wildcard route — `{*path}` is the path-to-regexp v8 syntax required by
-  // Express 5. React Router handles client-side routes on top of this.
-  app.get('{*path}', (req: Request, res: Response) => {
+  // 1. Static assets: /medstat/assets/... → dist/assets/...
+  //    Must be registered before the SPA catch-all so real files win.
+  app.use('/medstat', express.static(distDir));
+
+  // 2. SPA fallback: /medstat and any /medstat/* client route → index.html.
+  //    Lets React Router own all client-side routing (refresh-safe).
+  app.get(['/medstat', '/medstat/*'], (req: Request, res: Response) => {
     res.sendFile(path.join(distDir, 'index.html'));
+  });
+
+  // 3. Root redirect → /medstat (replaces the old Vercel "redirects" rule).
+  //    307 preserves method/body in case of POST to /.
+  app.get('/', (req: Request, res: Response) => {
+    res.redirect(307, '/medstat');
   });
 }
 
