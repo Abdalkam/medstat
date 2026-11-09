@@ -1,31 +1,34 @@
+
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 import dns from 'node:dns'
 
-// Fix: Node 17+ may try IPv6 first, which breaks the dev proxy with
-// "getaddrinfo ENOTFOUND" on some Windows networks. Prefer IPv4.
 dns.setDefaultResultOrder('ipv4first')
 
 export default defineConfig({
-  // In production (no Tauri env vars), base is "/medstat/" so all asset URLs
-  // are prefixed with /medstat/. This must match the Express mount point in
-  // server/src/index.ts (app.use('/medstat', express.static(distDir))).
-  base: process.env.TAURI_ENV_PLATFORM || process.env.TAURI_PLATFORM ? undefined : "/medstat/",
+  base:
+    process.env.TAURI_ENV_PLATFORM || process.env.TAURI_PLATFORM
+      ? undefined
+      : '/medstat/',
+
   plugins: [
-    react(),
+    react({}),
+
     VitePWA({
-      disable: true, // Stops service worker crashes in Tauri
+      disable: true,
       registerType: 'autoUpdate',
+
       workbox: {
         runtimeCaching: [
           {
             urlPattern: /\/api\/.*/i,
             handler: 'NetworkOnly',
-          }
+          },
         ],
         navigateFallback: null,
       },
+
       manifest: {
         name: 'MedStat',
         short_name: 'MedStat',
@@ -33,25 +36,26 @@ export default defineConfig({
         theme_color: '#007AFF',
         background_color: '#F2F2F7',
         display: 'standalone',
-        // start_url/scope must match the base path so the service worker
-        // controls the right scope when PWA is re-enabled.
         start_url: '/medstat/',
         scope: '/medstat/',
-      }
-    })
+      },
+    }),
   ],
+
   server: {
     port: 1420,
     strictPort: true,
+
     watch: {
-      ignored: ['**/src-tauri/**']
+      ignored: ['**/src-tauri/**'],
     },
+
     proxy: {
       '/api': {
         target: 'https://medstat-3rxl.onrender.com',
         changeOrigin: true,
         secure: true,
-      }
-    }
-  }
+      },
+    },
+  },
 })

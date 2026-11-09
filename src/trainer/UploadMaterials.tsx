@@ -2,11 +2,25 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { getCourseById } from "../database/courseDB";
-import { getCourseMaterials, addMaterial, deleteMaterial, updateMaterial } from "../database/materialDB";
+// ─────────────────────────────────────────────────────────────────────────────
+// CLEANUP: all Supabase writes for course materials now go through materialDB
+// (single-writer principle). The previous version had TWO competing sync
+// paths — materialDB pushed via supabaseCourseSync AND this component pushed
+// again with its own payload — plus a fatal race: handleUpload awaited
+// loadData() between the local add and the cloud push, and loadData() deleted
+// every local row that was not yet in Supabase, wiping the material that had
+// just been added. All sync logic now lives in materialDB.ts.
+// ─────────────────────────────────────────────────────────────────────────────
+import {
+  getCourseMaterials,
+  addMaterial,
+  updateMaterials,
+  deleteMaterial,
+  reconcileCourseMaterials,
+} from "../database/materialDB";
 import { startLiveSession } from "../database/liveSessionDB";
 import { startPresentation } from "../database/livePresentationDB";
 import type { Course, CourseMaterial } from "../types";
-import { db } from "../database/db";
 import { supabase } from "../auth/supabase";
 
 const C = {
@@ -28,7 +42,9 @@ const TS = {
   input: { fontSize: 16, fontWeight: 400, letterSpacing: "-0.005em", lineHeight: 1.5, fontFamily: FONT, color: C.textPrimary },
 };
 
-const MAX_FILE_SIZE = 100 * 1024 * 1024;
+// 1 GB — must match the materials bucket `file_size_limit` set by
+// setup-materials-bucket.sql (1073741824 bytes). Raise both together.
+const MAX_FILE_SIZE = 1024 * 1024 * 1024;
 const IMAGE_MAX_DIMENSION = 1920;
 const IMAGE_QUALITY = 0.85;
 
@@ -45,7 +61,8 @@ function getFileMeta(fileType: string) {
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
 async function compressImage(file: File): Promise<string> {
@@ -84,6 +101,45 @@ function readFileWithProgress(file: File, onProgress: (p: number) => void): Prom
   });
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Files are uploaded to Supabase Storage and only a URL is stored in the
+// course_materials row. Falls back to embedded base64 for small files when
+// Storage is unavailable (bucket missing / offline).
+// ─────────────────────────────────────────────────────────────────────────────
+const STORAGE_BUCKET = "materials";
+const BASE64_FALLBACK_MAX = 10 * 1024 * 1024; // 10 MB — safe ceiling for base64-over-REST
+
+async function compressImageBlob(file: File): Promise<Blob> {
+  const dataUrl = await compressImage(file);
+  const res = await fetch(dataUrl);
+  return res.blob();
+}
+
+async function uploadMaterialFile(file: File, courseId: string, onProgress: (p: number) => void): Promise<string> {
+  const loggedInUser = JSON.parse(localStorage.getItem("currentUser") || "{}");
+  try {
+    const path = `${loggedInUser.tenantId || "shared"}/${courseId || "misc"}/${Date.now()}-${file.name.replace(/[^\w.\-]+/g, "_")}`;
+    const body: Blob = file.type.startsWith("image/") ? await compressImageBlob(file) : file;
+    onProgress(15);
+    const { error } = await supabase.storage.from(STORAGE_BUCKET).upload(path, body, { contentType: body.type || file.type || "application/octet-stream", upsert: false });
+    if (error) throw error;
+    onProgress(70);
+    const { data: urlData, error: urlErr } = await supabase.storage.from(STORAGE_BUCKET).createSignedUrl(path, 60 * 60 * 24 * 365);
+    if (urlErr || !urlData?.signedUrl) throw (urlErr || new Error("Could not create file URL"));
+    onProgress(100);
+    return urlData.signedUrl;
+  } catch (storageErr) {
+    console.warn("Storage upload unavailable — falling back to embedded base64:", storageErr);
+    if (file.size > BASE64_FALLBACK_MAX) {
+      throw new Error(`File is ${formatBytes(file.size)} — too large to embed. Create the "${STORAGE_BUCKET}" bucket in Supabase Storage (run setup-materials-bucket.sql), then retry.`);
+    }
+    onProgress(50);
+    const url = file.type.startsWith("image/") ? await compressImage(file) : await readFileWithProgress(file, onProgress);
+    onProgress(100);
+    return url;
+  }
+}
+
 export default function UploadMaterials() {
   const { courseId } = useParams();
   const navigate = useNavigate();
@@ -97,6 +153,7 @@ export default function UploadMaterials() {
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [error, setError] = useState("");
+  const [syncWarning, setSyncWarning] = useState("");
   const [dragOver, setDragOver] = useState(false);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [startingLive, setStartingLive] = useState(false);
@@ -132,59 +189,28 @@ export default function UploadMaterials() {
   async function loadData() {
     if (!courseId) return;
     const loggedInUser = JSON.parse(localStorage.getItem("currentUser") || "{}");
-    const tenantId = loggedInUser.tenantId;
+    const tenantId = loggedInUser.tenantId || loggedInUser.tenant_id || "";
 
+    // 1. Instant local read (offline-first)
     try {
       const c = await getCourseById(courseId);
       if (c) setCourse(c);
-      const localMats = await getCourseMaterials(courseId);
-      localMats.sort((a, b) => (a.presentationOrder ?? 0) - (b.presentationOrder ?? 0));
-      setMaterials(localMats);
+      setMaterials(await getCourseMaterials(courseId));
     } catch (e) { console.error("Local load failed", e); }
 
+    // 2. Merge the cloud in SAFELY:
+    //    retry queued pushes and pending deletes, upsert remote rows, and
+    //    NEVER wipe local rows that are still queued for push. The old code
+    //    deleted every local row missing from Supabase, which destroyed
+    //    just-added / offline materials.
     if (tenantId) {
       try {
-        const { data, error } = await supabase.from('course_materials').select('*').eq('tenant_id', tenantId).eq('course_id', courseId).order('presentation_order', { ascending: true });
-        if (!error && data && data.length > 0) {
-          const supabaseMaterials: CourseMaterial[] = data.map(m => ({ id: m.id, courseId: m.course_id, title: m.title, description: "", fileUrl: m.file_data || "", fileName: m.file_name, fileType: m.file_type, allowDownload: true, uploadedBy: m.uploaded_by || loggedInUser.id, uploadedAt: m.uploaded_at || m.created_at || "", presentationOrder: m.presentation_order ?? 0 }));
-          for (const mat of supabaseMaterials) await db.materials.put(mat);
-          const localMaterials = await getCourseMaterials(courseId);
-          const supabaseIds = new Set(data.map(m => m.id));
-          for (const local of localMaterials) { if (!supabaseIds.has(local.id)) await db.materials.delete(local.id); }
-          supabaseMaterials.sort((a, b) => (a.presentationOrder ?? 0) - (b.presentationOrder ?? 0));
-          setMaterials(supabaseMaterials);
-          
-          const { data: cData } = await supabase.from("courses").select("*").eq("id", courseId).maybeSingle();
-          if (cData) { setCourse({ id: cData.id, name: cData.name, description: cData.description || "", logo: cData.logo || "", tenantId: cData.tenant_id, trainerId: cData.trainer_id, createdAt: cData.created_at, tuitionType: cData.tuition_type || "free", amount: cData.amount || 0, startDate: cData.start_date || "", period: cData.period || "", mediaUrl: cData.logo || "", mediaType: "image", mediaName: "course-logo" }); }
-        }
+        const merged = await reconcileCourseMaterials(courseId, tenantId);
+        setMaterials(merged);
+
+        const { data: cData } = await supabase.from("courses").select("*").eq("id", courseId).maybeSingle();
+        if (cData) { setCourse({ id: cData.id, name: cData.name, description: cData.description || "", logo: cData.logo || "", tenantId: cData.tenant_id, trainerId: cData.trainer_id, createdAt: cData.created_at, tuitionType: cData.tuition_type || "free", amount: cData.amount || 0, startDate: cData.start_date || "", period: cData.period || "", mediaUrl: cData.logo || "", mediaType: "image", mediaName: "course-logo" }); }
       } catch (err) { console.warn("Offline: Using local materials", err); }
-    }
-  }
-
-  async function syncMaterialToSupabase(material: CourseMaterial, tenantId: string) {
-    try {
-      const payload = { id: material.id, tenant_id: tenantId, course_id: material.courseId, title: material.title, description: material.description || "", file_data: material.fileUrl, file_name: material.fileName, file_type: material.fileType, uploaded_by: material.uploadedBy, uploaded_at: material.uploadedAt, presentation_order: material.presentationOrder ?? 0, synced: true };
-      const { error } = await supabase.from('course_materials').upsert(payload);
-      if (error) throw error;
-    } catch (error: any) { console.warn("Material saved locally, but failed to sync to Supabase.", error.message); }
-  }
-
-  async function syncMultipleMaterialsToSupabase(materialsList: CourseMaterial[], tenantId: string) {
-    try {
-      const payloads = materialsList.map(material => ({ id: material.id, tenant_id: tenantId, course_id: material.courseId, title: material.title, description: material.description || "", file_data: material.fileUrl, file_name: material.fileName, file_type: material.fileType, uploaded_by: material.uploadedBy, uploaded_at: material.uploadedAt, presentation_order: material.presentationOrder ?? 0, synced: true }));
-      const { error } = await supabase.from('course_materials').upsert(payloads);
-      if (error) throw error;
-    } catch (error: any) { console.warn("Materials saved locally, but failed to sync to Supabase.", error.message); }
-  }
-
-  async function deleteMaterialFromSupabase(materialId: string, tenantId: string) {
-    try { 
-      const { error } = await supabase.from('course_materials').delete().eq('id', materialId).eq('tenant_id', tenantId); 
-      if (error) throw error; 
-      return true;
-    } catch (error: any) { 
-      console.error("Supabase Delete Error:", error);
-      throw new Error(error.message); 
     }
   }
 
@@ -205,22 +231,32 @@ export default function UploadMaterials() {
     if (!title.trim()) return setError("Please enter a page title.");
     if (!file) return setError("Please select a file to upload.");
     const loggedInUser = JSON.parse(localStorage.getItem("currentUser") || "{}");
-    const tenantId = loggedInUser.tenantId;
+    const tenantId = loggedInUser.tenantId || loggedInUser.tenant_id || "";
     if (!tenantId) { setError("Critical error: Session is missing business data. Please log out and log back in."); return; }
     setUploading(true); setUploadProgress(0); setError("");
     try {
-      let fileUrl: string; let storedFileType = file.type || "application/octet-stream";
-      if (file.type.startsWith("image/")) { setUploadProgress(10); fileUrl = await compressImage(file); storedFileType = "image/jpeg"; setUploadProgress(100); }
-      else { fileUrl = await readFileWithProgress(file, (p) => setUploadProgress(p)); }
-      
+      let storedFileType = file.type || "application/octet-stream";
       if (file.name.endsWith(".ppt") || file.name.endsWith(".pptx")) {
         storedFileType = "application/vnd.ms-powerpoint";
       }
+      if (file.type.startsWith("image/")) storedFileType = "image/jpeg";
+
+      setSyncWarning("");
+      const fileUrl = await uploadMaterialFile(file, courseId, (p) => setUploadProgress(p));
 
       const material: CourseMaterial = { id: crypto.randomUUID(), courseId, title: title.trim(), description: "", fileUrl, fileName: file.name, fileType: storedFileType, allowDownload: true, uploadedBy: currentUser.id, uploadedAt: new Date().toISOString(), presentationOrder: materials.length };
-      await addMaterial(material);
-      setTitle(""); setFile(null); setImagePreview(null); setUploadProgress(0); await loadData();
-      syncMaterialToSupabase(material, tenantId);
+
+      // ONE awaited sync path: addMaterial = local write + single cloud push.
+      // NOTE: no loadData() here — the old code called it before the push
+      // landed and its reconcile deleted the just-added row, so the material
+      // vanished right after upload. State is updated locally instead.
+      const res = await addMaterial(material);
+      if (!res.ok) {
+        setSyncWarning(`Saved on this device only — cloud sync failed: ${res.error}. It will retry automatically on your next visit to this page.`);
+      }
+
+      setTitle(""); setFile(null); setImagePreview(null); setUploadProgress(0);
+      setMaterials(prev => [...prev, material].sort((a, b) => (a.presentationOrder ?? 0) - (b.presentationOrder ?? 0)));
     } catch (err) { console.error("Upload error:", err); setError(err instanceof Error ? err.message : "Upload failed."); } finally { setUploading(false); }
   }
 
@@ -256,13 +292,13 @@ export default function UploadMaterials() {
     saveNewOrder(newMaterials);
   }
 
-  function saveNewOrder(newMaterials: CourseMaterial[]) {
-    const loggedInUser = JSON.parse(localStorage.getItem("currentUser") || "{}");
-    const tenantId = loggedInUser.tenantId;
+  async function saveNewOrder(newMaterials: CourseMaterial[]) {
     const updatedMaterials = newMaterials.map((m, idx) => ({ ...m, presentationOrder: idx }));
     setMaterials(updatedMaterials);
-    updatedMaterials.forEach(m => updateMaterial(m));
-    if (tenantId) syncMultipleMaterialsToSupabase(updatedMaterials, tenantId);
+    // ONE batched cloud request for the whole reorder (replaces the old
+    // N × updateMaterial pushes + N more pushes via syncMultipleMaterials…).
+    const res = await updateMaterials(updatedMaterials);
+    if (!res.ok) setSyncWarning(`Order saved on this device only — cloud sync failed: ${res.error}`);
   }
 
   function resetDragState() { setDraggedItemId(null); setDragOverItemId(null); }
@@ -289,32 +325,25 @@ export default function UploadMaterials() {
   }
 
   // ====================================================================
-  // FIXED: Optimistic UI Deletion without blocking browser dialogs
+  // Delete: optimistic UI, then deleteMaterial() which records a tombstone,
+  // removes the local row and deletes in the cloud — with automatic retry
+  // of the cloud delete on the next load if it fails (offline / RLS).
   // ====================================================================
   async function removeMaterial(id: string) {
-    const loggedInUser = JSON.parse(localStorage.getItem("currentUser") || "{}");
-    const tenantId = loggedInUser.tenantId;
-
     // 1. INSTANTLY remove from the screen (Optimistic UI)
     setMaterials(prevMaterials => prevMaterials.filter(m => m.id !== id));
-    
-    try {
-      // 2. Delete from local IndexedDB
-      await deleteMaterial(id);
-    } catch (localErr) {
-      console.error("Local DB Delete Error:", localErr);
-      await loadData(); // Restore UI if local delete failed
-      return;
-    }
 
     try {
-      // 3. Delete from Supabase
-      if (tenantId) {
-        await deleteMaterialFromSupabase(id, tenantId);
+      // 2. Tombstone + local delete + cloud delete
+      const res = await deleteMaterial(id);
+      if (!res.ok) {
+        setSyncWarning(`Deleted on this device, but the cloud delete failed (${res.error}). It will retry automatically — the item may briefly reappear on other devices.`);
+      } else {
+        setSyncWarning("");
       }
-    } catch (supabaseErr: any) {
-      console.error("Supabase Delete Error:", supabaseErr);
-      await loadData(); // Restore UI if cloud delete failed
+    } catch (err) {
+      console.error("Local DB Delete Error:", err);
+      await loadData(); // Restore UI if local delete failed
     }
   }
 
@@ -369,6 +398,8 @@ export default function UploadMaterials() {
 
         {error && (<div style={{ margin: "0 0 24px 0", padding: "14px 18px", background: C.redBg, borderRadius: 12, ...TS.body, fontSize: 14, color: C.red, display: "flex", alignItems: "center", gap: 10, border: `1px solid ${C.red}22` }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>{error}</div>)}
 
+        {syncWarning && (<div style={{ margin: "0 0 24px 0", padding: "14px 18px", background: C.orangeBg, borderRadius: 12, ...TS.body, fontSize: 14, color: C.orange, display: "flex", alignItems: "center", gap: 10, border: `1px solid ${C.orange}22` }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>{syncWarning}</div>)}
+
         <div style={{ padding: "0 0 40px 0" }}>
           <button onClick={handleUpload} disabled={!canUpload} style={{ ...TS.input, width: "100%", padding: 16, background: canUpload ? C.medBlue : "#D1D1D6", color: "#fff", border: "none", borderRadius: 12, fontSize: 16, fontWeight: 600, cursor: canUpload ? "pointer" : "not-allowed", transition: "background 0.2s", boxShadow: canUpload ? `0 4px 12px ${C.medBlue}33` : "none" }}>{uploading ? "Processing..." : "+ Add to Lesson"}</button>
         </div>
@@ -379,7 +410,6 @@ export default function UploadMaterials() {
         ) : (
           <div style={{ background: C.card, borderRadius: 16, overflow: "hidden", border: `1px solid ${C.separator}`, boxShadow: "0 4px 24px rgba(0,0,0,0.06)" }}>
             {materials.map((mat, index) => {
-              // FIX: mat.fileType can be undefined — use ?? "" for safe fallback
               const meta = getFileMeta(mat.fileType ?? "");
               const isDragging = draggedItemId === mat.id;
               const isDragOver = dragOverItemId === mat.id;
@@ -410,9 +440,7 @@ export default function UploadMaterials() {
                     <div style={{ flex: 1, minWidth: 0 }}><div style={{ ...TS.input, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{mat.title}</div><div style={{ ...TS.label, fontSize: 12, marginTop: 2, color: C.textTertiary }}>{meta.label} • {mat.fileName}</div></div>
                   </div>
                   
-                  {/* ========================================================== */}
-                  {/* FIXED: Delete button prevents drag events and removed dialogs */}
-                  {/* ========================================================== */}
+                  {/* Delete button: drag-safe, no blocking dialogs */}
                   <button 
                     onDragStart={(e) => e.preventDefault()}
                     draggable={false}

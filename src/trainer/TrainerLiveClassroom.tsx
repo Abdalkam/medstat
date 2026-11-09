@@ -112,13 +112,15 @@ export default function TrainerLiveClassroom() {
     if (localMats.length > 0) setMaterials(localMats.sort((a, b) => (a.presentationOrder ?? 0) - (b.presentationOrder ?? 0)));
 
     try {
-      const { data: liveSess } = await supabase.from("live_session").select("*").eq("course_id", courseId).maybeSingle();
+      const { data: liveSess, error: liveSessErr } = await supabase.from("live_session").select("*").eq("course_id", courseId).maybeSingle();
+      if (liveSessErr) console.error("[live] live_session fetch failed:", liveSessErr.message);
       if (liveSess) {
         setSessionActive(liveSess.active);
         await db.liveSessions.put({ id: liveSess.id, courseId, active: liveSess.active, trainerId: liveSess.trainer_id, startedAt: liveSess.started_at, updatedAt: liveSess.updated_at, createdAt: liveSess.created_at, tenantId: liveSess.tenant_id });
       }
 
-      const { data: livePres } = await supabase.from("live_presentations").select("*").eq("course_id", courseId).maybeSingle();
+      const { data: livePres, error: livePresErr } = await supabase.from("live_presentations").select("*").eq("course_id", courseId).maybeSingle();
+      if (livePresErr) console.error("[live] live_presentations fetch failed:", livePresErr.message);
       if (livePres) {
         const mappedPres = { id: livePres.id, courseId: livePres.course_id, materialId: livePres.material_id || "", isBlackboard: livePres.is_blackboard ?? false, blackboardStrokes: (livePres.blackboard_strokes as Stroke[]) || [], blackboardLines: (livePres.blackboard_lines as string[]) || [], blackboardLabels: (livePres.blackboard_labels as any[]) || [], startedBy: livePres.started_by, updatedAt: livePres.updated_at, currentPage: livePres.current_page ?? 1, tenantId: livePres.tenant_id };
         setLiveState(mappedPres);
@@ -126,16 +128,23 @@ export default function TrainerLiveClassroom() {
         await updatePresentation(mappedPres);
 
         if (mappedPres.materialId) {
-          const { data: mat } = await supabase.from("course_materials").select("*").eq("id", mappedPres.materialId).maybeSingle();
+          const { data: mat, error: matErr } = await supabase.from("course_materials").select("*").eq("id", mappedPres.materialId).maybeSingle();
+          if (matErr) console.error("[live] presentation material fetch failed:", matErr.message);
           if (mat) {
             const mappedMat = mapMaterial(mat);
             setPresentation(mappedMat);
             await db.materials.put(mappedMat);
           }
         } else setPresentation(null);
-      } else { setLiveState(null); setIsBlackboardMode(false); setPresentation(null); }
+      } else if (!localPres) {
+        // FIX: cloud has no live_presentations row (offline, RLS, or failed
+        // insert). Keep whatever the local Dexie copy is showing instead of
+        // wiping the trainer's screen back to "Select a page from the sidebar."
+        setLiveState(null); setIsBlackboardMode(false); setPresentation(null);
+      }
 
-      const { data: mats } = await supabase.from("course_materials").select("*").eq("course_id", courseId).order("presentation_order", { ascending: true });
+      const { data: mats, error: matsErr } = await supabase.from("course_materials").select("*").eq("course_id", courseId).eq("tenant_id", tenantId).order("presentation_order", { ascending: true });
+      if (matsErr) console.error("[live] course_materials fetch failed:", matsErr.message);
       if (mats && mats.length > 0) {
         const mappedMats = mats.map(mapMaterial);
         setMaterials(mappedMats);

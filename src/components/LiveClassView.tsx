@@ -13,8 +13,12 @@ export default function LiveClassView({ material, page }: Props) {
   const fileType: string = material.fileType || (material as any).file_type || "";
   const fileName: string = material.fileName || (material as any).file_name || material.title || "file";
 
+  // FIX: support direct URLs (Supabase Storage signed/public URLs) alongside
+  // data: URLs and raw base64 — without this, URL-based materials never render.
+  const isHttpUrl = rawFileData.startsWith("http");
+
   // Detect PDF from base64 header or fileType field
-  const isPdf = fileType.includes("pdf") || rawFileData.startsWith("data:application/pdf") || rawFileData.startsWith("%PDF") || rawFileData.startsWith("JVBER");
+  const isPdf = fileType.includes("pdf") || rawFileData.startsWith("data:application/pdf") || rawFileData.startsWith("JVBER");
   const isVideo = fileType.includes("video") || rawFileData.startsWith("data:video/");
   const isAudio = fileType.includes("audio") || rawFileData.startsWith("data:audio/");
   const isImage = fileType.includes("image") || rawFileData.startsWith("data:image/");
@@ -31,7 +35,7 @@ export default function LiveClassView({ material, page }: Props) {
   };
 
   if (isPdf && rawFileData) {
-    const pdfSrc = rawFileData.startsWith("data:")
+    const pdfSrc = rawFileData.startsWith("data:") || isHttpUrl
       ? rawFileData
       : `data:application/pdf;base64,${rawFileData}`;
 
@@ -62,7 +66,9 @@ export default function LiveClassView({ material, page }: Props) {
   }
 
   if (isVideo && rawFileData) {
-    const videoSrc = rawFileData.startsWith("data:") ? rawFileData : `data:video/mp4;base64,${rawFileData}`;
+    const videoSrc = rawFileData.startsWith("data:") || isHttpUrl
+      ? rawFileData
+      : `data:video/mp4;base64,${rawFileData}`;
     return (
       <div style={{
         ...containerStyle,
@@ -91,7 +97,9 @@ export default function LiveClassView({ material, page }: Props) {
   }
 
   if (isAudio && rawFileData) {
-    const audioSrc = rawFileData.startsWith("data:") ? rawFileData : `data:audio/mp3;base64,${rawFileData}`;
+    const audioSrc = rawFileData.startsWith("data:") || isHttpUrl
+      ? rawFileData
+      : `data:audio/mp3;base64,${rawFileData}`;
     return (
       <div style={{
         ...containerStyle,
@@ -125,7 +133,9 @@ export default function LiveClassView({ material, page }: Props) {
   }
 
   if (isImage && rawFileData) {
-    const imgSrc = rawFileData.startsWith("data:") ? rawFileData : `data:image/png;base64,${rawFileData}`;
+    const imgSrc = rawFileData.startsWith("data:") || isHttpUrl
+      ? rawFileData
+      : `data:image/png;base64,${rawFileData}`;
     return (
       <div style={{
         ...containerStyle,
@@ -149,7 +159,9 @@ export default function LiveClassView({ material, page }: Props) {
   }
 
   if ((isPptx || isWord) && rawFileData) {
-    const downloadSrc = rawFileData.startsWith("data:") ? rawFileData : `data:application/octet-stream;base64,${rawFileData}`;
+    const downloadSrc = rawFileData.startsWith("data:") || isHttpUrl
+      ? rawFileData
+      : `data:application/octet-stream;base64,${rawFileData}`;
     return (
       <div style={{
         ...containerStyle,
@@ -181,6 +193,8 @@ export default function LiveClassView({ material, page }: Props) {
           <a
             href={downloadSrc}
             download={fileName}
+            target={isHttpUrl ? "_blank" : undefined}
+            rel={isHttpUrl ? "noreferrer" : undefined}
             style={{
               display: "inline-block",
               padding: "12px 24px",

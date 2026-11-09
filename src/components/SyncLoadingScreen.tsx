@@ -2,6 +2,13 @@ import { useEffect, useState } from "react";
 
 const MEDICAL_BLUE = "#007AFF";
 
+/* Fix (2026-11-09): logo src was "/applogo.png" — a root-absolute URL that
+   misses the Vite base path ("/medstat/"), so dev returned 404
+   (http://127.0.0.1:1420/applogo.png). It now uses
+   `${import.meta.env.BASE_URL}applogo.png`, which resolves to
+   "/medstat/applogo.png" in dev AND in the production/Tauri build.
+   Everything else in this file is unchanged from the original. */
+
 export default function SyncLoadingScreen({ onSyncComplete }: { onSyncComplete: () => void }) {
   const [progress, setProgress] = useState(0);
 
@@ -13,13 +20,13 @@ export default function SyncLoadingScreen({ onSyncComplete }: { onSyncComplete: 
         // --- INSTRUCTIONS ---
         // Replace this simulated loop with your actual Supabase & Local DB sync logic.
         // If your sync function returns a percentage, update the state using setProgress(progressValue)
-        
+
         // Simulating sync progress for UI demonstration
         for (let i = 0; i <= 100; i += 5) {
           if (!isMounted) return;
           setProgress(i);
           // Simulate network/database delay (adjust or remove for real sync)
-          await new Promise((resolve) => setTimeout(resolve, 80)); 
+          await new Promise((resolve) => setTimeout(resolve, 80));
         }
 
         if (isMounted) {
@@ -55,9 +62,9 @@ export default function SyncLoadingScreen({ onSyncComplete }: { onSyncComplete: 
         position: "relative",
       }}
     >
-      {/* App Logo */}
+      {/* App Logo — BASE_URL resolves to "/medstat/" (dev + production build) */}
       <img
-        src="/applogo.png" // Ensure applogo.png is inside your /public folder
+        src={`${import.meta.env.BASE_URL}applogo.png`}
         alt="App Logo"
         style={{
           width: "96px",

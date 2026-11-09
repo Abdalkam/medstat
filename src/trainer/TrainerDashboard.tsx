@@ -4,203 +4,337 @@ import type { Course, BusinessSettings, User } from "../types";
 import { supabase } from "../auth/supabase";
 import { getCourses } from "../database/courseDB";
 
+/* ------------------------------------------------------------------ */
+/*  TrainerDashboard — Microsoft Teams (Fluent 2) look                 */
+/*                                                                     */
+/*  Instant-data strategy (offline-first, zero skeleton on re-visits): */
+/*   1. First paint reads localStorage synchronously — cached user,    */
+/*      settings, avatar, courses, learner counts, pending forms.      */
+/*   2. Local Dexie courses paint immediately after mount.             */
+/*   3. Supabase refreshes run in the background (stale-while-         */
+/*      -revalidate) and swap content in place; every result is        */
+/*      written back to localStorage so the next visit is instant.     */
+/*   4. The render-blocking Google Fonts @import is gone — Segoe UI    */
+/*      is a system font on Windows (and Tauri WebView2).              */
+/* ------------------------------------------------------------------ */
+
 function initialsOf(name: string | null | undefined, fallback: string): string {
   const parts = (name || "").trim().split(/\s+/).filter(Boolean);
   if (parts.length >= 2) return (parts[0].charAt(0) + parts[1].charAt(0)).toUpperCase();
   return (parts[0]?.slice(0, 2) || fallback).toUpperCase();
 }
 
-const PRIMARY = "#0B57D0";
-const PRIMARY_HOVER = "#0842A0";
-const PRIMARY_CONTAINER = "#D3E3FD";
-const GREEN_FG = "#146C2E";
-const GREEN_CONTAINER = "#D2EEDA";
-const PURPLE_FG = "#8430CE";
-const PURPLE_CONTAINER = "#E9DDFB";
-const ORANGE_FG = "#965E00";
-const ORANGE_CONTAINER = "#FDEBC8";
+function readJSON<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as T) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function writeJSON(key: string, value: unknown) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {}
+}
+
+/* Local caches that make remounts instant (even fully offline). */
+const COURSES_CACHE = "td_courses_cache_v1";
+const STATS_CACHE = "td_stats_cache_v1";
+const FORMS_CACHE = "td_pending_forms_v1";
+
+/* Microsoft Teams / Fluent 2 palette */
+const BRAND = "#5B5FC7";          // Teams purple
+const BRAND_HOVER = "#4F52B2";
+const BRAND_PRESSED = "#444791";
+const BRAND_TINT = "#EBEDF9";     // tinted surfaces / active rail pill
+const CANVAS = "#F5F5F5";         // app canvas
+const RAIL_BG = "#EBEBEB";        // left app rail
+const HOVER_BG = "#F0F0F0";       // neutral control hover
+const PRESSED_BG = "#E0E0E0";     // neutral control pressed
+const STROKE = "#E0E0E0";         // hairline borders
+const STROKE_2 = "#D1D1D1";       // input borders
+const TEXT = "#242424";
+const TEXT_2 = "#424242";
+const TEXT_3 = "#616161";
+const PLACEHOLDER = "#707070";
+const PRESENCE_GREEN = "#6BB700";
+const DANGER = "#C50F1F";
+const DANGER_TINT = "#FDF3F4";
+
+const FONT_STACK =
+  "'Segoe UI', 'Segoe UI Web (West European)', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif";
 
 const TD_CSS = `
-@import url('https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap');
-
-.td-root { min-height:100vh; min-height:100dvh; width:100%; background:#F0F4F9; color:#1F1F1F;
-  font-family:Roboto,'Google Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;
-  display:flex; flex-direction:column; }
+.td-root { min-height:100vh; min-height:100dvh; width:100%; background:${CANVAS}; color:${TEXT};
+  font-family:${FONT_STACK}; -webkit-text-size-adjust:100%; text-size-adjust:100%; }
 .td-root *, .td-root *::before, .td-root *::after { box-sizing:border-box; }
 
-.td-bar { position:sticky; top:0; z-index:20; background:#fff; border-bottom:1px solid #DADCE0;
-  box-shadow:0 1px 3px rgba(60,64,67,.06); }
-.td-bar-inner { display:flex; align-items:center; gap:12px; flex-wrap:wrap;
-  padding:10px clamp(12px,3vw,24px); width:100%; }
-.td-brand { display:flex; align-items:center; gap:12px; flex:1 1 220px; min-width:0; }
-.td-logo { width:38px; height:38px; border-radius:10px; object-fit:contain; object-position:center; background:#FFFFFF; padding:3px; box-sizing:border-box; border:1px solid #DADCE0; flex-shrink:0; }
-.td-logo-fallback { display:flex; align-items:center; justify-content:center;
-  background:${PRIMARY_CONTAINER}; color:${PRIMARY}; font-weight:500; font-size:17px; }
-.td-name { margin:0; font-size:16px; font-weight:500; color:#1F1F1F;
-  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.td-phone { font-size:12.5px; color:#444746; text-decoration:none; display:inline-flex;
+/* ---------------- left app rail (Teams navigation) ---------------- */
+.td-rail { position:fixed; top:0; left:0; bottom:0; width:68px; background:${RAIL_BG};
+  display:flex; flex-direction:column; align-items:center; gap:4px; padding:10px 0 12px; z-index:40; }
+/* Single brand anchor: the business logo + name live in the top app bar
+   only. The left rail used to repeat the logo (double-logo report) — the
+   rail is now pure navigation, matching Microsoft Teams. */
+.td-railnav { display:flex; flex-direction:column; gap:4px; margin-top:10px; }
+.td-railbtn { position:relative; width:48px; height:44px; border:none; border-radius:8px;
+  background:transparent; color:${TEXT_2}; display:flex; align-items:center; justify-content:center;
+  cursor:pointer; transition:background .12s ease, color .12s ease; }
+.td-railbtn:hover { background:${PRESSED_BG}; color:${TEXT}; }
+.td-railbtn:active { background:${STROKE}; }
+.td-railbtn.active { background:${BRAND_TINT}; color:${BRAND}; }
+.td-railbtn.active::before { content:""; position:absolute; left:-10px; top:12px; width:3px; height:20px;
+  border-radius:2px; background:${BRAND}; }
+.td-railbadge { position:absolute; top:3px; right:3px; min-width:17px; height:17px; border-radius:9px;
+  background:${DANGER}; color:#fff; font-size:10.5px; font-weight:600; display:flex; align-items:center;
+  justify-content:center; padding:0 4px; border:2px solid ${RAIL_BG}; box-sizing:content-box; }
+.td-railspacer { flex:1; }
+
+/* ---------------- top bar ---------------- */
+.td-main { margin-left:68px; display:flex; flex-direction:column; min-width:0; min-height:100dvh; }
+.td-bar { position:sticky; top:0; z-index:30; background:#fff; border-bottom:1px solid ${STROKE};
+  box-shadow:0 1px 3px rgba(0,0,0,.04); }
+.td-bar-grid { display:grid; grid-template-columns:1fr minmax(180px,430px) 1fr; align-items:center;
+  gap:14px; padding:8px clamp(12px,2.5vw,20px); }
+.td-brand { display:flex; align-items:center; gap:10px; min-width:0; }
+.td-logo { width:34px; height:34px; border-radius:6px; object-fit:contain; background:#fff;
+  border:1px solid ${STROKE}; flex-shrink:0; }
+.td-logo-fallback { display:flex; align-items:center; justify-content:center; background:${BRAND};
+  color:#fff; font-weight:600; font-size:15px; border:none; }
+.td-name { margin:0; font-size:15px; font-weight:600; color:${TEXT}; line-height:1.25;
+  overflow-wrap:break-word; }
+.td-phone { font-size:12px; color:${TEXT_3}; text-decoration:none; display:inline-flex;
   align-items:center; gap:5px; margin-top:1px; white-space:nowrap; }
-.td-phone:hover { color:${PRIMARY}; }
-.td-bar-actions { display:flex; align-items:center; gap:6px; }
-.td-chip { display:flex; align-items:center; gap:8px; background:#F0F4F9; border:1px solid #DADCE0;
-  border-radius:999px; padding:3px 14px 3px 4px; max-width:210px; min-width:0; }
-.td-avatar { width:30px; height:30px; border-radius:50%; background:${PRIMARY}; color:#fff;
-  font-size:13px; font-weight:500; display:flex; align-items:center; justify-content:center;
-  overflow:hidden; flex-shrink:0; }
-.td-avatar img { width:100%; height:100%; object-fit:cover; }
-.td-username { font-size:13px; font-weight:500; color:#1F1F1F; white-space:nowrap;
-  overflow:hidden; text-overflow:ellipsis; }
-.td-iconbtn { position:relative; width:40px; height:40px; border-radius:50%; border:none;
-  background:transparent; color:#444746; display:flex; align-items:center; justify-content:center;
-  cursor:pointer; flex-shrink:0; transition:background .15s ease, color .15s ease; }
-@media (hover:hover){ .td-iconbtn:hover { background:rgba(60,64,67,0.08); color:#1F1F1F; } }
-.td-badge { position:absolute; top:1px; right:1px; min-width:17px; height:17px; border-radius:9px;
-  background:#B3261E; color:#fff; font-size:10px; font-weight:700; display:flex; align-items:center;
-  justify-content:center; padding:0 4px; border:2px solid #fff; box-sizing:content-box; }
+.td-phone:hover { color:${BRAND}; text-decoration:underline; }
 
-.td-body { flex:1; width:100%;
-  padding:clamp(16px,3.5vw,32px) clamp(14px,3.5vw,28px) 72px; }
-.td-heading { display:flex; align-items:center; gap:10px; margin:4px 2px 22px; }
-.td-heading h2 { margin:0; font-size:clamp(20px,2.4vw,24px); font-weight:400; color:#1F1F1F; }
-.td-count { background:#fff; border:1px solid #DADCE0; border-radius:999px; padding:2px 11px;
-  font-size:12px; font-weight:500; color:#444746; white-space:nowrap; }
+.td-search { display:flex; align-items:center; gap:8px; background:${HOVER_BG};
+  border:1px solid transparent; border-radius:6px; padding:6px 12px; color:${TEXT_3};
+  transition:background .12s, border-color .12s; }
+.td-search:focus-within { background:#fff; border-color:${BRAND}; }
+.td-search svg { flex-shrink:0; }
+.td-search input { flex:1; min-width:0; border:none; outline:none; background:transparent;
+  font:inherit; font-size:13.5px; color:${TEXT}; }
+.td-search input::placeholder { color:${PLACEHOLDER}; }
 
-.td-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(min(310px,100%),1fr));
-  gap:clamp(14px,2vw,22px); }
-.td-card { background:#fff; border-radius:22px; overflow:hidden; display:flex; flex-direction:column;
-  box-shadow:0 1px 2px 0 rgba(60,64,67,.24), 0 1px 3px 1px rgba(60,64,67,.08);
-  transition:box-shadow .2s ease, transform .2s ease; min-width:0; }
-@media (hover:hover){
-  .td-card:hover { box-shadow:0 1px 3px 0 rgba(60,64,67,.30), 0 4px 8px 3px rgba(60,64,67,.15); transform:translateY(-2px); }
-}
-.td-media { position:relative; width:100%; height:clamp(150px,22vw,200px); background:${PRIMARY_CONTAINER}; }
+.td-bar-actions { display:flex; align-items:center; justify-content:flex-end; gap:8px; }
+.td-chip { display:flex; align-items:center; gap:9px; background:transparent; border:none;
+  border-radius:6px; padding:4px 10px 4px 4px; max-width:230px; min-width:0; cursor:pointer;
+  font-family:inherit; transition:background .12s; }
+.td-chip:hover { background:${HOVER_BG}; }
+.td-avatar { position:relative; width:32px; height:32px; border-radius:5px; background:${BRAND};
+  color:#fff; font-size:12.5px; font-weight:600; display:flex; align-items:center; justify-content:center;
+  overflow:visible; flex-shrink:0; }
+.td-avatar > img, .td-avatar > span:first-child { width:100%; height:100%; border-radius:5px;
+  overflow:hidden; display:flex; align-items:center; justify-content:center; }
+.td-avatar img { width:100%; height:100%; object-fit:cover; border-radius:5px; }
+.td-presence { position:absolute; right:-2px; bottom:-2px; width:11px; height:11px; border-radius:50%;
+  background:${PRESENCE_GREEN}; border:2px solid #fff; }
+.td-username { font-size:13px; font-weight:600; color:${TEXT}; }
+
+/* ---------------- body ---------------- */
+/* Page balance: content is centred and capped so cards never stretch
+   edge-to-edge on wide monitors; heading and grid share the same column. */
+.td-body { flex:1; width:100%; max-width:1640px; margin:0 auto;
+  padding:clamp(16px,3vw,28px) clamp(14px,3vw,28px) 56px; }
+.td-heading { display:flex; align-items:center; gap:10px; margin:2px 2px 18px; }
+.td-heading h2 { margin:0; font-size:clamp(19px,2.2vw,23px); font-weight:600; color:${TEXT}; }
+.td-count { background:#fff; border:1px solid ${STROKE}; border-radius:4px; padding:2px 9px;
+  font-size:12px; font-weight:600; color:${TEXT_3}; white-space:nowrap; }
+.td-refresh { margin-left:auto; width:32px; height:32px; border-radius:6px; border:none;
+  background:transparent; color:${TEXT_3}; display:flex; align-items:center; justify-content:center;
+  cursor:pointer; transition:background .12s, color .12s; }
+.td-refresh:hover { background:${HOVER_BG}; color:${BRAND}; }
+.td-refresh:disabled { opacity:.5; cursor:default; }
+
+.td-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(min(320px,100%),1fr));
+  gap:clamp(14px,1.8vw,20px); }
+
+/* Cards: soft radius, gentle hover lift — Fluent 2 depth, no layout shift. */
+.td-card { background:#fff; border:1px solid ${STROKE}; border-radius:10px; overflow:hidden;
+  display:flex; flex-direction:column; min-width:0;
+  box-shadow:0 1px 2px rgba(0,0,0,.06); transition:box-shadow .18s ease, transform .18s ease; }
+.td-card:hover { transform:translateY(-2px);
+  box-shadow:0 8px 20px rgba(0,0,0,.10), 0 2px 6px rgba(0,0,0,.07); }
+
+.td-media { position:relative; width:100%; height:clamp(140px,20vw,180px); background:${BRAND_TINT}; }
 .td-media img { width:100%; height:100%; object-fit:cover; display:block; }
 .td-media-fallback { width:100%; height:100%; display:flex; align-items:center; justify-content:center;
-  font-size:46px; font-weight:400; color:${PRIMARY};
-  background:linear-gradient(135deg, #E8F0FE, ${PRIMARY_CONTAINER}); }
-.td-media-scrim { position:absolute; left:0; right:0; bottom:0; height:55%;
-  background:linear-gradient(to top, rgba(0,0,0,.40), transparent); pointer-events:none; }
-.td-countpill { position:absolute; top:12px; right:12px; display:flex; align-items:center; gap:6px;
-  background:rgba(255,255,255,.95); color:#1F1F1F; border-radius:999px; padding:5px 12px;
-  font-size:12.5px; font-weight:500; box-shadow:0 1px 2px rgba(60,64,67,.18); }
-.td-cardbody { padding:18px 20px 14px; flex:1; display:flex; flex-direction:column; min-width:0; }
-.td-cardtitle { margin:0 0 7px; font-size:19px; font-weight:500; color:#1F1F1F; }
-.td-carddesc { margin:0; color:#444746; font-size:14px; line-height:1.6; max-width:72ch; display:-webkit-box;
-  -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
-.td-schedbtn { align-self:flex-start; margin-top:16px; display:inline-flex; align-items:center; gap:7px;
-  padding:7px 15px; border-radius:999px; border:1px solid #DADCE0; background:#fff; color:#444746;
-  font-size:13px; font-weight:500; cursor:pointer; font-family:inherit;
-  transition:background .15s, border-color .15s; }
-@media (hover:hover){ .td-schedbtn:hover { background:#F0F4F9; border-color:#C4C7C5; } }
-.td-actions { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; padding:14px 16px 16px;
-  border-top:1px solid #E8EAED; }
-.td-tile { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px;
-  padding:12px 6px; border-radius:16px; border:none; cursor:pointer; font-family:inherit;
-  transition:filter .15s ease, transform .1s ease; min-width:0; }
-@media (hover:hover){ .td-tile:hover { filter:brightness(0.95); } }
-.td-tile:active { transform:scale(.97); }
-.td-tile span { font-size:11px; font-weight:500; letter-spacing:.3px; }
-.td-iconbtn:focus-visible, .td-tile:focus-visible, .td-schedbtn:focus-visible,
-.td-close:focus-visible, .td-delbtn:focus-visible, .td-primary:focus-visible {
-  outline:2px solid ${PRIMARY}; outline-offset:2px; }
+  font-size:52px; font-weight:600; color:${BRAND};
+  background:linear-gradient(135deg, #E8EBFA 0%, ${BRAND_TINT} 55%, #F3F0FB 100%); }
 
-.td-overlay { position:fixed; inset:0; background:rgba(32,33,36,.5); display:flex;
-  align-items:center; justify-content:center; z-index:1000; padding:20px; }
-.td-dialog { background:#fff; border-radius:28px; width:100%; max-width:560px;
+.td-cardbody { padding:14px 16px 12px; flex:1; display:flex; flex-direction:column; min-width:0; }
+.td-cardtitle { margin:0 0 5px; font-size:16px; font-weight:600; color:${TEXT}; }
+.td-carddesc { margin:0; color:${TEXT_3}; font-size:13px; line-height:1.55;
+  overflow-wrap:break-word; }
+.td-meta { display:flex; flex-wrap:wrap; gap:6px; margin-top:12px; }
+/* Pills wrap as whole units (container flex-wrap) — labels never break mid-word. */
+.td-metapill { display:inline-flex; align-items:center; gap:6px; font-size:12px; font-weight:600;
+  color:${TEXT_2}; background:${CANVAS}; border:1px solid ${STROKE}; border-radius:4px; padding:3px 9px;
+  white-space:nowrap; }
+/* Fluent accent-tint CTA — the one prominent action inside each card. */
+.td-schedbtn { align-self:flex-start; margin-top:14px; display:inline-flex; align-items:center; gap:7px;
+  padding:8px 14px; border-radius:5px; border:none; background:${BRAND_TINT}; color:${BRAND};
+  font-size:13px; font-weight:600; cursor:pointer; font-family:inherit; transition:background .12s;
+  white-space:nowrap; }
+.td-schedbtn:hover { background:#DCDCFA; }
+.td-schedbtn:active { background:#D1D1F2; }
+
+.td-actions { display:flex; gap:8px; padding:12px 14px 14px; border-top:1px solid ${CANVAS}; }
+/* Fluent 2 secondary buttons: white surface, hairline border, grey hover. */
+.td-act { flex:1; display:flex; align-items:center; justify-content:center; gap:7px;
+  padding:8px 8px; border-radius:5px; border:1px solid ${STROKE_2}; background:#fff; color:${TEXT};
+  font-size:12.5px; font-weight:600; cursor:pointer; font-family:inherit; min-width:0;
+  transition:background .12s, border-color .12s; }
+.td-act svg { color:${BRAND}; flex-shrink:0; }
+.td-act:hover { background:${CANVAS}; }
+.td-act:active { background:${HOVER_BG}; }
+.td-act span { white-space:nowrap; }
+
+.td-iconbtn:focus-visible, .td-railbtn:focus-visible, .td-act:focus-visible, .td-schedbtn:focus-visible,
+.td-chip:focus-visible, .td-refresh:focus-visible, .td-close:focus-visible, .td-delbtn:focus-visible,
+.td-btn-primary:focus-visible { outline:2px solid ${BRAND}; outline-offset:2px; }
+
+/* ---------------- dialogs (Fluent panels) ---------------- */
+.td-overlay { position:fixed; inset:0; background:rgba(0,0,0,.4); display:flex;
+  align-items:center; justify-content:center; z-index:1000; padding:20px;
+  backdrop-filter:blur(2px); }
+.td-dialog { background:#fff; border-radius:10px; width:100%; max-width:580px;
   max-height:88vh; max-height:88dvh; display:flex; flex-direction:column; overflow:hidden;
-  box-shadow:0 4px 8px 3px rgba(60,64,67,.15), 0 1px 3px rgba(60,64,67,.3); }
+  box-shadow:0 32px 64px rgba(0,0,0,.24), 0 2px 21px rgba(0,0,0,.18); }
 .td-sheet-handle { display:none; }
-.td-dialog-head { padding:18px 14px 14px 24px; display:flex; align-items:flex-start;
-  justify-content:space-between; gap:12px; border-bottom:1px solid #E8EAED; }
-.td-dialog-title { margin:0; font-size:21px; font-weight:400; color:#1F1F1F; }
-.td-dialog-sub { margin:3px 0 0; font-size:13.5px; color:#747775; }
-.td-dialog-body { padding:20px 24px 26px; overflow-y:auto; }
-.td-close { width:36px; height:36px; border-radius:50%; border:none; background:#F0F4F9;
-  color:#444746; display:flex; align-items:center; justify-content:center; cursor:pointer;
-  flex-shrink:0; transition:background .15s; }
-.td-close:hover { background:#E8EAED; }
+.td-dialog-head { padding:16px 16px 14px 22px; display:flex; align-items:flex-start;
+  justify-content:space-between; gap:12px; border-bottom:1px solid ${STROKE}; }
+.td-dialog-title { margin:0; font-size:19px; font-weight:600; color:${TEXT}; }
+.td-dialog-sub { margin:3px 0 0; font-size:12.5px; color:${TEXT_3}; }
+.td-dialog-body { padding:18px 22px 24px; overflow-y:auto; }
+/* Fluent overlay scrollbar inside dialogs. */
+.td-dialog-body::-webkit-scrollbar { width:10px; }
+.td-dialog-body::-webkit-scrollbar-track { background:transparent; }
+.td-dialog-body::-webkit-scrollbar-thumb { background:#C8C8C8; border-radius:5px;
+  border:2px solid #fff; }
+.td-dialog-body::-webkit-scrollbar-thumb:hover { background:#B4B4B4; }
+.td-close { width:34px; height:34px; border-radius:5px; border:none; background:transparent;
+  color:${TEXT_2}; display:flex; align-items:center; justify-content:center; cursor:pointer;
+  flex-shrink:0; transition:background .12s; }
+.td-close:hover { background:${PRESSED_BG}; }
 
-.td-field { width:100%; padding:12px 14px; border:1px solid #C4C7C5; border-radius:12px;
-  font-size:15px; font-family:inherit; color:#1F1F1F; outline:none; background:#fff;
-  margin-bottom:10px; transition:border-color .15s, box-shadow .15s; }
-.td-field:focus { border-color:${PRIMARY}; box-shadow:inset 0 0 0 1px ${PRIMARY}; }
-.td-field::placeholder { color:#747775; }
-.td-label { font-size:12.5px; font-weight:500; color:#444746; margin:2px 0 6px; display:block; }
-.td-primary { width:100%; padding:13px 20px; border:none; border-radius:999px; background:${PRIMARY};
-  color:#fff; font-size:14.5px; font-weight:500; font-family:inherit; cursor:pointer;
-  margin-top:4px; transition:background .15s, box-shadow .15s; }
-.td-primary:hover { background:${PRIMARY_HOVER}; box-shadow:0 1px 3px 0 rgba(60,64,67,.3); }
-.td-primary:disabled { background:#C4C7C5; color:#fff; cursor:default; box-shadow:none; }
-.td-upcoming { margin:0 0 12px; font-size:12.5px; font-weight:600; letter-spacing:.6px;
-  text-transform:uppercase; color:#747775; }
+.td-field { width:100%; padding:8px 12px; border:1px solid ${STROKE_2}; border-bottom-color:${TEXT_3};
+  border-radius:5px; font-size:14px; font-family:inherit; color:${TEXT}; outline:none; background:#fff;
+  margin-bottom:12px; transition:border-color .12s; }
+.td-field:focus { border-color:${BRAND}; border-bottom-width:2px; padding-bottom:7px; }
+.td-field::placeholder { color:${PLACEHOLDER}; }
+.td-label { font-size:13px; font-weight:600; color:${TEXT_2}; margin:2px 0 6px; display:block; }
+.td-btn-primary { width:100%; padding:10px 18px; border:none; border-radius:5px; background:${BRAND};
+  color:#fff; font-size:14px; font-weight:600; font-family:inherit; cursor:pointer;
+  margin-top:4px; transition:background .12s; }
+.td-btn-primary:hover { background:${BRAND_HOVER}; }
+.td-btn-primary:active { background:${BRAND_PRESSED}; }
+.td-btn-primary:disabled { background:${HOVER_BG}; color:${STROKE_2}; cursor:default; }
+.td-upcoming { margin:20px 0 10px; font-size:13px; font-weight:600; color:${TEXT_2}; }
 
-.td-listitem { display:flex; align-items:center; gap:12px; padding:9px 12px; border-radius:16px;
+.td-listitem { display:flex; align-items:center; gap:12px; padding:8px 10px; border-radius:6px;
   transition:background .12s; }
-@media (hover:hover){ .td-listitem:hover { background:#F0F4F9; } }
-.td-lavatar { width:40px; height:40px; border-radius:50%; background:${PRIMARY_CONTAINER};
-  color:${PRIMARY}; font-weight:500; font-size:15px; display:flex; align-items:center;
-  justify-content:center; overflow:hidden; flex-shrink:0; }
+.td-listitem:hover { background:${HOVER_BG}; }
+.td-lavatar { width:36px; height:36px; border-radius:5px; background:${BRAND_TINT}; color:${BRAND};
+  font-weight:600; font-size:14px; display:flex; align-items:center; justify-content:center;
+  overflow:hidden; flex-shrink:0; }
 .td-lavatar img { width:100%; height:100%; object-fit:cover; }
 .td-listmeta { flex:1; min-width:0; }
-.td-listname { font-size:15px; font-weight:500; color:#1F1F1F; white-space:nowrap;
-  overflow:hidden; text-overflow:ellipsis; }
-.td-listsub { font-size:13px; color:#747775; margin-top:1px; white-space:nowrap;
-  overflow:hidden; text-overflow:ellipsis; }
+.td-listname { font-size:14px; font-weight:600; color:${TEXT};
+  overflow-wrap:break-word; }
+.td-listsub { font-size:12.5px; color:${TEXT_3}; margin-top:1px;
+  overflow-wrap:break-word; }
 
-.td-schedrow { display:flex; align-items:center; gap:12px; background:#F0F4F9;
-  border-radius:16px; padding:12px 14px; }
-.td-datesq { width:46px; border-radius:12px; background:#fff; border:1px solid #DADCE0;
-  text-align:center; padding:6px 0 5px; flex-shrink:0; }
-.td-datesq b { display:block; font-size:17px; font-weight:500; color:#1F1F1F; line-height:1.1; }
-.td-datesq span { font-size:10.5px; font-weight:500; color:#747775; text-transform:uppercase;
+.td-schedrow { display:flex; align-items:center; gap:12px; background:#fff; border:1px solid ${STROKE};
+  border-radius:8px; padding:10px 12px; }
+.td-datesq { width:46px; border-radius:6px; background:${BRAND_TINT}; text-align:center;
+  padding:6px 0 5px; flex-shrink:0; }
+.td-datesq b { display:block; font-size:17px; font-weight:600; color:${BRAND}; line-height:1.1; }
+.td-datesq span { font-size:10px; font-weight:600; color:${BRAND}; text-transform:uppercase;
   letter-spacing:.4px; }
-.td-delbtn { border:none; background:transparent; color:#B3261E; font-size:13px; font-weight:500;
-  padding:7px 12px; border-radius:999px; cursor:pointer; font-family:inherit; flex-shrink:0;
-  transition:background .15s; }
-.td-delbtn:hover { background:#FCE8E6; }
+.td-delbtn { border:none; background:transparent; color:${DANGER}; font-size:13px; font-weight:600;
+  padding:6px 12px; border-radius:5px; cursor:pointer; font-family:inherit; flex-shrink:0;
+  transition:background .12s; }
+.td-delbtn:hover { background:${DANGER_TINT}; }
 
-.td-empty { background:#fff; border-radius:24px; padding:56px 28px; text-align:center;
-  box-shadow:0 1px 2px rgba(60,64,67,.3), 0 1px 3px 1px rgba(60,64,67,.1); }
-.td-emptyicon { width:76px; height:76px; border-radius:50%; background:${PRIMARY_CONTAINER};
-  color:${PRIMARY}; display:flex; align-items:center; justify-content:center; margin:0 auto 18px; }
-.td-emptytitle { margin:0 0 8px; font-size:20px; font-weight:500; color:#1F1F1F; }
-.td-emptysub { margin:0 auto; font-size:14.5px; color:#747775; line-height:1.6; max-width:430px; }
-.td-emptysmall { text-align:center; color:#747775; padding:26px 0; font-size:14px; margin:0; }
-.td-skel { border-radius:20px;
-  background:linear-gradient(100deg,#E7EDF5 40%,#F5F8FC 50%,#E7EDF5 60%);
+.td-empty { background:#fff; border:1px solid ${STROKE}; border-radius:10px; padding:52px 28px;
+  text-align:center; }
+.td-emptyicon { width:72px; height:72px; border-radius:50%; background:${BRAND_TINT}; color:${BRAND};
+  display:flex; align-items:center; justify-content:center; margin:0 auto 16px; }
+.td-emptytitle { margin:0 0 8px; font-size:18px; font-weight:600; color:${TEXT}; }
+.td-emptysub { margin:0 auto; font-size:13.5px; color:${TEXT_3}; line-height:1.6; max-width:430px; }
+.td-emptysmall { text-align:center; color:${TEXT_3}; padding:24px 0; font-size:13.5px; margin:0; }
+.td-nomatch { text-align:center; color:${TEXT_3}; font-size:14px; padding:36px 0; margin:0;
+  background:#fff; border:1px dashed ${STROKE_2}; border-radius:10px; }
+.td-skel { border-radius:8px; background:linear-gradient(100deg,#EEEEEE 40%,#F7F7F7 50%,#EEEEEE 60%);
   background-size:200% 100%; animation:td-shimmer 1.3s infinite linear; }
 @keyframes td-shimmer { to { background-position:-200% 0; } }
 
-@media (max-width:720px){
+/* ---------------- responsive ---------------- */
+@media (max-width:760px){
   .td-username, .td-phone { display:none; }
-  .td-chip { padding-right:10px; }
+  .td-chip { padding-right:4px; }
+  .td-bar-grid { grid-template-columns:1fr auto; }
+  .td-search { grid-column:1 / -1; order:3; }
+  .td-rail { top:auto; bottom:0; left:0; right:0; width:auto; height:58px; flex-direction:row;
+    justify-content:space-around; align-items:center; padding:4px 8px;
+    border-top:1px solid ${STROKE}; box-shadow:0 -1px 4px rgba(0,0,0,.06); }
+  .td-railspacer { display:none; }
+  .td-railnav { flex-direction:row; margin-top:0; }
+  .td-railbtn.active::before { left:14px; top:auto; bottom:-4px; width:20px; height:3px; }
+  .td-logo { width:30px; height:30px; }
+  .td-name { font-size:14px; }
+  .td-bar-grid { gap:10px; }
+  .td-rail { padding-bottom:max(6px, env(safe-area-inset-bottom)); }
+  .td-main { margin-left:0; padding-bottom:calc(70px + env(safe-area-inset-bottom)); }
+  .td-body { padding-bottom:24px; }
 }
 @media (max-width:640px){
   .td-overlay { align-items:flex-end; padding:0; }
-  .td-dialog { max-width:100%; border-radius:24px 24px 0 0; max-height:92dvh; }
+  .td-dialog { max-width:100%; border-radius:8px 8px 0 0; max-height:92dvh; }
   .td-sheet-handle { display:block; width:36px; height:4px; border-radius:2px;
-    background:#DADCE0; margin:10px auto 0; }
+    background:${STROKE_2}; margin:10px auto 0; }
   .td-dialog-head { border-bottom:none; padding-bottom:8px; }
 }
-@media (max-width:360px){
-  .td-actions { grid-template-columns:repeat(2,1fr); }
+@media (max-width:560px){
+  /* 4 labels in one row overflow below ~560px ("Assignments" needs ~113px
+     per button) — reflow into a 2×2 grid with taller touch targets. */
+  .td-actions { flex-wrap:wrap; }
+  .td-act { flex:1 1 40%; padding:11px 8px; }
 }
-@media (max-width:480px){
-  .td-cardbody { padding:16px 16px 12px; }
-  .td-cardtitle { font-size:18px; }
-  .td-actions { padding:10px 12px 12px; gap:6px; }
+@media (max-width:380px){
+  /* Small Androids / iPhone SE: tighten the brand lockup so the business
+     name keeps maximum room without pushing the avatar chip out of the bar. */
+  .td-logo { width:26px; height:26px; }
+  .td-brand { gap:8px; }
+  .td-bar-grid { gap:8px; padding-inline:10px; }
 }
-@media (min-width:1200px){
-  .td-grid { grid-template-columns:1fr; gap:18px; }
-  .td-card { flex-direction:row; align-items:stretch; border-radius:24px; }
-  .td-card:hover { transform:none;
-    box-shadow:0 1px 2px 0 rgba(60,64,67,.24), 0 6px 16px 4px rgba(60,64,67,.12); }
-  .td-media { width:clamp(250px,24vw,360px); height:auto; min-height:210px; flex-shrink:0; }
-  .td-cardbody { flex:1; min-width:0; justify-content:center; padding:26px 32px; }
-  .td-cardtitle { font-size:21px; }
-  .td-actions { width:clamp(240px,21vw,330px); flex-shrink:0; grid-template-columns:repeat(2,1fr); gap:10px;
-    align-content:center; padding:18px 20px; border-top:none; border-left:1px solid #E8EAED; }
-  .td-skel { height:240px !important; }
+/* Short landscape (phone rotated): the sticky bar + bottom rail would eat
+   ~30% of a 375px-tall viewport — let the bar scroll away, slim the rail. */
+@media (max-width:760px) and (max-height:520px){
+  .td-bar { position:static; }
+  .td-search { padding:4px 10px; }
+  .td-rail { height:48px; }
+  .td-main { padding-bottom:56px; }
+  .td-body { padding:12px 14px 20px; }
+}
+/* Wide layout — three balanced bands: media (~1/3) | body (flexible, but
+   guaranteed ≥260px) | action rail (fixed 176px). The old 560px grid track
+   let the two fixed columns starve the body down to a ~25px sliver (title
+   wrapping one word per line), so the track now reserves 760px and the body
+   carries a hard min-width. Action buttons keep their natural height
+   (flex:0 0 auto) instead of stretching into tall slabs. */
+@media (min-width:1150px){
+  .td-grid { grid-template-columns:repeat(auto-fill,minmax(min(760px,100%),1fr)); }
+  .td-card { flex-direction:row; align-items:stretch; }
+  .td-media { width:clamp(200px,18vw,250px); height:auto; min-height:216px; flex-shrink:0; }
+  .td-cardbody { flex:1 1 0; min-width:260px; justify-content:center; padding:20px 24px; }
+  .td-cardtitle { font-size:17px; }
+  .td-actions { flex-direction:column; width:176px; flex-shrink:0;
+    justify-content:center; gap:7px; padding:14px 16px; border-top:none;
+    border-left:1px solid ${CANVAS}; }
+  .td-act { flex:0 0 auto; justify-content:flex-start; padding:9px 12px; }
 }
 `;
 
@@ -244,13 +378,31 @@ function mapCourseFromSupabase(c: Record<string, unknown>): Course {
 
 export default function TrainerDashboard() {
   const navigate = useNavigate();
-  const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const [settings, setSettings] = useState<BusinessSettings | null>(null);
-  const [profilePic, setProfilePic] = useState<string | null>(null);
+
+  /* ---- synchronous first paint: everything localStorage already has ---- */
+  const [currentUser] = useState<User | null>(() => {
+    const u = readJSON<Partial<User> | null>("currentUser", null);
+    return u && u.id && u.tenantId ? (u as User) : null;
+  });
+  const [settings, setSettings] = useState<BusinessSettings | null>(() =>
+    readJSON<BusinessSettings | null>("localBusinessSettings", null)
+  );
+  const [profilePic, setProfilePic] = useState<string | null>(() => {
+    if (!currentUser) return null;
+    const cached = localStorage.getItem(`cachedAvatar_${currentUser.id}`);
+    if (cached) return cached;
+    const p = readJSON<{ avatar_url?: string } | null>(`cachedProfile_${currentUser.id}`, null);
+    return p?.avatar_url || currentUser.profilePic || null;
+  });
   const [profilePicError, setProfilePicError] = useState(false);
-  const [courses, setCourses] = useState<Course[]>([]);
-  const [courseStats, setCourseStats] = useState<Record<string, number>>({});
-  const [loading, setLoading] = useState(true);
+  const [courses, setCourses] = useState<Course[]>(() => readJSON<Course[]>(COURSES_CACHE, []));
+  const [courseStats, setCourseStats] = useState<Record<string, number>>(() =>
+    readJSON<Record<string, number>>(STATS_CACHE, {})
+  );
+  const [pendingForms, setPendingForms] = useState<number>(() => readJSON<number>(FORMS_CACHE, 0));
+  const [loading, setLoading] = useState<boolean>(() => courses.length === 0);
+  const [query, setQuery] = useState("");
+
   const [attendanceCourse, setAttendanceCourse] = useState<Course | null>(null);
   const [assignedLearners, setAssignedLearners] = useState<Array<{ id: string; username: string; phone: string; profilePic: string }>>([]);
   const [loadingLearners, setLoadingLearners] = useState(false);
@@ -260,43 +412,38 @@ export default function TrainerDashboard() {
   const [newScheduleDesc, setNewScheduleDesc] = useState("");
   const [newScheduleDate, setNewScheduleDate] = useState("");
 
-  const [pendingForms, setPendingForms] = useState(0);
-
+  /* ---- guard: not logged in → login screen ---- */
   useEffect(() => {
-    const loadData = async () => {
-      const savedUserString = localStorage.getItem("currentUser");
-      if (!savedUserString) { navigate("/"); return; }
-      const savedUser = JSON.parse(savedUserString);
-      if (!savedUser.id || !savedUser.tenantId) { navigate("/"); return; }
-      setCurrentUser(savedUser);
+    if (!currentUser) navigate("/");
+  }, [currentUser, navigate]);
 
-      const localSettings = localStorage.getItem("localBusinessSettings");
-      if (localSettings) setSettings(JSON.parse(localSettings));
-
+  /* ---- background refresh: business settings (non-blocking) ---- */
+  useEffect(() => {
+    if (!currentUser?.tenantId) return;
+    (async () => {
       try {
-        const { data: s } = await supabase.from("business_settings").select("*").eq("tenant_id", savedUser.tenantId).maybeSingle();
+        const { data: s } = await supabase.from("business_settings").select("*").eq("tenant_id", currentUser.tenantId).maybeSingle();
         if (s) {
           const mapped = { id: s.id, businessName: s.business_name || "", address: s.address || "", phone: s.phone || "", email: s.email || "", website: s.website || "", logo: s.logo || "", header: s.header || "", adminProfile: s.admin_profile || "", loginBackground: s.login_background || "", themeColor: s.theme_color || "", appBarItems: s.app_bar_items || [], tenantId: s.tenant_id, createdAt: s.created_at };
           setSettings(mapped);
           localStorage.setItem("localBusinessSettings", JSON.stringify(mapped));
         }
-      } catch (e) { console.warn("Offline: Settings"); }
-    };
-    loadData();
-  }, [navigate]);
+      } catch { console.warn("Offline: Settings"); }
+    })();
+  }, [currentUser]);
 
+  /* ---- background refresh: trainer avatar (cached value already painted) ---- */
   useEffect(() => {
-    const fetchTrainerAvatar = async () => {
-      if (!currentUser?.id) return;
-      setProfilePicError(false);
+    if (!currentUser?.id) return;
+    setProfilePicError(false);
 
-      const cached = localStorage.getItem(`cachedAvatar_${currentUser.id}`);
-      let cachedProfile: any = null;
-      try { cachedProfile = JSON.parse(localStorage.getItem(`cachedProfile_${currentUser.id}`) || "null"); } catch {}
-      if (cached || cachedProfile?.avatar_url || currentUser.profilePic) {
-        setProfilePic(cached || cachedProfile?.avatar_url || currentUser.profilePic);
-      }
+    const cached = localStorage.getItem(`cachedAvatar_${currentUser.id}`);
+    const cachedProfile = readJSON<{ avatar_url?: string } | null>(`cachedProfile_${currentUser.id}`, null);
+    if (cached || cachedProfile?.avatar_url || currentUser.profilePic) {
+      setProfilePic(cached || cachedProfile?.avatar_url || currentUser.profilePic || null);
+    }
 
+    (async () => {
       try {
         const { data } = await supabase.from("profile_settings").select("avatar_url").eq("user_id", currentUser.id).maybeSingle();
         if (data?.avatar_url) {
@@ -314,55 +461,71 @@ export default function TrainerDashboard() {
           setProfilePic(currentUser.profilePic || null);
         }
       } catch {}
-    };
-    fetchTrainerAvatar();
-  }, [currentUser?.id]);
+    })();
+  }, [currentUser]);
 
+  /* ---- background refresh: pending forms (both queries in parallel) ---- */
   useEffect(() => {
     if (!currentUser?.tenantId || !currentUser?.id) return;
     (async () => {
       try {
-        const { data: forms } = await supabase.from("forms").select("id").eq("tenant_id", currentUser.tenantId).eq("status", "published");
-        const { data: subs } = await supabase.from("form_submissions").select("form_id").eq("user_id", currentUser.id);
-        const filled = new Set((subs || []).map((s: any) => s.form_id));
-        setPendingForms((forms || []).filter((f: any) => !filled.has(f.id)).length);
+        const [{ data: forms }, { data: subs }] = await Promise.all([
+          supabase.from("forms").select("id").eq("tenant_id", currentUser.tenantId).eq("status", "published"),
+          supabase.from("form_submissions").select("form_id").eq("user_id", currentUser.id),
+        ]);
+        const filled = new Set((subs || []).map((s: { form_id: string }) => s.form_id));
+        const count = (forms || []).filter((f: { id: string }) => !filled.has(f.id)).length;
+        setPendingForms(count);
+        writeJSON(FORMS_CACHE, count);
       } catch {}
     })();
-  }, [currentUser?.tenantId, currentUser?.id]);
+  }, [currentUser]);
 
+  /* ---- courses: local Dexie paints instantly, Supabase reconciles behind it ---- */
   const fetchCourses = useCallback(async () => {
     if (!currentUser?.id || !currentUser?.tenantId) return;
-    setLoading(true);
+    const assignedIds = currentUser.assignedCourses || [];
 
+    // 1) Local database — near-instant, works fully offline.
     try {
       const allLocalCourses = await getCourses();
-      const assignedIds = currentUser.assignedCourses || [];
-      const localCourses = allLocalCourses.filter(c => assignedIds.includes(c.id));
-      setCourses(localCourses);
+      const localCourses = allLocalCourses.filter((c) => assignedIds.includes(c.id));
+      setCourses((prev) => (prev.length > 0 ? prev : localCourses)); // never clobber cached content with a smaller list
     } catch (e) { console.error("Local courses fetch failed", e); }
+    setLoading(false); // skeleton gone at this point — network no longer blocks the UI
 
+    // 2) Supabase — authoritative, runs in the background and swaps in place.
     try {
-      const assigned = currentUser.assignedCourses;
-      if (assigned && assigned.length > 0) {
-        const { data: coursesRes } = await supabase.from("courses").select("*").in("id", assigned).order("created_at", { ascending: false });
-        if (coursesRes) {
-          const remoteCourses = coursesRes.map(mapCourseFromSupabase);
-          setCourses(remoteCourses);
+      if (assignedIds.length === 0) {
+        setCourses([]);
+        writeJSON(COURSES_CACHE, []);
+        return;
+      }
+      const { data: coursesRes } = await supabase.from("courses").select("*").in("id", assignedIds).order("created_at", { ascending: false });
+      if (coursesRes) {
+        const remoteCourses: Course[] = coursesRes.map(mapCourseFromSupabase);
+        setCourses(remoteCourses);
+        writeJSON(COURSES_CACHE, remoteCourses);
 
-          const courseIds = remoteCourses.map((c) => c.id);
-          const { data: stats } = await supabase.from("enrollments").select("course_id").in("course_id", courseIds).eq("role", "trainee");
-          if (stats) {
-            const counts: Record<string, number> = {};
-            stats.forEach((s) => { counts[s.course_id] = (counts[s.course_id] || 0) + 1; });
-            setCourseStats(counts);
-          }
+        const courseIds = remoteCourses.map((c) => c.id);
+        const { data: stats } = await supabase.from("enrollments").select("course_id").in("course_id", courseIds).eq("role", "trainee");
+        if (stats) {
+          const counts: Record<string, number> = {};
+          stats.forEach((s: { course_id: string }) => { counts[s.course_id] = (counts[s.course_id] || 0) + 1; });
+          setCourseStats(counts);
+          writeJSON(STATS_CACHE, counts);
         }
       }
     } catch (err) { console.warn("Offline: Using local courses", err); }
-    finally { setLoading(false); }
-  }, [currentUser?.id, currentUser?.tenantId, currentUser?.assignedCourses]);
+  }, [currentUser]);
 
   useEffect(() => { fetchCourses(); }, [fetchCourses]);
+
+  /* ---- client-side search: filters the already-loaded list instantly ---- */
+  const q = query.trim().toLowerCase();
+  const visibleCourses = q
+    ? courses.filter((c) => (c.name || "").toLowerCase().includes(q) || (c.description || "").toLowerCase().includes(q))
+    : courses;
 
   async function openAttendance(course: Course) {
     setAttendanceCourse(course);
@@ -370,9 +533,9 @@ export default function TrainerDashboard() {
     try {
       const { data: enrollments } = await supabase.from("enrollments").select("user_id").eq("course_id", course.id).eq("role", "trainee").eq("tenant_id", currentUser?.tenantId);
       if (enrollments && enrollments.length > 0) {
-        const userIds = enrollments.map((e) => e.user_id);
+        const userIds = enrollments.map((e: { user_id: string }) => e.user_id);
         const { data: users } = await supabase.from("users").select("id, username, phone, profile_pic").in("id", userIds);
-        setAssignedLearners((users || []).map((u) => ({ id: u.id, username: u.username || "Unknown", phone: u.phone || "", profilePic: u.profile_pic || "" })));
+        setAssignedLearners((users || []).map((u: Record<string, string>) => ({ id: u.id, username: u.username || "Unknown", phone: u.phone || "", profilePic: u.profile_pic || "" })));
       } else { setAssignedLearners([]); }
     } catch (e) { console.error("Failed to load learners", e); setAssignedLearners([]); }
     finally { setLoadingLearners(false); }
@@ -382,7 +545,7 @@ export default function TrainerDashboard() {
     if (!scheduleCourse) return;
     try {
       const { data } = await supabase.from("schedules").select("*").eq("course_id", scheduleCourse.id).order("scheduled_at", { ascending: true });
-      setSchedules((data || []).map((s) => ({ id: s.id, title: s.title, scheduled_at: s.scheduled_at, description: s.description })));
+      setSchedules((data || []).map((s: { id: string; title: string; scheduled_at: string; description?: string }) => ({ id: s.id, title: s.title, scheduled_at: s.scheduled_at, description: s.description })));
     } catch (e) { console.error("Could not load schedules:", e); setSchedules([]); }
   }, [scheduleCourse]);
 
@@ -418,127 +581,169 @@ export default function TrainerDashboard() {
     <div className="td-root">
       <style>{TD_CSS}</style>
 
-      <header className="td-bar">
-        <div className="td-bar-inner">
-          <div className="td-brand">
-            {businessLogo ? (
-              <img className="td-logo" src={businessLogo} alt="Logo" />
-            ) : (
-              <span className="td-logo td-logo-fallback">{(businessName || "M").charAt(0).toUpperCase()}</span>
-            )}
-            <div style={{ minWidth: 0 }}>
-              {businessName && <h1 className="td-name">{businessName}</h1>}
-              {phone && (
-                <a className="td-phone" href={`tel:${phone.replace(/\s+/g, "")}`}>
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z" /></svg>
-                  {phone}
-                </a>
+      {/* -------- left app rail -------- */}
+      <aside className="td-rail">
+        <nav className="td-railnav" aria-label="Main navigation">
+          <button className="td-railbtn active" title="Courses" aria-label="Courses" aria-current="page">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
+          </button>
+          <button className="td-railbtn" onClick={() => navigate("/forms")} title="Forms" aria-label="Forms">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /></svg>
+            {pendingForms > 0 && <span className="td-railbadge">{pendingForms > 99 ? "99+" : pendingForms}</span>}
+          </button>
+          <button className="td-railbtn" onClick={() => navigate("/trainer/settings")} title="Settings" aria-label="Settings">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>
+          </button>
+        </nav>
+        <div className="td-railspacer" />
+        <button className="td-railbtn" onClick={handleLogout} title="Log out" aria-label="Log out">
+          <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></svg>
+        </button>
+      </aside>
+
+      {/* -------- top bar + content -------- */}
+      <div className="td-main">
+        <header className="td-bar">
+          <div className="td-bar-grid">
+            <div className="td-brand">
+              {businessLogo ? (
+                <img className="td-logo" src={businessLogo} alt="Logo" />
+              ) : (
+                <span className="td-logo td-logo-fallback">{(businessName || "M").charAt(0).toUpperCase()}</span>
               )}
-            </div>
-          </div>
-
-          <div className="td-bar-actions">
-            <div className="td-chip" title={currentUser?.username || ""}>
-              <span className="td-avatar">
-                {profilePic && !profilePicError ? (
-                  <img src={profilePic} alt="" onError={() => setProfilePicError(true)} />
-                ) : (
-                  initialsOf(currentUser?.username, "?")
+              <div style={{ minWidth: 0 }}>
+                {businessName && <h1 className="td-name">{businessName}</h1>}
+                {phone && (
+                  <a className="td-phone" href={`tel:${phone.replace(/\s+/g, "")}`}>
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z" /></svg>
+                    {phone}
+                  </a>
                 )}
+              </div>
+            </div>
+
+            <div className="td-search">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg>
+              <input
+                type="text" placeholder="Search courses…" aria-label="Search courses"
+                value={query} onChange={(e) => setQuery(e.target.value)}
+              />
+            </div>
+
+            <div className="td-bar-actions">
+              <button className="td-chip" onClick={() => navigate("/trainer/settings")} title="Profile &amp; settings">
+                <span className="td-avatar">
+                  {profilePic && !profilePicError ? (
+                    <img src={profilePic} alt="" onError={() => setProfilePicError(true)} />
+                  ) : (
+                    <span>{initialsOf(currentUser?.username, "?")}</span>
+                  )}
+                  <span className="td-presence" title="Available" />
+                </span>
+                <span className="td-username">{currentUser?.username}</span>
+              </button>
+            </div>
+          </div>
+        </header>
+
+        <main className="td-body">
+          <div className="td-heading">
+            <h2>My courses</h2>
+            {!loading && (
+              <span className="td-count">
+                {q ? `${visibleCourses.length} of ${courses.length}` : `${courses.length} assigned`}
               </span>
-              <span className="td-username">{currentUser?.username}</span>
+            )}
+            <button className="td-refresh" onClick={() => fetchCourses()} disabled={loading} title="Refresh from cloud" aria-label="Refresh">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10" /><polyline points="1 20 1 14 7 14" /><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" /></svg>
+            </button>
+          </div>
+
+          {loading && (
+            <div className="td-grid">
+              <div className="td-skel" style={{ height: 320 }} />
+              <div className="td-skel" style={{ height: 320 }} />
             </div>
+          )}
 
-            <button className="td-iconbtn" onClick={() => navigate("/forms")} title="Forms">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /></svg>
-              {pendingForms > 0 && <span className="td-badge">{pendingForms}</span>}
-            </button>
-            <button className="td-iconbtn" onClick={() => navigate("/trainer/settings")} title="Settings">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>
-            </button>
-            <button className="td-iconbtn" onClick={handleLogout} title="Log out">
-              <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></svg>
-            </button>
-          </div>
-        </div>
-      </header>
-
-      <main className="td-body">
-        <div className="td-heading">
-          <h2>My courses</h2>
-          {!loading && <span className="td-count">{courses.length} assigned</span>}
-        </div>
-
-        {loading && (
-          <div className="td-grid">
-            <div className="td-skel" style={{ height: 340 }} />
-            <div className="td-skel" style={{ height: 340 }} />
-          </div>
-        )}
-
-        {!loading && courses.length === 0 && (
-          <div className="td-empty">
-            <div className="td-emptyicon">
-              <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M22 10v6M2 10l10-5 10 5-10 5z" /><path d="M6 12v5c3 3 9 3 12 0v-5" /></svg>
+          {!loading && courses.length === 0 && (
+            <div className="td-empty">
+              <div className="td-emptyicon">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
+              </div>
+              <h3 className="td-emptytitle">No courses assigned</h3>
+              <p className="td-emptysub">Your administrator hasn&apos;t assigned any courses to you yet. Once they do, your classes will appear here.</p>
             </div>
-            <h3 className="td-emptytitle">No courses assigned</h3>
-            <p className="td-emptysub">Your administrator hasn&apos;t assigned any courses to you yet. Once they do, your classes will appear here.</p>
-          </div>
-        )}
+          )}
 
-        {!loading && courses.length > 0 && (
-          <div className="td-grid">
-            {courses.map((course) => {
-              const learnerCount = courseStats[course.id] || 0;
-              return (
-                <div className="td-card" key={course.id}>
-                  <div className="td-media">
-                    {course.logo ? (
-                      <img src={course.logo} alt={course.name} loading="lazy" />
-                    ) : (
-                      <div className="td-media-fallback">{(course.name || "C").charAt(0).toUpperCase()}</div>
-                    )}
-                    <div className="td-media-scrim" />
-                    <div className="td-countpill">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
-                      {learnerCount} learner{learnerCount === 1 ? "" : "s"}
+          {!loading && courses.length > 0 && visibleCourses.length === 0 && (
+            <p className="td-nomatch">No courses match &ldquo;{query.trim()}&rdquo;.</p>
+          )}
+
+          {!loading && visibleCourses.length > 0 && (
+            <div className="td-grid">
+              {visibleCourses.map((course) => {
+                const learnerCount = courseStats[course.id] || 0;
+                const start = course.startDate ? new Date(course.startDate) : null;
+                const startValid = start ? !isNaN(start.getTime()) : false;
+                return (
+                  <div className="td-card" key={course.id}>
+                    <div className="td-media">
+                      {course.logo ? (
+                        <img src={course.logo} alt={course.name} loading="lazy" decoding="async" />
+                      ) : (
+                        <div className="td-media-fallback">{(course.name || "C").charAt(0).toUpperCase()}</div>
+                      )}
+                    </div>
+
+                    <div className="td-cardbody">
+                      <h3 className="td-cardtitle">{course.name}</h3>
+                      <p className="td-carddesc">{course.description || "No description provided."}</p>
+                      <div className="td-meta">
+                        <span className="td-metapill">
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
+                          {learnerCount} learner{learnerCount === 1 ? "" : "s"}
+                        </span>
+                        {startValid && (
+                          <span className="td-metapill">
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" /></svg>
+                            Starts {start!.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })}
+                          </span>
+                        )}
+                      </div>
+                      <button className="td-schedbtn" onClick={() => setScheduleCourse(course)}>
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" /></svg>
+                        Schedule session
+                      </button>
+                    </div>
+
+                    <div className="td-actions">
+                      <button className="td-act" onClick={() => navigate(`/trainer/live/${course.id}`)}>
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="23 7 16 12 23 17 23 7" /><rect x="1" y="5" width="15" height="14" rx="2" ry="2" /></svg>
+                        <span>Live</span>
+                      </button>
+                      <button className="td-act" onClick={() => navigate(`/trainer/upload/${course.id}`)}>
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" /></svg>
+                        <span>Upload</span>
+                      </button>
+                      <button className="td-act" onClick={() => navigate(`/trainer/assignments/${course.id}`)}>
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /></svg>
+                        <span>Assignments</span>
+                      </button>
+                      <button className="td-act" onClick={() => openAttendance(course)}>
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 11l3 3L22 4" /><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" /></svg>
+                        <span>Attendance</span>
+                      </button>
                     </div>
                   </div>
+                );
+              })}
+            </div>
+          )}
+        </main>
+      </div>
 
-                  <div className="td-cardbody">
-                    <h3 className="td-cardtitle">{course.name}</h3>
-                    <p className="td-carddesc">{course.description || "No description provided."}</p>
-                    <button className="td-schedbtn" onClick={() => setScheduleCourse(course)}>
-                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" /></svg>
-                      Schedule session
-                    </button>
-                  </div>
-
-                  <div className="td-actions">
-                    <button className="td-tile" style={{ background: PRIMARY_CONTAINER, color: PRIMARY }} onClick={() => navigate(`/trainer/live/${course.id}`)}>
-                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="23 7 16 12 23 17 23 7" /><rect x="1" y="5" width="15" height="14" rx="2" ry="2" /></svg>
-                      <span>Live</span>
-                    </button>
-                    <button className="td-tile" style={{ background: GREEN_CONTAINER, color: GREEN_FG }} onClick={() => navigate(`/trainer/upload/${course.id}`)}>
-                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" /></svg>
-                      <span>Upload</span>
-                    </button>
-                    <button className="td-tile" style={{ background: PURPLE_CONTAINER, color: PURPLE_FG }} onClick={() => navigate(`/trainer/assignments/${course.id}`)}>
-                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /></svg>
-                      <span>Assignments</span>
-                    </button>
-                    <button className="td-tile" style={{ background: ORANGE_CONTAINER, color: ORANGE_FG }} onClick={() => openAttendance(course)}>
-                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
-                      <span>Attendance</span>
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </main>
-
+      {/* -------- attendance dialog -------- */}
       {attendanceCourse && (
         <div className="td-overlay" onClick={() => setAttendanceCourse(null)}>
           <div className="td-dialog" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
@@ -550,21 +755,21 @@ export default function TrainerDashboard() {
                   {loadingLearners ? "Loading learners…" : `${assignedLearners.length} learner${assignedLearners.length === 1 ? "" : "s"} enrolled`}
                 </p>
               </div>
-              <button className="td-close" onClick={() => setAttendanceCourse(null)} title="Close">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+              <button className="td-close" onClick={() => setAttendanceCourse(null)} title="Close" aria-label="Close">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
               </button>
             </div>
             <div className="td-dialog-body">
               {loadingLearners ? (
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  <div className="td-skel" style={{ height: 56, borderRadius: 16 }} />
-                  <div className="td-skel" style={{ height: 56, borderRadius: 16 }} />
-                  <div className="td-skel" style={{ height: 56, borderRadius: 16 }} />
+                  <div className="td-skel" style={{ height: 52, borderRadius: 6 }} />
+                  <div className="td-skel" style={{ height: 52, borderRadius: 6 }} />
+                  <div className="td-skel" style={{ height: 52, borderRadius: 6 }} />
                 </div>
               ) : assignedLearners.length === 0 ? (
                 <p className="td-emptysmall">No learners enrolled yet.</p>
               ) : (
-                <div style={{ display: "flex", flexDirection: "column", gap: 2, margin: "0 -12px" }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 2, margin: "0 -10px" }}>
                   {assignedLearners.map((learner) => (
                     <div className="td-listitem" key={learner.id}>
                       <span className="td-lavatar">
@@ -583,6 +788,7 @@ export default function TrainerDashboard() {
         </div>
       )}
 
+      {/* -------- schedule dialog -------- */}
       {scheduleCourse && (
         <div className="td-overlay" onClick={() => setScheduleCourse(null)}>
           <div className="td-dialog" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
@@ -592,12 +798,12 @@ export default function TrainerDashboard() {
                 <h2 className="td-dialog-title">Schedule sessions</h2>
                 <p className="td-dialog-sub">{scheduleCourse.name}</p>
               </div>
-              <button className="td-close" onClick={() => setScheduleCourse(null)} title="Close">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+              <button className="td-close" onClick={() => setScheduleCourse(null)} title="Close" aria-label="Close">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
               </button>
             </div>
             <div className="td-dialog-body">
-              <div style={{ background: "#F0F4F9", borderRadius: 18, padding: 16, marginBottom: 22 }}>
+              <div style={{ background: CANVAS, borderRadius: 8, padding: 16, marginBottom: 20 }}>
                 <input
                   className="td-field" type="text" placeholder="Session title"
                   value={newScheduleTitle} onChange={(e) => setNewScheduleTitle(e.target.value)}
@@ -612,7 +818,7 @@ export default function TrainerDashboard() {
                   value={newScheduleDate} onChange={(e) => setNewScheduleDate(e.target.value)}
                 />
                 <button
-                  className="td-primary" onClick={handleCreateSchedule}
+                  className="td-btn-primary" onClick={handleCreateSchedule}
                   disabled={!newScheduleTitle || !newScheduleDate}
                 >
                   Add session
