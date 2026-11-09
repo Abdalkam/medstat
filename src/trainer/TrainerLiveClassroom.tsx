@@ -19,12 +19,33 @@ import { startPresentation, getLivePresentation, updatePresentation, clearPresen
 
 const C = { textPrimary: "#1C1C1E", textTertiary: "#8E8E93", bg: "#F2F2F7", card: "#FFFFFF", separator: "#E5E5EA", medBlue: "#007AFF", medBlueBg: "#E8F2FF", red: "#FF3B30", redBg: "#FFEFEE", purple: "#AF52DE", purpleBg: "#F5F0FF", orange: "#FF9F0A", orangeBg: "#FFF6EB", green: "#34C759", greenBg: "#EAF9EE", iosBtnBg: "#E5E5EA", panelBg: "#F8F9FA" };
 
+// Daily room URLs resolved from Supabase (see getDailyRoomUrl). Kept per
+// page load so a URL updated in the DB is picked up on the next reload.
+const dailyRoomCache = new Map<string, string>();
+let dailyRoomWarned = false;
+
 function getFileMeta(fileType: string) {
   if (fileType.includes("pdf")) return { icon: "📄", color: C.red, bg: C.redBg, label: "PDF" };
   if (fileType.includes("video")) return { icon: "🎬", color: C.purple, bg: C.purpleBg, label: "Video" };
   if (fileType.includes("audio")) return { icon: "🎵", color: C.purple, bg: C.purpleBg, label: "Audio" };
   if (fileType.includes("image")) return { icon: "🖼️", color: C.green, bg: C.greenBg, label: "Image" };
   return { icon: "📁", color: C.textTertiary, bg: C.bg, label: "File" };
+}
+
+/* Render only image sources that cannot 404: data URLs, absolute/protocol-
+   relative/blob URLs, app-absolute paths. Bare filenames ("loadlogo.png")
+   resolve against the app origin and break — drop them so the fallback
+   monogram renders instead. */
+function normalizeImageSrc(value?: string | null): string {
+  const raw = (value ?? "").trim();
+  if (!raw) return "";
+  if (raw.startsWith("data:")) return raw;
+  const compact = raw.replace(/\s+/g, "");
+  if (compact.length > 100 && /^[A-Za-z0-9+/]+={0,2}$/.test(compact)) {
+    return `data:image/png;base64,${compact}`;
+  }
+  if (/^(https?:\/\/|\/\/|blob:)/i.test(raw) || raw.startsWith("/")) return raw;
+  return "";
 }
 
 declare global { interface Window { activeTrainerCourse: string | undefined; } }
@@ -71,6 +92,25 @@ export default function TrainerLiveClassroom() {
   const [videoTrack, setVideoTrack] = useState<MediaStreamTrack | null>(null);
 
   const [mediaProblem, setMediaProblem] = useState<MediaProblem | null>(null);
+
+  /* Responsive layout: ≤760px is "phone" — the side panels become overlay
+     drawers so the classroom canvas keeps its full width on any device. */
+  const [isMobile, setIsMobile] = useState<boolean>(
+    () => typeof window !== "undefined" && window.matchMedia("(max-width: 760px)").matches
+  );
+
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth <= 760);
+    onResize();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  /* Panel defaults per device class — drawers closed on phones. */
+  useEffect(() => {
+    setIsLeftCollapsed(isMobile);
+    setIsChatOpen(!isMobile);
+  }, [isMobile]);
 
   useDailyEvent("track-started", (event) => { if (event.participant?.local && event.track?.kind === "video") setVideoTrack(event.track as unknown as MediaStreamTrack); });
   useDailyEvent("track-stopped", (event) => { if (event.participant?.local && event.track?.kind === "video") setVideoTrack(null); });
@@ -183,6 +223,11 @@ export default function TrainerLiveClassroom() {
 
   useEffect(() => {
     if (!courseId) return;
+    // disposed marks an intentional teardown (StrictMode double-mount in dev,
+    // or leaving the classroom). The CLOSED status that fires right after our
+    // own removeChannel() is expected — not a network failure — so we don't
+    // log it as one.
+    let disposed = false;
     const handleDebouncedFetch = () => { if (fetchTimerRef.current) clearTimeout(fetchTimerRef.current); fetchTimerRef.current = setTimeout(() => fetchLiveData(), 300); };
     const channel = supabase.channel(`live-classroom-${courseId}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "live_session", filter: `course_id=eq.${courseId}` }, handleDebouncedFetch)
@@ -191,25 +236,57 @@ export default function TrainerLiveClassroom() {
       .on("postgres_changes", { event: "*", schema: "public", table: "raised_hands", filter: `course_id=eq.${courseId}` }, handleDebouncedFetch)
       .on("postgres_changes", { event: "*", schema: "public", table: "active_attendances", filter: `course_id=eq.${courseId}` }, handleDebouncedFetch)
       .on("postgres_changes", { event: "*", schema: "public", table: "allowed_speakers", filter: `course_id=eq.${courseId}` }, handleDebouncedFetch)
-      .subscribe();
-    return () => { supabase.removeChannel(channel); if (fetchTimerRef.current) clearTimeout(fetchTimerRef.current); };
+      .subscribe((status: string) => {
+        if (status === "SUBSCRIBED") { console.log("[Trainer] Realtime connected"); fetchLiveData(); }
+        else if (!disposed && (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED")) console.warn(`[Trainer] Realtime ${status} — using polling fallback`);
+      });
+    // Polling fallback — raised hands, attendance and learner joins still
+    // arrive even if the realtime socket drops or the classroom tables are
+    // not yet in the supabase_realtime publication. Mirrors the trainee side.
+    const pollTimer = window.setInterval(() => { if (document.visibilityState === "visible") fetchLiveData(); }, 5000);
+    const onVisible = () => { if (document.visibilityState === "visible") fetchLiveData(); };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+    return () => { disposed = true; window.clearInterval(pollTimer); document.removeEventListener("visibilitychange", onVisible); window.removeEventListener("focus", onVisible); supabase.removeChannel(channel); if (fetchTimerRef.current) clearTimeout(fetchTimerRef.current); };
   }, [courseId, fetchLiveData]);
 
-  async function getDailyRoomUrl() { if (!courseId) return null; const API_BASE = import.meta.env.VITE_API_URL || "https://medstat-3rxl.onrender.com"; try { const response = await fetch(`${API_BASE}/api/create-daily-room`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ courseId }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error); return data.url; } catch (error) { return null; } }
+  // Daily room resolution without the legacy Render backend (the Render
+  // service is being phased out and its domain no longer resolves).
+  // Priority: per-course URL stored in Supabase (courses.daily_room_url),
+  // then a global VITE_DAILY_ROOM_URL fallback from .env. Mirrors the
+  // trainee side exactly so both ends always land in the same room.
+  async function getDailyRoomUrl() {
+    if (!courseId) return null;
+    const cached = dailyRoomCache.get(courseId);
+    if (cached) return cached;
+    try {
+      const { data } = await supabase.from("courses").select("daily_room_url").eq("id", courseId).maybeSingle();
+      const url = ((data as any)?.daily_room_url as string) || "";
+      if (url) { dailyRoomCache.set(courseId, url); return url; }
+    } catch {}
+    const envUrl = (import.meta.env as any).VITE_DAILY_ROOM_URL || "";
+    if (envUrl) return envUrl;
+    if (!dailyRoomWarned) {
+      dailyRoomWarned = true;
+      console.warn("[Trainer] No Daily room configured for this course — set courses.daily_room_url (SQL) or VITE_DAILY_ROOM_URL (.env). Voice/video stay off; slides still work.");
+    }
+    return null;
+  }
 
   async function ensureJoined(): Promise<boolean> {
     if (!daily) return false;
     if (isVoiceJoined) return true;
+    let roomUrl: string | null = null; // declared here so the catch block can log it
     try {
       setIsConnecting(true);
-      const roomUrl = await getDailyRoomUrl();
+      roomUrl = await getDailyRoomUrl();
       if (!roomUrl) return false;
       await daily.join({ url: roomUrl, startVideoOff: true });
       await daily.setLocalAudio(false);
       await daily.setLocalVideo(false);
       setIsVoiceJoined(true);
       return true;
-    } catch (e) { return false; }
+    } catch (e) { console.warn("[Trainer] Daily join failed — check the room exists in your Daily dashboard:", roomUrl, e); return false; }
     finally { setIsConnecting(false); }
   }
 
@@ -363,46 +440,89 @@ export default function TrainerLiveClassroom() {
   const iosBtnStyle: React.CSSProperties = { display: "flex", alignItems: "center", justifyContent: "center", padding: "10px", border: "none", borderRadius: "10px", flex: 1, cursor: "pointer", transition: "transform 0.1s ease, opacity 0.2s ease", boxShadow: "0 1px 2px rgba(0,0,0,0.05)", WebkitTapHighlightColor: "transparent" };
   const toolBtnStyle = (isActive: boolean): React.CSSProperties => ({ width: "44px", height: "44px", borderRadius: "12px", border: "none", background: isActive ? "rgba(0, 165, 244, 0.2)" : "transparent", color: isActive ? "#00A5F4" : "#8E8E93", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.2s ease", flexShrink: 0 });
   const permBtnStyle = (): React.CSSProperties => ({ border: "none", padding: "4px 8px", borderRadius: "6px", fontSize: "11px", fontWeight: "600", cursor: "pointer" });
-  const avBtnStyle: React.CSSProperties = { width: "48px", height: "48px", borderRadius: "50%", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", transition: "transform 0.1s ease", WebkitTapHighlightColor: "transparent" };
+  const avBtnStyle: React.CSSProperties = { width: isMobile ? "44px" : "48px", height: isMobile ? "44px" : "48px", borderRadius: "50%", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", transition: "transform 0.1s ease", WebkitTapHighlightColor: "transparent", flexShrink: 0 };
   const drawingActiveTool = activeTool === "label" ? "pen" as ToolType : activeTool;
+
+  /* Broken-image guards: never render a logo/avatar that would 404. */
+  const safeLogo = normalizeImageSrc(settings?.logo);
+  const safeAvatar = normalizeImageSrc((trainer?.avatar_url as string) || "");
 
   const videoTileContainerStyle: React.CSSProperties = isVideoExpanded ? {
     position: "fixed", top: 0, left: 0, width: "100vw", height: "100vh", borderRadius: 0, overflow: "hidden", border: "none", zIndex: 1000, background: "#000"
   } : {
-    position: "absolute", bottom: "32px", left: "32px", width: "200px", height: "130px", borderRadius: "16px", overflow: "hidden", border: "3px solid #FFFFFF", boxShadow: "0 8px 24px rgba(0,0,0,0.15)", zIndex: 10, background: "#000",
+    position: "absolute", bottom: isMobile ? "calc(78px + env(safe-area-inset-bottom, 0px))" : "32px", left: isMobile ? "10px" : "32px", width: isMobile ? "120px" : "200px", height: isMobile ? "84px" : "130px", borderRadius: isMobile ? 12 : 16, overflow: "hidden", border: "3px solid #FFFFFF", boxShadow: "0 8px 24px rgba(0,0,0,0.15)", zIndex: 10, background: "#000",
   };
 
   return (
-    <div style={{ height: "100vh", width: "100vw", display: "flex", flexDirection: "column", background: C.bg, overflow: "hidden" }}>
-      <style>{`@keyframes avspin { to { transform: rotate(360deg); } }`}</style>
+    <div className="tlc-root" style={{ display: "flex", flexDirection: "column", background: C.bg, overflow: "hidden" }}>
+      <style>{`@keyframes avspin { to { transform: rotate(360deg); } }
+.tlc-root { height: 100vh; height: 100dvh; width: 100%; }`}</style>
       <DailyAudio />
 
-      {/* App Bar */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 16px", background: "rgba(249, 249, 249, 0.8)", backdropFilter: "blur(20px)", borderBottom: `0.33px solid ${C.separator}`, flexShrink: 0, zIndex: 10 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: "10px", flex: 1, minWidth: "200px" }}>
-          {settings?.logo && <img src={settings.logo} alt="Logo" style={{ width: "32px", height: "32px", borderRadius: "8px", objectFit: "cover" }} />}
+      {/* App Bar — white, logo + business identity left, trainer + controls right.
+          Responsive: phones hide the phone number and trainer name; all
+          tap targets stay ≥32px and the row never overflows. */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: isMobile ? "8px 10px" : "10px 16px", background: C.card, borderBottom: `1px solid ${C.separator}`, flexShrink: 0, zIndex: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flex: 1, minWidth: 0 }}>
+          {safeLogo ? (
+            <img src={safeLogo} alt="Logo" style={{ width: 32, height: 32, borderRadius: 8, objectFit: "contain", background: "#FFFFFF", flexShrink: 0 }} />
+          ) : (
+            <div style={{ width: 32, height: 32, borderRadius: 8, background: C.medBlue, color: "#FFFFFF", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, fontWeight: 800, flexShrink: 0 }}>
+              {(settings?.businessName || "S").charAt(0).toUpperCase()}
+            </div>
+          )}
           <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
             <h1 style={{ margin: 0, fontSize: "16px", fontWeight: "700", color: C.textPrimary, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{settings?.businessName || "SmartPages"}</h1>
-            {settings?.phone && <a href={`tel:${settings.phone}`} style={{ fontSize: "12px", color: C.textTertiary, textDecoration: "none", whiteSpace: "nowrap" }}>{settings.phone}</a>}
+            {settings?.phone && !isMobile && (
+              <a href={`tel:${settings.phone}`} style={{ fontSize: "12px", color: C.textTertiary, textDecoration: "none", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{settings.phone}</a>
+            )}
           </div>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "8px", background: C.purpleBg, padding: "4px 12px 42px", borderRadius: "20px" }}>
-            {trainer?.avatar_url ? (
-              <img src={trainer.avatar_url as string} alt="Trainer" style={{ width: "28px", height: "28px", borderRadius: "50%", objectFit: "cover" }} />
+        <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 6 : 8, flexShrink: 0 }}>
+          {isMobile ? (
+            safeAvatar ? (
+              <img src={safeAvatar} alt="Trainer" style={{ width: 32, height: 32, borderRadius: "50%", objectFit: "cover", flexShrink: 0 }} />
             ) : (
-              <div style={{ width: "28px", height: "28px", borderRadius: "50%", background: C.card, color: C.purple, display: "flex", alignItems: "center", justifyContent: "center", fontSize: "12px", fontWeight: "700" }}>{(trainer?.username as string)?.charAt(0).toUpperCase()}</div>
-            )}
-            <span style={{ fontSize: "13px", fontWeight: "600", color: C.purple }}>{(trainer?.username as string) || "Trainer"}</span>
-          </div>
-          <button onClick={() => setIsLeftCollapsed(!isLeftCollapsed)} style={{ width: "36px", height: "36px", borderRadius: "9px", background: "rgba(118, 118, 128, 0.12)", border: "none", cursor: "pointer" }} title="Toggle Controls"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg></button>
-          <button onClick={handleLogout} style={{ width: "36px", height: "36px", borderRadius: "9px", background: C.redBg, border: "none", cursor: "pointer", color: C.red }} title="Logout"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg></button>
+              <div style={{ width: 32, height: 32, borderRadius: "50%", background: C.purpleBg, color: C.purple, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 700, flexShrink: 0 }}>
+                {(trainer?.username as string)?.charAt(0).toUpperCase() || "T"}
+              </div>
+            )
+          ) : (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, background: C.purpleBg, padding: "4px 12px", borderRadius: "20px", minWidth: 0 }}>
+              {safeAvatar ? (
+                <img src={safeAvatar} alt="Trainer" style={{ width: 28, height: 28, borderRadius: "50%", objectFit: "cover", flexShrink: 0 }} />
+              ) : (
+                <div style={{ width: 28, height: 28, borderRadius: "50%", background: C.card, color: C.purple, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700, flexShrink: 0 }}>
+                  {(trainer?.username as string)?.charAt(0).toUpperCase() || "T"}
+                </div>
+              )}
+              <span style={{ fontSize: "13px", fontWeight: "600", color: C.purple, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 140 }}>
+                {(trainer?.username as string) || "Trainer"}
+              </span>
+            </div>
+          )}
+          <button onClick={() => setIsLeftCollapsed(!isLeftCollapsed)} style={{ width: isMobile ? 32 : 36, height: isMobile ? 32 : 36, borderRadius: 9, background: "rgba(118, 118, 128, 0.12)", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }} title="Toggle Controls">
+            <svg width={isMobile ? 18 : 20} height={isMobile ? 18 : 20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
+          </button>
+          <button onClick={handleLogout} style={{ width: isMobile ? 32 : 36, height: isMobile ? 32 : 36, borderRadius: 9, background: C.redBg, border: "none", cursor: "pointer", color: C.red, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }} title="Logout">
+            <svg width={isMobile ? 18 : 20} height={isMobile ? 18 : 20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+          </button>
         </div>
       </div>
 
       <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
-        {/* Left control panel */}
-        <div style={{ flex: isLeftCollapsed ? "0 0 0px" : "0 0 240px", minWidth: isLeftCollapsed ? "0" : "200px", overflow: "hidden", transition: "flex 0.3s ease", background: C.panelBg, display: "flex", flexDirection: "column" }}>
+        {/* Left control panel — fixed rail on desktop; slide-in drawer on phones */}
+        <div style={isMobile ? {
+          position: "fixed", top: 0, bottom: 0, left: 0, width: "min(86vw, 300px)", zIndex: 60,
+          background: C.panelBg, display: "flex", flexDirection: "column", overflowY: "auto",
+          borderRight: `1px solid ${C.separator}`,
+          transform: isLeftCollapsed ? "translateX(-105%)" : "translateX(0)",
+          transition: "transform 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
+          boxShadow: isLeftCollapsed ? "none" : "12px 0 32px rgba(0,0,0,0.18)",
+        } : {
+          flex: isLeftCollapsed ? "0 0 0px" : "0 0 240px", minWidth: isLeftCollapsed ? "0" : "200px",
+          overflowY: "auto", transition: "flex 0.3s ease", background: C.panelBg, display: "flex", flexDirection: "column",
+        }}>
           <div style={{ padding: "12px", margin: "12px", background: C.card, borderRadius: "14px", boxShadow: "0 4px 12px rgba(0,0,0,0.03)", display: "flex", flexDirection: "column", gap: "10px" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <button onClick={() => navigate("/trainer")} style={{ background: "none", border: "none", color: C.medBlue, cursor: "pointer", display: "flex", alignItems: "center", padding: 0, gap: "4px", fontSize: "14px", fontWeight: "600" }}><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="15 18 9 12 15 6"/></svg>Exit</button>
@@ -462,6 +582,11 @@ export default function TrainerLiveClassroom() {
           </div>
         </div>
 
+        {/* Dim backdrop behind the mobile control drawer */}
+        {isMobile && !isLeftCollapsed && (
+          <div onClick={() => setIsLeftCollapsed(true)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.35)", zIndex: 55 }} />
+        )}
+
         {/* Classroom main area */}
         <div style={{ flex: "1 1 auto", minWidth: 0, background: C.bg, display: "flex", flexDirection: "column", overflow: "hidden", position: "relative" }}>
           <div style={{ flex: 1, display: "flex", width: "200%", height: "100%", transition: "transform 0.3s cubic-bezier(0.4, 0, 0.2, 1)", transform: isBlackboardMode ? "translateX(-50%)" : "translateX(0%)" }}>
@@ -487,7 +612,7 @@ export default function TrainerLiveClassroom() {
           </div>
 
           {/* Floating CLASSROOM AV bar */}
-          <div style={{ position: "absolute", bottom: "24px", left: "50%", transform: "translateX(-50%)", display: "flex", gap: "16px", padding: "10px", background: "rgba(28, 28, 30, 0.8)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", borderRadius: "32px", border: "1px solid rgba(255,255,255,0.1)", zIndex: 20 }}>
+          <div style={{ position: "absolute", bottom: isMobile ? "calc(10px + env(safe-area-inset-bottom, 0px))" : "24px", left: "50%", transform: "translateX(-50%)", display: "flex", gap: isMobile ? "10px" : "16px", padding: isMobile ? "8px" : "10px", background: "rgba(28, 28, 30, 0.8)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", borderRadius: isMobile ? 28 : 32, border: "1px solid rgba(255,255,255,0.1)", zIndex: 20, maxWidth: "calc(100vw - 16px)" }}>
             <button onClick={() => navigate("/trainer")} style={{ ...avBtnStyle, background: "#E5E5EA", color: "#1C1C1E" }} title="Exit classroom">
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
             </button>
@@ -518,8 +643,16 @@ export default function TrainerLiveClassroom() {
           )}
         </div>
 
-        {/* ── Chat Sidebar: fully collapses to 0px for fullscreen ── */}
-        <div style={{
+        {/* ── Chat Sidebar: fixed panel on desktop; slide-in drawer on phones ── */}
+        {isMobile && isChatOpen && (
+          <div onClick={() => setIsChatOpen(false)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.35)", zIndex: 55 }} />
+        )}
+        <div style={isMobile ? {
+          position: "fixed", top: 0, bottom: 0, right: 0, width: "min(86vw, 360px)", zIndex: 60,
+          background: "#1C1C1E", borderLeft: "1px solid #E5E5EA", overflow: "hidden",
+          transform: isChatOpen ? "translateX(0)" : "translateX(105%)",
+          transition: "transform 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
+        } : {
           width: isChatOpen ? "360px" : 0,
           minWidth: 0,
           transition: "width 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
@@ -542,8 +675,8 @@ export default function TrainerLiveClassroom() {
             title="Open chat"
             style={{
               position: "absolute",
-              right: 20,
-              bottom: 100,
+              right: isMobile ? 16 : 20,
+              bottom: isMobile ? 90 : 100,
               width: 52,
               height: 52,
               borderRadius: "50%",

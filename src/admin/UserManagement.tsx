@@ -1,4 +1,8 @@
 // src/admin/UserManagement.tsx — Google Material Design 3 Redesign — Expandable Rows Layout
+// DIRECT-TO-SUPABASE REVISION: user create/update/delete go straight to the
+// public.users table via the exported Supabase client (../auth/supabase).
+// No localhost:3001 / Render backend in the data path. Fetch (loadData) was
+// already direct and is unchanged.
 import { useEffect, useState, useRef } from "react";
 import type { User, Course } from "../types";
 import { getUsers, updateUser, deleteUser, addUser, getRecentlyPushedUserIds, noteUserPushed } from "../database/userDB";
@@ -79,38 +83,69 @@ const cardBase: React.CSSProperties = {
 
 const motion = "all 0.2s cubic-bezier(0.2, 0, 0, 1)";
 
-const API_BASE_URL = import.meta.env.PROD ? "https://medstat-3rxl.onrender.com" : "";
-
-function getAuthHeaders(): Record<string, string> {
-  const token = localStorage.getItem("authToken");
-  return {
-    "Content-Type": "application/json",
-    ...(token ? { Authorization: "Bearer " + token } : {}),
+/**
+ * Builds a row matching the public.users schema exactly (snake_case columns,
+ * tuition/remuneration jsonb stored as numbers).
+ * phone/email are sent as NULL when empty: the partial unique index
+ * uniq_user_phone_active (phone) WHERE deleted_at IS NULL treats '' as a real
+ * value, so two phone-less users would collide — multiple NULLs are allowed.
+ */
+function mapUserToSupabase(user: any, mode: "insert" | "update" = "insert") {
+  const row: Record<string, any> = {
+    username: user.username,
+    phone: user.phone?.trim() ? user.phone.trim() : null,
+    email: user.email?.trim() ? user.email.trim() : null,
+    password: user.password,
+    role: user.role,
+    assigned_courses: user.assignedCourses ?? [],
+    profile_pic: user.profilePic || null,
+    tuition: {
+      expected: toAmount(user.tuition?.expected),
+      paid: toAmount(user.tuition?.paid),
+    },
+    remuneration: {
+      net_salary: toAmount(user.remuneration?.netSalary),
+      per_diem: toAmount(user.remuneration?.perDiem),
+    },
+    synced: true,
   };
+  if (mode === "insert") {
+    row.id = user.id;
+    row.tenant_id = user.tenantId || user.tenant_id || "";
+    if (user.createdAt) row.created_at = user.createdAt;
+  }
+  return row;
 }
 
-async function apiFetch(path: string, body: any, method: string = "POST") {
-  const res = await fetch(API_BASE_URL + path, {
-    method,
-    headers: getAuthHeaders(),
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: "HTTP " + res.status }));
-    throw new Error(err.error || "Sync failed: " + res.status);
-  }
-  return res.json();
+/**
+ * Soft-delete straight in Supabase (matches the deleted_at design of the
+ * schema). Idempotent — safe to call even if userDB's own cloud delete
+ * already succeeded. loadData() filters deleted_at is null, so the row
+ * disappears from every device on the next pull.
+ */
+async function softDeleteUserInCloud(id: string) {
+  const { error } = await supabase
+    .from("users")
+    .update({ deleted_at: new Date().toISOString() })
+    .eq("id", id);
+  if (error) throw new Error(error.message);
 }
 
 function mapUserFromSupabase(u: any): User {
+  const remuneration = u.remuneration || {};
   return {
     ...u,
-    assignedCourses: u.assigned_courses || [],
-    profilePic: u.profile_pic || "",
+    tenantId: u.tenant_id || u.tenantId || "",
+    createdAt: u.created_at || u.createdAt || "",
+    assignedCourses: u.assigned_courses || u.assignedCourses || [],
+    profilePic: u.profile_pic || u.profilePic || "",
     tuition: u.tuition || { expected: "0", paid: "0" },
-    remuneration: u.remuneration || { netSalary: "0", perDiem: "0" },
-    paymentHistory: u.payment_history || [],
-    remunerationHistory: u.remuneration_history || [],
+    remuneration: {
+      netSalary: remuneration.net_salary ?? remuneration.netSalary ?? "0",
+      perDiem: remuneration.per_diem ?? remuneration.perDiem ?? "0",
+    },
+    paymentHistory: u.payment_history || u.paymentHistory || [],
+    remunerationHistory: u.remuneration_history || u.remunerationHistory || [],
     synced: true,
   } as User;
 }
@@ -170,34 +205,62 @@ function compressImage(file: File, setter: (val: string) => void) {
   reader.readAsDataURL(file);
 }
 
-async function pushUnsyncedUsersSilently() {
+function toAmount(value: unknown): number {
+  const parsed = parseFloat(String(value ?? "0").replace(/,/g, "").trim());
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+/**
+ * Writes go straight to the public.users table in Supabase (browser client).
+ * The row is marked synced only after the upsert is accepted. The enrolment
+ * copy is best-effort: assigned_courses (the authoritative course-access list)
+ * is already stored on the user row itself, so a missing/mismatched
+ * enrollments table must not leave every user stuck "pending" forever.
+ */
+async function pushUserToCloud(
+  user: any,
+  syncEnrollments: (userId: string, courseIds: string[]) => Promise<void>
+): Promise<void> {
+  const { error } = await supabase
+    .from("users")
+    .upsert(mapUserToSupabase(user, "insert"), { onConflict: "id" });
+  if (error) throw new Error(error.message);
+
   try {
-    const unsynced = await db.users.filter((u) => !u.synced && u.role !== "admin").toArray();
+    await syncEnrollments(user.id, user.assignedCourses || []);
+  } catch (e) {
+    console.warn("Enrolment copy failed (user row is still synced):", e);
+  }
+
+  await db.users.update(user.id, { synced: true });
+  noteUserPushed(user.id);
+}
+
+async function pushUnsyncedUsersSilently(
+  syncEnrollments: (userId: string, courseIds: string[]) => Promise<void>
+): Promise<{ pushed: number; failed: number }> {
+  let pushed = 0;
+  let failed = 0;
+
+  try {
+    const unsynced = await db.users
+      .filter((u) => !u.synced && u.role !== "admin")
+      .toArray();
+
     for (const user of unsynced) {
       try {
-        await apiFetch("/api/users/upsert", {
-          id: user.id,
-          username: user.username,
-          phone: user.phone || "",
-          email: user.email || "",
-          password: user.password,
-          role: user.role,
-          assigned_courses: user.assignedCourses || [],
-          profile_pic: user.profilePic || null,
-          tuition: { expected: parseFloat(String(user.tuition?.expected || "0").replace(/,/g, "")) || 0, paid: parseFloat(String(user.tuition?.paid || "0").replace(/,/g, "")) || 0 },
-          remuneration: { net_salary: parseFloat(String(user.remuneration?.netSalary || "0").replace(/,/g, "")) || 0, per_diem: parseFloat(String(user.remuneration?.perDiem || "0").replace(/,/g, "")) || 0 },
-        });
-        await db.users.update(user.id, { synced: true });
-        // Register the confirmation so the merge below treats this id as
-        // cloud-known for the next few seconds (read-after-write lag shield).
-        noteUserPushed(user.id);
-        if (user.assignedCourses && user.assignedCourses.length > 0) {
-          const enrollments = user.assignedCourses.map((courseId: string) => ({ userId: user.id, courseId: courseId, status: "active" }));
-          await apiFetch("/api/enrollments/sync", { enrollments }, "PUT");
-        }
-      } catch { /* keep unsynced */ }
+        await pushUserToCloud(user, syncEnrollments);
+        pushed++;
+      } catch (error) {
+        failed++;
+        console.warn(`User ${user.id} remains pending cloud sync:`, error);
+      }
     }
-  } catch { /* local db unavailable */ }
+  } catch (error) {
+    console.warn("Could not read pending users from local database:", error);
+  }
+
+  return { pushed, failed };
 }
 
 function StatCard({ icon, label, value, bg, fg, valueColor, delay }: {
@@ -334,7 +397,7 @@ export default function UserManagement() {
     const isStale = () => seq !== loadSeqRef.current;
     try {
       const currentUser: any = JSON.parse(localStorage.getItem("currentUser") || "{}");
-      const tenantId = currentUser?.tenantId;
+      const tenantId = currentUser?.tenantId || currentUser?.tenant_id;
       let usersData: User[] = [];
       let coursesData: Course[] = [];
       try { usersData = await getUsers(); coursesData = await getCourses(); } catch (e) { /* ignore */ }
@@ -345,13 +408,18 @@ export default function UserManagement() {
       }
       if (tenantId && navigator.onLine) {
         try {
-          await pushUnsyncedUsersSilently();
+          await pushUnsyncedUsersSilently(syncEnrollmentsToCloud);
 
           // FIX: Query Supabase with .is("deleted_at", null) to exclude soft-deleted rows
           const [usersRes, coursesRes] = await Promise.all([
             supabase.from("users").select("*").eq("tenant_id", tenantId).is("deleted_at", null),
             supabase.from("courses").select("*").eq("tenant_id", tenantId).is("deleted_at", null),
           ]);
+
+          // Supabase can return { data: null, error } without throwing.
+          // Do not treat an authorization/schema error as an empty cloud dataset.
+          if (usersRes.error) throw usersRes.error;
+          if (coursesRes.error) throw coursesRes.error;
 
           // FIX: Pre-load tombstoned IDs to skip deleted items
           const deletedUserIds = new Set(await getDeletedIds("user"));
@@ -404,7 +472,9 @@ export default function UserManagement() {
             (u) => u.role !== "admin" && !deletedUserIds.has(u.id) && !remoteUserIds.has(u.id) && (!u.synced || recentPushIds.has(u.id))
           );
           const finalUsers = [...visibleRemoteUsers, ...pendingLocalUsers];
-          const finalCourses = visibleRemoteCourses.length > 0 ? visibleRemoteCourses : coursesData;
+          // A successful empty cloud result is authoritative too; do not resurrect
+          // stale local courses merely because the remote table currently has none.
+          const finalCourses = visibleRemoteCourses;
           if (!isStale()) {
             setUsers(finalUsers);
             setCourses(finalCourses);
@@ -424,8 +494,22 @@ export default function UserManagement() {
   function uploadPic(e: React.ChangeEvent<HTMLInputElement>) { const file = e.target.files?.[0]; if (!file) return; compressImage(file, (base64) => updateForm("profilePic", base64)); e.target.value = ""; }
 
   async function syncEnrollmentsToCloud(userId: string, courseIds: string[]) {
+    // Writes the normalized enrolment rows directly to Supabase. Requires the
+    // public.enrollments table (see the setup SQL). Callers treat failures as
+    // best-effort: assigned_courses on the user row is the source of truth.
     if (courseIds.length === 0) return;
-    try { const enrollments = courseIds.map(courseId => ({ userId, courseId, status: "active" })); await apiFetch("/api/enrollments/sync", { enrollments }, "PUT"); } catch (e: any) { console.warn("Enrollment sync failed:", e.message); }
+    const sessionUser: any = JSON.parse(localStorage.getItem("currentUser") || "{}");
+    const tenantId = sessionUser?.tenantId || sessionUser?.tenant_id || "";
+    const rows = courseIds.map(courseId => ({
+      tenant_id: tenantId,
+      user_id: userId,
+      course_id: courseId,
+      status: "active",
+    }));
+    const { error } = await supabase
+      .from("enrollments")
+      .upsert(rows, { onConflict: "user_id,course_id" });
+    if (error) throw new Error(error.message);
   }
 
   async function saveUser() {
@@ -435,7 +519,24 @@ export default function UserManagement() {
     // synced:false makes the pending state explicit — if the cloud upsert below
     // fails, loadData() keeps this user visible (local-pending merge) until a
     // later pushUnsyncedUsersSilently() confirms it in the cloud.
-    const newUser: any = { id: crypto.randomUUID(), username: form.username.trim(), phone: form.phone.trim(), email: form.email.trim(), password: form.password, role: form.role, assignedCourses: form.selectedCourses, profilePic: form.profilePic, createdAt: new Date().toISOString(), synced: false, tuition: { expected: form.expectedTuition, paid: form.paidTuition }, remuneration: { netSalary: form.netSalary as any, perDiem: form.perDiem as any } };
+    const sessionUser: any = JSON.parse(localStorage.getItem("currentUser") || "{}");
+    const tenantId = sessionUser?.tenantId || sessionUser?.tenant_id || "";
+    const newUser: any = {
+      id: crypto.randomUUID(),
+      tenantId,
+      tenant_id: tenantId,
+      username: form.username.trim(),
+      phone: form.phone.trim(),
+      email: form.email.trim(),
+      password: form.password,
+      role: form.role,
+      assignedCourses: form.selectedCourses,
+      profilePic: form.profilePic,
+      createdAt: new Date().toISOString(),
+      synced: false,
+      tuition: { expected: form.expectedTuition, paid: form.paidTuition },
+      remuneration: { netSalary: form.netSalary, perDiem: form.perDiem },
+    };
     // addUser() now runs the tenant-scoped duplicate guard at DB level too —
     // surface its error instead of letting it bubble unhandled.
     try {
@@ -444,13 +545,19 @@ export default function UserManagement() {
       snack.error(err?.message || "Could not create user.");
       return;
     }
+    let cloudSaved = false;
     try {
-      await apiFetch("/api/users/upsert", { id: newUser.id, username: newUser.username, phone: newUser.phone, email: newUser.email, password: newUser.password, role: newUser.role, assigned_courses: newUser.assignedCourses, profile_pic: newUser.profilePic || null, tuition: { expected: parseFloat(String(form.expectedTuition ?? "").replace(/,/g, "")) || 0, paid: parseFloat(String(form.paidTuition ?? "").replace(/,/g, "")) || 0 }, remuneration: { net_salary: parseFloat(form.netSalary.replace(/,/g, "")) || 0, per_diem: parseFloat(form.perDiem.replace(/,/g, "")) || 0 } });
-      await db.users.update(newUser.id, { synced: true });
-      noteUserPushed(newUser.id);
-    } catch (err: any) { console.warn("Cloud sync failed:", err.message); }
-    await syncEnrollmentsToCloud(newUser.id, newUser.assignedCourses);
-    snack.success("User created successfully");
+      await pushUserToCloud(newUser, syncEnrollmentsToCloud);
+      cloudSaved = true;
+    } catch (err: any) {
+      console.warn("User saved locally; Supabase sync is pending:", err);
+    }
+    snack.show(
+      cloudSaved
+        ? "User created and synchronised with Supabase."
+        : "User saved on this device. Cloud synchronisation is pending.",
+      cloudSaved ? C.green : C.warning
+    );
     closeForm();
     // Search affects CRUD: drop any active filter so the newly created user is immediately visible
     setSearchQuery("");
@@ -472,15 +579,48 @@ export default function UserManagement() {
     if (isPhoneTaken(inlineForm.phone, userId)) { setInlineError("This phone number is already registered to another user."); return; }
     const currentUser: any = users.find(u => u.id === userId);
     const finalPassword = inlineForm.password.trim() !== "" ? inlineForm.password.trim() : (currentUser?.password || "");
-    const updatedUser: any = { id: userId, username: inlineForm.username.trim(), phone: inlineForm.phone.trim(), email: inlineForm.email.trim(), password: finalPassword, role: inlineForm.role, assignedCourses: inlineForm.selectedCourses, profilePic: inlineForm.profilePic, createdAt: currentUser?.createdAt || new Date().toISOString(), tuition: { expected: inlineForm.expectedTuition, paid: inlineForm.paidTuition }, remuneration: { netSalary: inlineForm.netSalary as any, perDiem: inlineForm.perDiem as any } };
-    await updateUser(updatedUser);
+    const updatedUser: any = {
+      ...currentUser,
+      id: userId,
+      username: inlineForm.username.trim(),
+      phone: inlineForm.phone.trim(),
+      email: inlineForm.email.trim(),
+      password: finalPassword,
+      role: inlineForm.role,
+      assignedCourses: inlineForm.selectedCourses,
+      profilePic: inlineForm.profilePic,
+      createdAt: currentUser?.createdAt || new Date().toISOString(),
+      tuition: { expected: inlineForm.expectedTuition, paid: inlineForm.paidTuition },
+      remuneration: { netSalary: inlineForm.netSalary, perDiem: inlineForm.perDiem },
+      synced: false,
+    };
+    // Persist locally first. If the cloud write fails, synced remains false so
+    // the automatic retry can push this exact version when the API is reachable.
+    await updateUser({ ...updatedUser, synced: false });
+    let cloudSaved = false;
     try {
-      await apiFetch("/api/users/update", { id: userId, username: updatedUser.username, phone: updatedUser.phone, email: updatedUser.email, password: finalPassword, role: updatedUser.role, assigned_courses: updatedUser.assignedCourses, profile_pic: updatedUser.profilePic || null, tuition: { expected: parseFloat(String(inlineForm.expectedTuition ?? "").replace(/,/g, "")) || 0, paid: parseFloat(String(inlineForm.paidTuition ?? "").replace(/,/g, "")) || 0 }, remuneration: { net_salary: parseFloat(String(inlineForm.netSalary ?? "").replace(/,/g, "")) || 0, per_diem: parseFloat(String(inlineForm.perDiem ?? "").replace(/,/g, "")) || 0 } }, "PUT");
+      const { error } = await supabase
+        .from("users")
+        .update(mapUserToSupabase(updatedUser, "update"))
+        .eq("id", userId);
+      if (error) throw new Error(error.message);
+      try {
+        await syncEnrollmentsToCloud(userId, updatedUser.assignedCourses);
+      } catch (e) {
+        console.warn("Enrolment copy failed (user row is still synced):", e);
+      }
       await db.users.update(userId, { synced: true });
       noteUserPushed(userId);
-    } catch (err: any) { console.warn("Cloud sync failed:", err.message); }
-    await syncEnrollmentsToCloud(userId, updatedUser.assignedCourses);
-    snack.success("User updated successfully");
+      cloudSaved = true;
+    } catch (err: any) {
+      console.warn("User updated locally; Supabase sync is pending:", err);
+    }
+    snack.show(
+      cloudSaved
+        ? "Changes saved and synchronised with Supabase."
+        : "Changes saved on this device. Cloud synchronisation is pending.",
+      cloudSaved ? C.green : C.warning
+    );
     setInlineEditId(null);
     // Search affects CRUD: if the update no longer matches the active filter, clear it
     // so the edited row stays visible instead of silently dropping out of the list
@@ -489,13 +629,18 @@ export default function UserManagement() {
   }
 
   async function removeUser(id: string) {
+    // Soft-delete straight in Supabase FIRST — independent of userDB's own
+    // delete, which may still try a backend endpoint and fail. Idempotent,
+    // so the cloud row is tombstoned either way and cannot reappear.
+    try { await softDeleteUserInCloud(id); } catch (err: any) { console.warn("Cloud soft-delete skipped:", err.message); }
     try {
-      // deleteUser() now handles local delete + tombstone + Supabase delete
+      // deleteUser() handles local delete + tombstone (+ its own cloud delete)
       await deleteUser(id);
     } catch (err: any) {
-      // Cloud delete may fail (FK constraints, network) — tombstone still blocks reappearing
+      // Local delete + tombstone inside deleteUser() still applied even if its
+      // cloud step failed; the row above is already soft-deleted in Supabase.
       console.warn("Delete warning:", err.message);
-      snack.error("User deleted locally. Cloud delete will retry automatically.");
+      snack.error("User deleted. Cloud cleanup will retry automatically.");
       setDeleteId(null); setExpandedId(null); if (inlineEditId === id) setInlineEditId(null); loadData();
       return;
     }

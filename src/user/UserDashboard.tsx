@@ -27,17 +27,17 @@ interface BusinessData {
 }
 
 const C = {
-  textPrimary: "#1C1C1E",
-  textTertiary: "#8E8E93",
-  bg: "#F2F2F7",
+  textPrimary: "#242424",
+  textTertiary: "#616161",
+  bg: "#F5F5F5",
   card: "#FFFFFF",
-  separator: "#E5E5EA",
-  medBlue: "#007AFF",
-  medBlueBg: "#E8F2FF",
+  separator: "#E1DFDD",
+  medBlue: "#0878B9",
+  medBlueBg: "#E8F4FB",
   green: "#34C759",
   greenBg: "#EAF9EE",
-  purple: "#AF52DE",
-  purpleBg: "#F5F0FF",
+  purple: "#075985",
+  purpleBg: "#EAF4FA",
   red: "#FF3B30",
   redBg: "#FFEFEE",
 };
@@ -85,7 +85,12 @@ function normalizeImageSrc(value?: string | null): string {
     else if (compact.startsWith("PHN2Zy") || compact.startsWith("PD94bW")) mime = "image/svg+xml";
     return `data:${mime};base64,${compact}`;
   }
-  return raw;
+  // Bare filenames ("loadlogo.png") are not renderable — the browser resolves
+  // them against the app origin (http://127.0.0.1:1420/loadlogo.png → 404).
+  // Only absolute/protocol-relative/blob URLs and app-absolute paths survive;
+  // anything else falls back to the letter avatar.
+  if (/^(https?:\/\/|\/\/|blob:)/i.test(raw) || raw.startsWith("/")) return raw;
+  return "";
 }
 
 function initialsOf(name: string | null | undefined, fallback: string): string {
@@ -333,7 +338,7 @@ export default function UserDashboard() {
             if (allLocalCourses && allLocalCourses.length > 0) {
               fetchedCourses = allLocalCourses
                 .filter((c: any) => assignedIds.includes(c.id))
-                .map((c: any) => ({ id: c.id, name: c.name, description: c.description || "", logo: c.logo || "", category: c.mediaName || "" }));
+                .map((c: any) => ({ id: c.id, name: c.name, description: c.description || "", logo: normalizeImageSrc(c.logo) || "", category: c.mediaName || "" }));
             }
           }
         } catch {}
@@ -610,6 +615,49 @@ export default function UserDashboard() {
     .sort((a, b) => new Date(a.scheduled_at).getTime() - new Date(b.scheduled_at).getTime());
 
   return (
+    <div className="ud-teams-shell">
+      <aside className="ud-teams-rail" aria-label="Main navigation">
+        <button
+          className="ud-rail-item"
+          onClick={() => navigate("/forms")}
+          title="Forms"
+          aria-label="Forms"
+        >
+          <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+            <polyline points="14 2 14 8 20 8" />
+            <line x1="16" y1="13" x2="8" y2="13" />
+            <line x1="16" y1="17" x2="8" y2="17" />
+          </svg>
+          <span>Forms</span>
+          {pendingForms > 0 && <i className="ud-rail-badge">{pendingForms}</i>}
+        </button>
+        <button
+          className="ud-rail-item"
+          onClick={() => navigate(isTrainer ? "/trainer/settings" : "/user/settings")}
+          title="Settings"
+          aria-label="Settings"
+        >
+          <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-1.7 2.94-.08-.02a1.7 1.7 0 0 0-1.72.7l-.04.07h-3.4l-.04-.07a1.7 1.7 0 0 0-1.72-.7l-.08.02-1.7-2.94.06-.06A1.7 1.7 0 0 0 9.7 15l-.08-.04v-3.4l.08-.04a1.7 1.7 0 0 0-.34-1.88l-.06-.06 1.7-2.94.08.02a1.7 1.7 0 0 0 1.72-.7l.04-.07h3.4l.04.07a1.7 1.7 0 0 0 1.72.7l.08-.02 1.7 2.94-.06.06A1.7 1.7 0 0 0 19.4 11.5l.08.04v3.4z" />
+          </svg>
+          <span>Settings</span>
+        </button>
+        <div className="ud-rail-spacer" />
+        <button
+          className="ud-rail-item ud-rail-logout"
+          onClick={handleLogout}
+          title="Sign out"
+          aria-label="Sign out"
+        >
+          <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+            <polyline points="16 17 21 12 16 7" />
+            <line x1="21" y1="12" x2="9" y2="12" />
+          </svg>
+        </button>
+      </aside>
     <div
       className="ud-root"
       style={{ minHeight: "100vh", background: C.bg, fontFamily: FONT, WebkitFontSmoothing: "antialiased", MozOsxFontSmoothing: "grayscale", display: "flex", flexDirection: "column" }}
@@ -617,6 +665,17 @@ export default function UserDashboard() {
       <div className="ud-bar">
         <div className="ud-bar-inner">
           <div style={{ display: "flex", alignItems: "center", gap: 12, flex: 1, minWidth: 0 }}>
+            {business?.logo ? (
+              <img
+                src={business.logo}
+                alt="Logo"
+                style={{ width: 34, height: 34, borderRadius: 6, objectFit: "contain", background: "#FFFFFF", flexShrink: 0 }}
+              />
+            ) : (
+              <div style={{ width: 34, height: 34, borderRadius: 6, background: C.medBlue, color: "#FFFFFF", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, fontWeight: 800, flexShrink: 0 }}>
+                {(business?.business_name || "M").charAt(0).toUpperCase()}
+              </div>
+            )}
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ ...TS.h3, fontSize: 15, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{business?.business_name || "Business"}</div>
               {business?.phone && (
@@ -632,7 +691,7 @@ export default function UserDashboard() {
             </div>
           </div>
 
-          <div onClick={() => navigate(isTrainer ? "/trainer/settings" : "/user/settings")} title="Profile settings" style={{ display: "flex", alignItems: "center", gap: 8, background: C.purpleBg, padding: "4px 12px 4px 4px", borderRadius: 20, flexShrink: 0, cursor: "pointer" }}>
+          <div title="User profile" style={{ display: "flex", alignItems: "center", gap: 8, background: C.purpleBg, padding: "4px 12px 4px 4px", borderRadius: 20, flexShrink: 0 }}>
             {profilePic && !profilePicError ? (
               <img
                 src={profilePic}
@@ -656,31 +715,6 @@ export default function UserDashboard() {
             <span className="ud-username" style={{ fontSize: 13, fontWeight: 600, color: C.purple, whiteSpace: "nowrap" }}>{currentUser?.username || "User"}</span>
           </div>
 
-          <button
-            onClick={() => navigate("/forms")}
-            title="Forms"
-            style={{ position: "relative", display: "flex", alignItems: "center", justifyContent: "center", width: 40, height: 40, borderRadius: 9, background: C.greenBg, border: "none", cursor: "pointer", color: C.green, flexShrink: 0 }}
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-              <polyline points="14 2 14 8 20 8" />
-              <line x1="16" y1="13" x2="8" y2="13" />
-              <line x1="16" y1="17" x2="8" y2="17" />
-            </svg>
-            {pendingForms > 0 && (
-              <span style={{ position: "absolute", top: -3, right: -3, minWidth: 16, height: 16, borderRadius: 8, background: C.red, color: "#fff", fontSize: 10, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 4px", border: "1.5px solid #fff", boxSizing: "border-box" }}>
-                {pendingForms}
-              </span>
-            )}
-          </button>
-
-          <button onClick={() => navigate(isTrainer ? "/trainer/settings" : "/user/settings")} title="Profile settings" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 40, height: 40, borderRadius: 9, background: C.purpleBg, border: "none", cursor: "pointer", color: C.purple, flexShrink: 0 }}>
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>
-          </button>
-
-          <button onClick={handleLogout} title="Logout" style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 40, height: 40, borderRadius: 9, background: C.redBg, border: "none", cursor: "pointer", color: C.red, flexShrink: 0 }}>
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></svg>
-          </button>
         </div>
       </div>
 
@@ -791,10 +825,14 @@ export default function UserDashboard() {
 
               return (
                 <div key={course.id} className="ud-card" style={courseCardStyle}>
-                  {course.logo && (
+                  {course.logo ? (
                     <div className="ud-card-media">
                       <img src={course.logo} alt={course.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
                       <div style={{ position: "absolute", bottom: 0, left: 0, width: "100%", height: "50%", background: "linear-gradient(to top, rgba(0,0,0,0.5), transparent)" }} />
+                    </div>
+                  ) : (
+                    <div className="ud-card-media" style={{ display: "flex", alignItems: "center", justifyContent: "center", background: C.medBlueBg }}>
+                      <span style={{ fontSize: 42, fontWeight: 800, color: C.medBlue }}>{(course.name || "C").charAt(0).toUpperCase()}</span>
                     </div>
                   )}
 
@@ -860,20 +898,45 @@ export default function UserDashboard() {
       </div>
 
       <style>{`
+        .ud-teams-shell { min-height: 100vh; display: flex; background: #F3F8FC; }
+        .ud-teams-rail { position: fixed; inset: 0 auto 0 0; z-index: 30; width: 76px; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 18px 7px; background: #F5F5F5; color: #242424; border-right: 1px solid #E1DFDD; }
+        .ud-rail-brand { width: 44px; height: 44px; margin: 0 0 18px; display: grid; place-items: center; border-radius: 13px; background: #0878B9; color: #fff; font-size: 21px; font-weight: 800; box-shadow: 0 4px 12px rgba(0,0,0,.12); }
+        .ud-rail-item { position: relative; width: 62px; min-height: 56px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; border: 0; border-radius: 9px; background: transparent; color: #616161; cursor: pointer; font: 600 10px/1.2 'Segoe UI', sans-serif; transition: background .18s ease, color .18s ease; }
+        .ud-rail-item:hover, .ud-rail-item.active { background: #E8F4FB; color: #0878B9; }
+        .ud-rail-item.active::before { content: ''; position: absolute; left: -7px; top: 11px; bottom: 11px; width: 3px; border-radius: 0 3px 3px 0; background: #0878B9; }
+        .ud-rail-icon { font-size: 21px; line-height: 1; }
+        .ud-rail-badge { position: absolute; top: 3px; right: 7px; min-width: 16px; height: 16px; padding: 0 4px; display: grid; place-items: center; border-radius: 10px; background: #D92D45; color: #fff; font-size: 9px; font-style: normal; }
+        .ud-rail-spacer { flex: 1; }
+        .ud-rail-item:not(.ud-rail-logout) { min-height: 62px; width: 62px; }
+        .ud-rail-item:not(.ud-rail-logout) svg { display: block; }
+        .ud-rail-logout { min-height: 46px; height: 46px; width: 46px; margin-bottom: 8px; border: 1px solid #E1DFDD; border-radius: 12px; color: #616161; background: #FFFFFF; }
+        .ud-rail-logout:hover { background: #E8F4FB; color: #0878B9; }
+        .ud-root { margin-left: 76px; width: calc(100% - 76px); min-width: 0; }
+        .ud-bar { background: #fff !important; box-shadow: 0 1px 4px rgba(15, 55, 80, .04); }
+        .ud-card, .ud-sched-row { border-radius: 12px !important; box-shadow: 0 2px 8px rgba(15, 55, 80, .06); }
         .ud-root, .ud-root *, .ud-root *::before, .ud-root *::after { box-sizing: border-box; }
-        .ud-bar { position: sticky; top: 0; z-index: 10; width: 100%; background: ${C.card}; border-bottom: 1px solid ${C.separator}; padding: clamp(10px, 2vw, 14px) clamp(14px, 3vw, 28px); }
-        .ud-bar-inner { display: flex; align-items: center; gap: 12px; width: 100%; }
-        .ud-body { flex: 1; width: 100%; padding: clamp(20px, 3vw, 40px) clamp(14px, 3.5vw, 48px) clamp(28px, 4vw, 48px); }
-        .ud-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(310px, 100%), 1fr)); gap: clamp(14px, 2vw, 20px); width: 100%; }
-        .ud-card-media { position: relative; width: 100%; height: clamp(160px, 26vw, 220px); }
-        .ud-card-actions { padding: clamp(12px, 1.8vw, 16px) clamp(10px, 1.6vw, 12px); display: grid; grid-template-columns: repeat(2, 1fr); gap: clamp(10px, 1.6vw, 12px); }
-        .ud-card { display: flex; flex-direction: column; min-width: 0; }
-        .ud-card-body { padding: 20px; border-bottom: 1px solid ${C.separator}; flex: 1; display: flex; flex-direction: column; min-width: 0; }
-        .ud-sched-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr)); gap: 10px; }
-        .ud-sched-row { display: flex; align-items: center; gap: 12px; background: ${C.card}; border: 1px solid ${C.separator}; border-radius: 14px; padding: 12px 14px; }
-        .ud-datesq { width: 46px; height: 46px; flex-shrink: 0; border-radius: 12px; background: ${C.medBlueBg}; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; }
+        .ud-bar { position: sticky; top: 0; z-index: 10; width: 100%; background: ${C.card}; border-bottom: 1px solid #DCEAF2; padding: 14px clamp(18px, 3vw, 36px); }
+        .ud-bar-inner { display: flex; align-items: center; gap: 14px; width: 100%; max-width: 1600px; margin: 0 auto; }
+        .ud-body { flex: 1; width: 100%; max-width: 1600px; margin: 0 auto; padding: clamp(24px, 3vw, 38px) clamp(18px, 3vw, 40px) 52px; }
+        .ud-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr)); gap: 20px; width: 100%; align-items: stretch; }
+        .ud-card-media { position: relative; width: 100%; height: clamp(160px, 18vw, 210px); overflow: hidden; }
+        .ud-card-actions { padding: 14px 16px 16px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+        .ud-card { display: flex; flex-direction: column; min-width: 0; height: 100%; background: #fff; transition: box-shadow .18s ease, transform .18s ease; }
+        .ud-card:hover { transform: translateY(-2px); box-shadow: 0 8px 20px rgba(15, 55, 80, .12); }
+        .ud-card-body { padding: 20px 22px; border-bottom: 1px solid ${C.separator}; flex: 1; display: flex; flex-direction: column; min-width: 0; }
+        .ud-sched-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr)); gap: 12px; }
+        .ud-sched-row { display: flex; align-items: center; gap: 14px; min-width: 0; background: ${C.card}; border: 1px solid #DCEAF2; border-radius: 12px; padding: 14px 16px; }
+        .ud-datesq { width: 48px; height: 48px; flex-shrink: 0; border-radius: 12px; background: ${C.medBlueBg}; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; }
+        @media (max-width: 980px) {
+          .ud-grid { gap: 16px; }
+          .ud-card-body { padding: 18px; }
+        }
         @media (max-width: 720px) {
           .ud-username { display: none; }
+          .ud-teams-rail { width: 60px; padding-left: 4px; padding-right: 4px; }
+          .ud-rail-item { width: 52px; }
+          .ud-root { margin-left: 60px; width: calc(100% - 60px); }
+          .ud-body { padding: 20px 14px 36px; }
         }
         @media (max-width: 520px) {
           .ud-phone { display: none; }
@@ -881,16 +944,22 @@ export default function UserDashboard() {
           .ud-sched-row { padding: 10px 12px; gap: 10px; }
           .ud-card-media { height: 150px; }
         }
-        @media (min-width: 1200px) {
-          .ud-grid { grid-template-columns: 1fr; gap: 18px; }
-          .ud-card { flex-direction: row; align-items: stretch; border-radius: 16px; }
-          .ud-card-media { width: clamp(260px, 24vw, 380px); height: auto; min-height: 210px; flex-shrink: 0; }
-          .ud-card-body { flex: 1; justify-content: center; padding: 26px 32px; border-bottom: none; border-right: 1px solid ${C.separator}; }
-          .ud-card-body h3 { font-size: 21px !important; }
+        /* Wide screens — horizontal cards (same pattern as TrainerDashboard):
+           media band left, centered body, fixed action rail right. The 660px
+           track guarantees media(190-250) + body(≥240) + actions(176) never
+           starve each other; rows get 1-2 cards depending on width. */
+        @media (min-width: 1150px) {
+          .ud-grid { grid-template-columns: repeat(auto-fill, minmax(min(660px, 100%), 1fr)); gap: 22px; }
+          .ud-card { flex-direction: row; align-items: stretch; }
+          .ud-card-media { width: clamp(190px, 16vw, 250px); height: auto; min-height: 210px; flex-shrink: 0; }
+          .ud-card-body { flex: 1 1 0; min-width: 240px; justify-content: center; border-bottom: none; border-right: 1px solid ${C.separator}; }
+          .ud-card-body h3 { font-size: 19px !important; }
           .ud-card-body p { -webkit-line-clamp: 3 !important; }
-          .ud-card-actions { width: clamp(250px, 21vw, 340px); flex-shrink: 0; align-content: center; padding: 18px 20px; }
-          .ud-sched-list { gap: 12px; }
-          .ud-sched-row { padding: 14px 16px; border-radius: 16px; }
+          .ud-card-actions { display: flex; flex-direction: column; justify-content: center; gap: 9px; width: 176px; flex-shrink: 0; padding: 14px 16px; }
+          .ud-card-actions button { flex-direction: row !important; justify-content: flex-start !important; gap: 9px; padding: 11px 13px !important; }
+          .ud-card-actions button > * { flex-shrink: 0; }
+          .ud-card-actions button span { font-size: 12.5px !important; white-space: nowrap; }
+          .ud-sched-list { gap: 14px; }
         }
         @keyframes pulse {
           0% { transform: scale(1); opacity: 0.4; }
@@ -902,6 +971,7 @@ export default function UserDashboard() {
           100% { background-position: -200% 0; }
         }
       `}</style>
+    </div>
     </div>
   );
 }

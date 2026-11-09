@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import type { CourseMaterial, LivePresentation, Stroke } from "../types";
 import LiveClassView from "../components/LiveClassView";
@@ -40,6 +40,11 @@ async function cacheAvatarImage(userId: string, url: string) {
   } catch {}
 }
 
+// Daily room URLs resolved from Supabase (see getDailyRoomUrl). Kept per
+// page load so a URL updated in the DB is picked up on the next reload.
+const dailyRoomCache = new Map<string, string>();
+let dailyRoomWarned = false;
+
 export default function Classroom() {
   const { courseId } = useParams();
   const navigate = useNavigate();
@@ -68,11 +73,21 @@ export default function Classroom() {
   const [audioError, setAudioError] = useState(false);
   const [trainerVideoTrack, setTrainerVideoTrack] = useState<MediaStreamTrack | null>(null);
   const [localVideoTrack, setLocalVideoTrack] = useState<MediaStreamTrack | null>(null);
+  // Guards against double-join races (StrictMode mounts the auto-join effect twice)
+  const joiningRef = useRef(false);
 
   const [mediaProblem, setMediaProblem] = useState<MediaProblem | null>(null);
 
   const [downloadOpen, setDownloadOpen] = useState(false);
   const [autoDownloadId, setAutoDownloadId] = useState<string | null>(null);
+
+  // Sync hardening: lastMaterialIdRef tracks which material is currently shown
+  // so we never re-download the full file (file_data can be megabytes) on
+  // every realtime event / poll tick while the trainer draws or turns pages.
+  // offlineWarnedRef keeps the polling fallback from spamming the console
+  // with the same offline warning every 5 seconds.
+  const lastMaterialIdRef = useRef<string>("");
+  const offlineWarnedRef = useRef(false);
 
   useDailyEvent("track-started", (event: any) => {
     if (event.participant?.local && event.track?.kind === "video") setLocalVideoTrack(event.track as MediaStreamTrack);
@@ -186,26 +201,60 @@ export default function Classroom() {
     return { fileName: mat.fileName || mat.title || "download", fileType: mat.fileType || "application/octet-stream", fileUrl: mat.fileUrl || "", allowDownload: mat.allowDownload ?? true };
   }
 
+  // Daily room resolution without the legacy Render backend (the Render
+  // service is being phased out and its domain no longer resolves).
+  // Priority: per-course URL stored in Supabase (courses.daily_room_url),
+  // then a global VITE_DAILY_ROOM_URL fallback from .env. If neither is
+  // configured we return null — slides keep working, voice/video stays off,
+  // and we warn exactly once per page load instead of spamming the console.
   async function getDailyRoomUrl() {
     if (!courseId) return null;
-    const API_BASE = import.meta.env.VITE_API_URL || "https://medstat-3rxl.onrender.com";
-    try { const response = await fetch(`${API_BASE}/api/create-daily-room`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ courseId }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error); return data.url; } catch (error) { return null; }
+    const cached = dailyRoomCache.get(courseId);
+    if (cached) return cached;
+    try {
+      const { data } = await supabase.from("courses").select("daily_room_url").eq("id", courseId).maybeSingle();
+      const url = ((data as any)?.daily_room_url as string) || "";
+      if (url) { dailyRoomCache.set(courseId, url); return url; }
+    } catch {}
+    const envUrl = (import.meta.env as any).VITE_DAILY_ROOM_URL || "";
+    if (envUrl) return envUrl;
+    if (!dailyRoomWarned) {
+      dailyRoomWarned = true;
+      console.warn("[Classroom] No Daily room configured for this course — set courses.daily_room_url (SQL) or VITE_DAILY_ROOM_URL (.env). Voice/video stay off; slides still work.");
+    }
+    return null;
   }
 
   async function joinAudio() {
-    if (!daily) return;
+    if (!daily || joiningRef.current) return;
     const roomUrl = await getDailyRoomUrl();
     if (!roomUrl) return;
-    try { await daily.join({ url: roomUrl, startVideoOff: true }); await daily.setLocalAudio(false); await daily.setLocalVideo(false); setIsVoiceJoined(true); setAudioError(false); }
-    catch (e) { setAudioError(true); }
+    joiningRef.current = true;
+    try {
+      if (daily.participants()?.local) { setIsVoiceJoined(true); return; } // already in the meeting
+      await daily.join({ url: roomUrl, startVideoOff: true });
+      await daily.setLocalAudio(false); await daily.setLocalVideo(false);
+      setIsVoiceJoined(true); setAudioError(false);
+    }
+    catch (e) { console.warn("[Classroom] Daily join failed — check the room exists in your Daily dashboard:", roomUrl, e); setAudioError(true); }
+    finally { joiningRef.current = false; }
   }
 
   useEffect(() => {
-    if (isLive && daily && !isVoiceJoined && !audioError) {
+    if (isLive && daily && !isVoiceJoined && !audioError && !joiningRef.current) {
+      joiningRef.current = true; // block the second StrictMode mount from double-joining
       const autoJoinRoom = async () => {
-        const roomUrl = await getDailyRoomUrl();
-        if (!roomUrl) return;
-        try { await daily.join({ url: roomUrl, startVideoOff: true }); await daily.setLocalAudio(false); await daily.setLocalVideo(false); setIsVoiceJoined(true); } catch (e) { setAudioError(true); }
+        let roomUrl: string | null = null;
+        try {
+          roomUrl = await getDailyRoomUrl();
+          if (!roomUrl) return;
+          if (daily.participants()?.local) { setIsVoiceJoined(true); return; } // already in the meeting
+          await daily.join({ url: roomUrl, startVideoOff: true });
+          await daily.setLocalAudio(false); await daily.setLocalVideo(false);
+          setIsVoiceJoined(true);
+        }
+        catch (e) { console.warn("[Classroom] Daily auto-join failed — check the room exists in your Daily dashboard:", roomUrl, e); setAudioError(true); }
+        finally { joiningRef.current = false; }
       };
       autoJoinRoom();
     }
@@ -213,11 +262,31 @@ export default function Classroom() {
 
   useEffect(() => {
     if (!courseId) return;
+    // disposed marks an intentional teardown (StrictMode double-mount in dev,
+    // or leaving the classroom). The CLOSED status that fires right after our
+    // own removeChannel() is expected — not a network failure — so we don't
+    // log it as one.
+    let disposed = false;
+    // Cache-first material loader: show the locally cached copy instantly and
+    // only hit Supabase when we don't have the file yet. Keeps sync fast on
+    // slow connections and fully offline once the material is downloaded.
+    const loadMaterial = async (materialId: string) => {
+      try {
+        const cachedMat = await db.materials.get(materialId);
+        if (cachedMat && cachedMat.fileUrl) { setPresentation(cachedMat); return; }
+        const { data: mat } = await supabase.from("course_materials").select("*").eq("id", materialId).maybeSingle();
+        if (mat) {
+          const mappedMat = { id: mat.id, courseId: mat.course_id, tenantId: mat.tenant_id, title: mat.title || "Untitled", description: mat.description || "", fileUrl: mat.file_data || "", fileName: mat.file_name || "Untitled", fileType: mat.file_type || "application/octet-stream", allowDownload: mat.allow_download ?? true, uploadedBy: mat.uploaded_by || "", uploadedAt: mat.uploaded_at || mat.created_at || "", isPresentation: mat.is_presentation ?? false, presentationOrder: mat.presentation_order ?? 0 };
+          setPresentation(mappedMat);
+          await db.materials.put(mappedMat);
+        }
+      } catch {}
+    };
     const fetchLiveData = async () => {
       const localSess = await getLiveSession(courseId);
       if (localSess) setIsLive(localSess.active);
       const localPres = await getLivePresentation(courseId);
-      if (localPres) { setLiveState(localPres); setIsBlackboardMode(localPres.isBlackboard ?? false); if (localPres.materialId) { const localMat = await getMaterialById(localPres.materialId); if (localMat) setPresentation(localMat); } }
+      if (localPres) { setLiveState(localPres); setIsBlackboardMode(localPres.isBlackboard ?? false); if (localPres.materialId) { const localMat = await getMaterialById(localPres.materialId); if (localMat && localMat.fileUrl) { setPresentation(localMat); lastMaterialIdRef.current = localPres.materialId; } } }
       try {
         const me = dbUser || JSON.parse(localStorage.getItem("currentUser") || "{}");
         if (me?.id) {
@@ -229,20 +298,20 @@ export default function Classroom() {
         if (livePres) {
           const mappedPres = { id: livePres.id, courseId: livePres.course_id, materialId: livePres.material_id || "", isBlackboard: livePres.is_blackboard ?? false, blackboardStrokes: (livePres.blackboard_strokes as Stroke[]) || [], blackboardLines: (livePres.blackboard_lines as string[]) || [], blackboardLabels: (livePres.blackboard_labels as any[]) || [], currentPage: livePres.current_page ?? 1, tenantId: livePres.tenant_id, startedBy: livePres.started_by, updatedAt: livePres.updated_at };
           setLiveState(mappedPres); setIsBlackboardMode(mappedPres.isBlackboard); await updatePresentation(mappedPres);
-          if (mappedPres.materialId) { const { data: mat } = await supabase.from("course_materials").select("*").eq("id", mappedPres.materialId).maybeSingle(); if (mat) { const mappedMat = { id: mat.id, courseId: mat.course_id, tenantId: mat.tenant_id, title: mat.title || "Untitled", description: mat.description || "", fileUrl: mat.file_data || "", fileName: mat.file_name || "Untitled", fileType: mat.file_type || "application/octet-stream", allowDownload: mat.allow_download ?? true, uploadedBy: mat.uploaded_by || "", uploadedAt: mat.uploaded_at || mat.created_at || "", isPresentation: mat.is_presentation ?? false, presentationOrder: mat.presentation_order ?? 0 }; setPresentation(mappedMat); await db.materials.put(mappedMat); } }
-          else setPresentation(null);
-        } else { setLiveState(null); setIsBlackboardMode(false); setPresentation(null); }
-      } catch (err) { console.warn("Offline: Using local live data"); }
+          if (mappedPres.materialId) { if (mappedPres.materialId !== lastMaterialIdRef.current) { lastMaterialIdRef.current = mappedPres.materialId; await loadMaterial(mappedPres.materialId); } }
+          else { setPresentation(null); lastMaterialIdRef.current = ""; }
+        } else { setLiveState(null); setIsBlackboardMode(false); setPresentation(null); lastMaterialIdRef.current = ""; }
+      } catch (err) { if (!offlineWarnedRef.current) { console.warn("Offline: Using local live data"); offlineWarnedRef.current = true; } }
     };
     fetchLiveData();
     const channel = supabase.channel(`learner-classroom-${courseId}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "live_presentations", filter: `course_id=eq.${courseId}` }, async (payload: any) => {
-        if (payload.eventType === "DELETE") { setLiveState(null); setPresentation(null); setIsBlackboardMode(false); await db.livePresentations.delete(payload.old.id); return; }
+        if (payload.eventType === "DELETE") { setLiveState(null); setPresentation(null); setIsBlackboardMode(false); lastMaterialIdRef.current = ""; await db.livePresentations.delete(payload.old.id); return; }
         const newPres = payload.new;
         const mappedPres = { id: newPres.id, courseId: newPres.course_id, materialId: newPres.material_id || "", isBlackboard: newPres.is_blackboard ?? false, blackboardStrokes: (newPres.blackboard_strokes as Stroke[]) || [], blackboardLines: (newPres.blackboard_lines as string[]) || [], blackboardLabels: (newPres.blackboard_labels as any[]) || [], currentPage: newPres.current_page ?? 1, tenantId: newPres.tenant_id, startedBy: newPres.started_by, updatedAt: newPres.updated_at };
         setLiveState(mappedPres); setIsBlackboardMode(mappedPres.isBlackboard); await updatePresentation(mappedPres);
-        if (mappedPres.materialId) { const { data: mat } = await supabase.from("course_materials").select("*").eq("id", mappedPres.materialId).maybeSingle(); if (mat) { const mappedMat = { id: mat.id, courseId: mat.course_id, tenantId: mat.tenant_id, title: mat.title || "Untitled", description: mat.description || "", fileUrl: mat.file_data || "", fileName: mat.file_name || "Untitled", fileType: mat.file_type || "application/octet-stream", allowDownload: mat.allow_download ?? true, uploadedBy: mat.uploaded_by || "", uploadedAt: mat.uploaded_at || mat.created_at || "", isPresentation: mat.is_presentation ?? false, presentationOrder: mat.presentation_order ?? 0 }; setPresentation(mappedMat); await db.materials.put(mappedMat); } }
-        else setPresentation(null);
+        if (mappedPres.materialId) { if (mappedPres.materialId !== lastMaterialIdRef.current) { lastMaterialIdRef.current = mappedPres.materialId; await loadMaterial(mappedPres.materialId); } }
+        else { setPresentation(null); lastMaterialIdRef.current = ""; }
       })
       .on("postgres_changes", { event: "*", schema: "public", table: "live_session", filter: `course_id=eq.${courseId}` }, fetchLiveData)
       .on("postgres_changes", { event: "*", schema: "public", table: "raised_hands", filter: `course_id=eq.${courseId}` }, (payload: any) => { if (payload.new?.user_id === dbUser?.id) setHasRaisedHand(true); if (payload.old?.user_id === dbUser?.id) setHasRaisedHand(false); })
@@ -256,8 +325,19 @@ export default function Classroom() {
         if (!canAudio && daily && isVoiceJoined) { try { daily.setLocalAudio(false); } catch (e) {} setIsMicOn(false); }
         if (!canVideo && daily && isVoiceJoined) { try { daily.setLocalVideo(false); } catch (e) {} setIsCamOn(false); }
       })
-      .subscribe();
-    return () => { supabase.removeChannel(channel); };
+      .subscribe((status: string) => {
+        if (status === "SUBSCRIBED") { offlineWarnedRef.current = false; console.log("[Classroom] Realtime connected"); fetchLiveData(); }
+        else if (!disposed && (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED")) console.warn(`[Classroom] Realtime ${status} — using polling fallback`);
+      });
+    // Polling fallback — the safety net for classroom sync. If realtime is
+    // unavailable (tables missing from the supabase_realtime publication,
+    // socket drops, phone sleeping), trainees still see the live class within
+    // a few seconds — and instantly when they return to the tab.
+    const pollTimer = window.setInterval(() => { if (document.visibilityState === "visible") fetchLiveData(); }, 5000);
+    const onVisible = () => { if (document.visibilityState === "visible") fetchLiveData(); };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+    return () => { disposed = true; window.clearInterval(pollTimer); document.removeEventListener("visibilitychange", onVisible); window.removeEventListener("focus", onVisible); supabase.removeChannel(channel); };
   }, [courseId, dbUser?.id]);
 
   async function toggleMic() {

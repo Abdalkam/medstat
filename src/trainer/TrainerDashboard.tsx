@@ -39,6 +39,25 @@ function writeJSON(key: string, value: unknown) {
   } catch {}
 }
 
+/* Only render image sources that cannot 404: data URLs, absolute/protocol-
+   relative/blob URLs and app-absolute paths. A bare filename ("loadlogo.png")
+   would be resolved against the app origin and 404, so it is dropped and the
+   letter-avatar fallback renders instead. */
+function normalizeImageSrc(value?: string | null): string {
+  const raw = (value ?? "").trim();
+  if (!raw) return "";
+  if (raw.startsWith("data:")) return raw;
+  if (raw.startsWith("<svg") || raw.startsWith("<?xml")) {
+    return `data:image/svg+xml;utf8,${encodeURIComponent(raw)}`;
+  }
+  const compact = raw.replace(/\s+/g, "");
+  if (compact.length > 100 && /^[A-Za-z0-9+/]+={0,2}$/.test(compact)) {
+    return `data:image/png;base64,${compact}`;
+  }
+  if (/^(https?:\/\/|\/\/|blob:)/i.test(raw) || raw.startsWith("/")) return raw;
+  return "";
+}
+
 /* Local caches that make remounts instant (even fully offline). */
 const COURSES_CACHE = "td_courses_cache_v1";
 const STATS_CACHE = "td_stats_cache_v1";
@@ -95,11 +114,11 @@ const TD_CSS = `
 .td-main { margin-left:68px; display:flex; flex-direction:column; min-width:0; min-height:100dvh; }
 .td-bar { position:sticky; top:0; z-index:30; background:#fff; border-bottom:1px solid ${STROKE};
   box-shadow:0 1px 3px rgba(0,0,0,.04); }
-.td-bar-grid { display:grid; grid-template-columns:1fr minmax(180px,430px) 1fr; align-items:center;
+.td-bar-grid { display:grid; grid-template-columns:1fr auto; align-items:center;
   gap:14px; padding:8px clamp(12px,2.5vw,20px); }
 .td-brand { display:flex; align-items:center; gap:10px; min-width:0; }
 .td-logo { width:34px; height:34px; border-radius:6px; object-fit:contain; background:#fff;
-  border:1px solid ${STROKE}; flex-shrink:0; }
+  flex-shrink:0; }
 .td-logo-fallback { display:flex; align-items:center; justify-content:center; background:${BRAND};
   color:#fff; font-weight:600; font-size:15px; border:none; }
 .td-name { margin:0; font-size:15px; font-weight:600; color:${TEXT}; line-height:1.25;
@@ -108,10 +127,16 @@ const TD_CSS = `
   align-items:center; gap:5px; margin-top:1px; white-space:nowrap; }
 .td-phone:hover { color:${BRAND}; text-decoration:underline; }
 
-.td-search { display:flex; align-items:center; gap:8px; background:${HOVER_BG};
-  border:1px solid transparent; border-radius:6px; padding:6px 12px; color:${TEXT_3};
-  transition:background .12s, border-color .12s; }
-.td-search:focus-within { background:#fff; border-color:${BRAND}; }
+/* Search lives in the page body now (below the heading) — Fluent input style:
+   white surface, hairline border, brand border on focus. */
+.td-search { display:flex; align-items:center; gap:8px; background:#fff;
+  border:1px solid ${STROKE_2}; border-radius:6px; padding:6px 12px; color:${TEXT_3};
+  transition:border-color .12s; }
+.td-search:focus-within { border-color:${BRAND}; }
+/* Search shares the heading line: sits right after the count pill while the
+   refresh button keeps its auto margin, pinning it to the far right.
+   On small screens the search wraps onto its own full-width line. */
+.td-heading-search { width:min(320px,100%); min-width:0; }
 .td-search svg { flex-shrink:0; }
 .td-search input { flex:1; min-width:0; border:none; outline:none; background:transparent;
   font:inherit; font-size:13.5px; color:${TEXT}; }
@@ -137,7 +162,7 @@ const TD_CSS = `
    edge-to-edge on wide monitors; heading and grid share the same column. */
 .td-body { flex:1; width:100%; max-width:1640px; margin:0 auto;
   padding:clamp(16px,3vw,28px) clamp(14px,3vw,28px) 56px; }
-.td-heading { display:flex; align-items:center; gap:10px; margin:2px 2px 18px; }
+.td-heading { display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin:2px 2px 18px; }
 .td-heading h2 { margin:0; font-size:clamp(19px,2.2vw,23px); font-weight:600; color:${TEXT}; }
 .td-count { background:#fff; border:1px solid ${STROKE}; border-radius:4px; padding:2px 9px;
   font-size:12px; font-weight:600; color:${TEXT_3}; white-space:nowrap; }
@@ -276,7 +301,7 @@ const TD_CSS = `
   .td-username, .td-phone { display:none; }
   .td-chip { padding-right:4px; }
   .td-bar-grid { grid-template-columns:1fr auto; }
-  .td-search { grid-column:1 / -1; order:3; }
+  .td-heading-search { flex:1 1 100%; }
   .td-rail { top:auto; bottom:0; left:0; right:0; width:auto; height:58px; flex-direction:row;
     justify-content:space-around; align-items:center; padding:4px 8px;
     border-top:1px solid ${STROKE}; box-shadow:0 -1px 4px rgba(0,0,0,.06); }
@@ -369,7 +394,7 @@ async function cacheAvatarImage(userId: string, url: string) {
 function mapCourseFromSupabase(c: Record<string, unknown>): Course {
   return {
     id: c.id as string, name: (c.name as string) || "", description: (c.description as string) || "",
-    logo: (c.logo as string) || "", tenantId: c.tenant_id as string, trainerId: c.trainer_id as string,
+    logo: normalizeImageSrc(c.logo as string) || "", tenantId: c.tenant_id as string, trainerId: c.trainer_id as string,
     createdAt: c.created_at as string, tuitionType: ((c.tuition_type as string) || "free") as "free" | "paid",
     amount: (c.amount as number) || 0, startDate: (c.start_date as string) || "", period: (c.period as string) || "",
     mediaUrl: (c.media_url as string) || (c.logo as string) || "", mediaType: (c.media_type as string) || "image", mediaName: (c.media_name as string) || "course-logo",
@@ -574,7 +599,7 @@ export default function TrainerDashboard() {
   }
 
   const businessName = settings?.businessName || "";
-  const businessLogo = settings?.logo;
+  const businessLogo = normalizeImageSrc(settings?.logo);
   const phone = settings?.phone || "";
 
   return (
@@ -584,9 +609,6 @@ export default function TrainerDashboard() {
       {/* -------- left app rail -------- */}
       <aside className="td-rail">
         <nav className="td-railnav" aria-label="Main navigation">
-          <button className="td-railbtn active" title="Courses" aria-label="Courses" aria-current="page">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
-          </button>
           <button className="td-railbtn" onClick={() => navigate("/forms")} title="Forms" aria-label="Forms">
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /></svg>
             {pendingForms > 0 && <span className="td-railbadge">{pendingForms > 99 ? "99+" : pendingForms}</span>}
@@ -622,14 +644,6 @@ export default function TrainerDashboard() {
               </div>
             </div>
 
-            <div className="td-search">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg>
-              <input
-                type="text" placeholder="Search courses…" aria-label="Search courses"
-                value={query} onChange={(e) => setQuery(e.target.value)}
-              />
-            </div>
-
             <div className="td-bar-actions">
               <button className="td-chip" onClick={() => navigate("/trainer/settings")} title="Profile &amp; settings">
                 <span className="td-avatar">
@@ -653,6 +667,15 @@ export default function TrainerDashboard() {
               <span className="td-count">
                 {q ? `${visibleCourses.length} of ${courses.length}` : `${courses.length} assigned`}
               </span>
+            )}
+            {courses.length > 0 && (
+              <div className="td-search td-heading-search">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg>
+                <input
+                  type="text" placeholder="Search courses…" aria-label="Search courses"
+                  value={query} onChange={(e) => setQuery(e.target.value)}
+                />
+              </div>
             )}
             <button className="td-refresh" onClick={() => fetchCourses()} disabled={loading} title="Refresh from cloud" aria-label="Refresh">
               <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10" /><polyline points="1 20 1 14 7 14" /><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" /></svg>
