@@ -1,6 +1,6 @@
 {
   "name": "server",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "MedStat API — Express 5 + Supabase + Africa's Talking + MTN MoMo",
   "main": "src/index.ts",
   "scripts": {
