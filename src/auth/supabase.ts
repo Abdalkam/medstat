@@ -1,144 +1,298 @@
+
 // src/auth/supabase.ts
-// REVISED: data path goes DIRECT to Supabase (Render backend kept only for the settings pull)
-// - pullAllTenantData(): Supabase SELECT + tenant filter + deleted_at filter + tombstone guard
-// - syncUp(): Supabase UPSERT of unsynced local users, rows shaped to public.users
-// - mapUser/mapCourse/mapEnrollment: jsonb fields preserved (old version wiped tuition/remuneration)
-// - sbFetch: your fixes kept verbatim; optional notDeleted flag added
-// - TS strict fix: assignedCourses narrowed once before use in syncUp
+// Direct Supabase synchronization.
+// Render backend is used only for settings.
+//
+// Local User objects use camelCase:
+//   assignedCourses, assignedDepartments, tenantId, profilePic
+//
+// Supabase public.users uses:
+//   assigned_courses, assignedDepartments, tenant_id, profile_pic
+//
+// Supabase public.enrollments uses:
+//   id (text), tenant_id, user_id, course_id, role, status,
+//   enrolled_at, created_at, deleted_at
 
 import { createClient } from "@supabase/supabase-js";
 
-const supabaseUrl = ((import.meta.env.VITE_SUPABASE_URL as string) || "").trim();
-const supabaseAnonKey = ((import.meta.env.VITE_SUPABASE_ANON_KEY as string) || "").trim();
+const supabaseUrl = (
+  (import.meta.env.VITE_SUPABASE_URL as string) || ""
+).trim();
+
+const supabaseAnonKey = (
+  (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || ""
+).trim();
 
 if (!supabaseUrl || !supabaseAnonKey) {
   throw new Error(
-    "Missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY. Add them to .env and restart the dev server."
+    "Missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY. " +
+      "Add them to .env and restart the dev server."
   );
 }
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+export const supabase = createClient(
+  supabaseUrl,
+  supabaseAnonKey
+);
+
+const OFFLINE_TOKEN = "offline-mode-pending-sync";
+
+let periodicPullInterval: ReturnType<typeof setInterval> | null = null;
+let periodicPullRunning = false;
+let syncUpRunning = false;
 
 // ==========================================
-// HELPER: Strip "eq." prefix from filter values (your fix, kept)
+// GENERAL HELPERS
 // ==========================================
-// Callers pass values like `eq.${id}` but Supabase .eq() already adds
-// the "eq." operator to the URL. Without stripping, we get "eq.eq.UUID" → 400.
-function stripEq(val: any): any {
-  if (typeof val === "string" && val.startsWith("eq.")) {
-    return val.slice(3);
+
+function stripEq(value: any): any {
+  if (typeof value === "string" && value.startsWith("eq.")) {
+    return value.slice(3);
   }
-  return val;
+
+  return value;
+}
+
+function parseStoredUser(): any | null {
+  try {
+    const value = localStorage.getItem("currentUser");
+    return value ? JSON.parse(value) : null;
+  } catch {
+    return null;
+  }
+}
+
+function getCurrentTenantId(): string | null {
+  const user = parseStoredUser();
+  const tenantId = user?.tenantId || user?.tenant_id;
+
+  return typeof tenantId === "string" && tenantId.trim()
+    ? tenantId.trim()
+    : null;
+}
+
+function getAuthToken(): string | null {
+  const token = localStorage.getItem("authToken");
+
+  if (!token || token === OFFLINE_TOKEN) {
+    return null;
+  }
+
+  return token;
+}
+
+function hasValidAuth(): boolean {
+  return Boolean(getAuthToken() && parseStoredUser());
+}
+
+function normalizeRole(role: any): "admin" | "trainer" | "trainee" {
+  if (role === "admin" || role === "trainer" || role === "trainee") {
+    return role;
+  }
+
+  return "trainee";
+}
+
+function toAmount(value: unknown): number {
+  const number = parseFloat(
+    String(value ?? "0").replace(/,/g, "").trim()
+  );
+
+  return Number.isFinite(number) ? number : 0;
+}
+
+function normalizeStringArray(value: any): string[] {
+  if (!Array.isArray(value)) return [];
+
+  return value
+    .filter(
+      (item: any) =>
+        typeof item === "string" && item.trim().length > 0
+    )
+    .map((item: string) => item.trim());
 }
 
 // ==========================================
-// SUPABASE FETCH WRAPPER (your fixed version + notDeleted flag)
+// SUPABASE FETCH WRAPPER
 // ==========================================
-export async function sbFetch(table: string, options: Record<string, any> = {}) {
-  // --- PATCH method ---
+
+function applyCommonFilters(
+  query: any,
+  options: Record<string, any>
+) {
+  if (options.id) {
+    query = query.eq("id", stripEq(options.id));
+  }
+
+  if (options.tenant_id) {
+    query = query.eq("tenant_id", stripEq(options.tenant_id));
+  }
+
+  if (options.course_id) {
+    query = query.eq("course_id", stripEq(options.course_id));
+  }
+
+  if (options.user_id) {
+    query = query.eq("user_id", stripEq(options.user_id));
+  }
+
+  if (options.assignment_id) {
+    query = query.eq("assignment_id", stripEq(options.assignment_id));
+  }
+
+  if (options.trainer_id) {
+    query = query.eq("trainer_id", stripEq(options.trainer_id));
+  }
+
+  if (options.notDeleted) {
+    query = query.is("deleted_at", null);
+  }
+
+  return query;
+}
+
+export async function sbFetch(
+  table: string,
+  options: Record<string, any> = {}
+) {
+  // PATCH
   if (options.method === "PATCH" && options.body) {
-    let patchQuery = supabase.from(table).update(JSON.parse(options.body));
-    if (options.id) patchQuery = patchQuery.eq("id", stripEq(options.id));
-    if (options.tenant_id) patchQuery = patchQuery.eq("tenant_id", stripEq(options.tenant_id));
-    if (options.course_id) patchQuery = patchQuery.eq("course_id", stripEq(options.course_id));
-    if (options.user_id) patchQuery = patchQuery.eq("user_id", stripEq(options.user_id));
-    if (options.assignment_id) patchQuery = patchQuery.eq("assignment_id", stripEq(options.assignment_id));
-    if (options.trainer_id) patchQuery = patchQuery.eq("trainer_id", stripEq(options.trainer_id));
-    const { data, error } = await patchQuery;
+    const body =
+      typeof options.body === "string"
+        ? JSON.parse(options.body)
+        : options.body;
+
+    let query: any = supabase.from(table).update(body);
+    query = applyCommonFilters(query, options);
+
+    const { data, error } = await query;
+
     return { data, error };
   }
 
-  // --- DELETE method ---
+  // DELETE
   if (options.method === "DELETE") {
-    let deleteQuery = supabase.from(table).delete();
-    if (options.id) deleteQuery = deleteQuery.eq("id", stripEq(options.id));
-    if (options.tenant_id) deleteQuery = deleteQuery.eq("tenant_id", stripEq(options.tenant_id));
-    if (options.course_id) deleteQuery = deleteQuery.eq("course_id", stripEq(options.course_id));
-    if (options.user_id) deleteQuery = deleteQuery.eq("user_id", stripEq(options.user_id));
-    if (options.assignment_id) deleteQuery = deleteQuery.eq("assignment_id", stripEq(options.assignment_id));
-    if (options.trainer_id) deleteQuery = deleteQuery.eq("trainer_id", stripEq(options.trainer_id));
-    const { data, error } = await deleteQuery;
+    let query: any = supabase.from(table).delete();
+    query = applyCommonFilters(query, options);
+
+    const { data, error } = await query;
+
     return { data, error };
   }
 
-  // --- POST method (insert) ---
+  // POST
   if (options.method === "POST" && options.body) {
-    const { data, error } = await supabase.from(table).insert(JSON.parse(options.body)).select();
+    const body =
+      typeof options.body === "string"
+        ? JSON.parse(options.body)
+        : options.body;
+
+    const { data, error } = await supabase
+      .from(table)
+      .insert(body)
+      .select();
+
     return { data, error };
   }
 
-  // --- SELECT method (default) ---
-  let query = supabase.from(table).select(options.select || "*");
+  // SELECT
+  let query: any = supabase
+    .from(table)
+    .select(options.select || "*");
 
-  if (options.id) query = query.eq("id", stripEq(options.id));
-  if (options.tenant_id) query = query.eq("tenant_id", stripEq(options.tenant_id));
-  if (options.course_id) query = query.eq("course_id", stripEq(options.course_id));
-  if (options.user_id) query = query.eq("user_id", stripEq(options.user_id));
-  if (options.assignment_id) query = query.eq("assignment_id", stripEq(options.assignment_id));
-  if (options.trainer_id) query = query.eq("trainer_id", stripEq(options.trainer_id));
-  if (options.notDeleted) query = query.is("deleted_at", null); // soft-delete aware
-  if (options.limit) query = query.limit(parseInt(options.limit as any));
+  query = applyCommonFilters(query, options);
+
+  if (options.limit) {
+    const limit = parseInt(String(options.limit), 10);
+
+    if (Number.isFinite(limit) && limit > 0) {
+      query = query.limit(limit);
+    }
+  }
 
   const { data, error } = await query;
+
   return { data, error };
 }
 
 // ==========================================
-// BACKEND API (now used ONLY for the settings pull)
+// BACKEND API — SETTINGS ONLY
 // ==========================================
-let periodicPullInterval: ReturnType<typeof setInterval> | null = null;
 
-const API_BASE_URL = import.meta.env.PROD ? "https://medstat-3rxl.onrender.com" : "";
+const API_BASE_URL = import.meta.env.PROD
+  ? "https://medstat-3rxl.onrender.com"
+  : "";
 
 function getAuthHeaders(): Record<string, string> {
-  const token = localStorage.getItem("authToken");
+  const token = getAuthToken();
+
   return {
     "Content-Type": "application/json",
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
   };
 }
 
-function hasValidAuth(): boolean {
-  return !!localStorage.getItem("authToken") && !!localStorage.getItem("currentUser");
-}
-
 async function apiFetch(path: string) {
   if (!hasValidAuth()) {
-    throw new Error("No auth token available - skipping API call");
+    throw new Error("No valid authentication token.");
   }
-  const res = await fetch(`${API_BASE_URL}${path}`, { headers: getAuthHeaders() });
-  if (!res.ok) {
-    if (res.status === 401) throw new Error(`API fetch failed: 401 - Auth token may be expired`);
-    throw new Error(`API fetch failed: ${res.status}`);
+
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    headers: getAuthHeaders(),
+  });
+
+  if (!response.ok) {
+    if (response.status === 401) {
+      throw new Error(
+        "API fetch failed: 401 - Authentication may have expired."
+      );
+    }
+
+    throw new Error(`API fetch failed: ${response.status}`);
   }
-  return res.json();
+
+  return response.json();
 }
 
 // ==========================================
-// 1. REALTIME SYNC (stub, unchanged)
+// 1. SYNC HOOKS
 // ==========================================
+
 export function enableSyncHooks() {
   console.log("Sync hooks enabled (Polling mode).");
 }
 
 // ==========================================
-// 2. PERIODIC PULL (unchanged — now feeds the direct-Supabase pull)
+// 2. PERIODIC PULL
 // ==========================================
-export function startPeriodicPull(ms: number = 15000) {
-  if (periodicPullInterval) clearInterval(periodicPullInterval);
 
-  // Prevent 401 spam by disabling backend polling on the Live Classroom page
+export function startPeriodicPull(ms: number = 15000) {
+  stopPeriodicPull();
+
+  if (typeof window === "undefined") return;
+
   if (window.location.pathname.includes("/trainer/live/")) {
     console.log("Skipping periodic pull on live classroom page.");
     return;
   }
 
   console.log(`Starting periodic pull every ${ms}ms`);
+
   periodicPullInterval = setInterval(async () => {
-    if (!hasValidAuth()) return;
-    const user = JSON.parse(localStorage.getItem("currentUser") || "{}");
-    if (user?.tenantId) {
-      await pullAllTenantData(user.tenantId);
+    if (periodicPullRunning || !hasValidAuth()) return;
+
+    const tenantId = getCurrentTenantId();
+
+    if (!tenantId) return;
+
+    periodicPullRunning = true;
+
+    try {
+      await pullAllTenantData(tenantId);
+    } catch (error) {
+      console.warn("Periodic pull failed:", error);
+    } finally {
+      periodicPullRunning = false;
     }
   }, ms);
 }
@@ -147,64 +301,119 @@ export function stopPeriodicPull() {
   if (periodicPullInterval) {
     clearInterval(periodicPullInterval);
     periodicPullInterval = null;
-    console.log("Stopped periodic pull.");
   }
+
+  console.log("Stopped periodic pull.");
 }
 
 // ==========================================
-// 3. PULL ALL DATA — DIRECT FROM SUPABASE
+// 3. PULL ALL TENANT DATA
 // ==========================================
+
 export async function pullAllTenantData(tenantId: string) {
   if (!hasValidAuth()) {
-    console.log("Skipping pull - not authenticated yet");
+    console.log("Skipping pull - not authenticated.");
     return;
   }
 
-  console.log("Pulling all tenant data directly from Supabase...");
+  const currentTenantId = getCurrentTenantId();
+
+  if (!currentTenantId || currentTenantId !== tenantId) {
+    console.warn("Skipping pull - tenant mismatch.");
+    return;
+  }
+
+  console.log("Pulling tenant data directly from Supabase...");
+
   try {
     const { db } = await import("../database/db");
-    const { getDeletedIds, purgeDeletedFromDexie } = await import("../database/deletedIdsTracker");
+
+    const {
+      getDeletedIds,
+      purgeDeletedFromDexie,
+    } = await import("../database/deletedIdsTracker");
 
     const [usersRes, coursesRes, enrollmentsRes] = await Promise.all([
-      supabase.from("users").select("*").eq("tenant_id", tenantId).is("deleted_at", null),
-      supabase.from("courses").select("*").eq("tenant_id", tenantId).is("deleted_at", null),
-      // If your enrollments table has no tenant_id column, remove that filter
-      supabase.from("enrollments").select("*").eq("tenant_id", tenantId),
+      supabase
+        .from("users")
+        .select("*")
+        .eq("tenant_id", tenantId)
+        .is("deleted_at", null),
+
+      supabase
+        .from("courses")
+        .select("*")
+        .eq("tenant_id", tenantId)
+        .is("deleted_at", null),
+
+      supabase
+        .from("enrollments")
+        .select("*")
+        .eq("tenant_id", tenantId)
+        .is("deleted_at", null),
     ]);
 
     if (usersRes.error) throw usersRes.error;
     if (coursesRes.error) throw coursesRes.error;
     if (enrollmentsRes.error) throw enrollmentsRes.error;
 
-    // Tombstones: never resurrect rows deleted on any device
-    const deletedUserIds = new Set(await getDeletedIds("user"));
-    const deletedCourseIds = new Set(await getDeletedIds("course"));
+    const deletedUserIds = new Set(
+      await getDeletedIds("user")
+    );
 
-    for (const u of usersRes.data || []) {
-      if (deletedUserIds.has(u.id)) continue;
-      // Locally-pending (unsynced) edits win until they are pushed
-      const local: any = await db.users.get(u.id);
-      if (local && local.synced === false) continue;
-      await db.users.put(mapUser(u));
+    const deletedCourseIds = new Set(
+      await getDeletedIds("course")
+    );
+
+    // USERS
+    for (const remoteUser of usersRes.data || []) {
+      if (deletedUserIds.has(remoteUser.id)) continue;
+
+      const localUser: any = await db.users.get(remoteUser.id);
+
+      if (localUser && localUser.synced === false) {
+        continue;
+      }
+
+      await db.users.put(mapUser(remoteUser, localUser));
     }
 
-    for (const c of coursesRes.data || []) {
-      if (deletedCourseIds.has(c.id)) continue;
-      const local: any = await db.courses.get(c.id);
-      if (local && local.synced === false) continue;
-      await db.courses.put(mapCourse(c));
+    // COURSES
+    for (const remoteCourse of coursesRes.data || []) {
+      if (deletedCourseIds.has(remoteCourse.id)) continue;
+
+      const localCourse: any = await db.courses.get(remoteCourse.id);
+
+      if (localCourse && localCourse.synced === false) {
+        continue;
+      }
+
+      await db.courses.put(mapCourse(remoteCourse));
     }
 
-    for (const e of enrollmentsRes.data || []) {
-      const local: any = await db.enrollments.get(e.id);
-      if (local && local.synced === false) continue;
-      await db.enrollments.put(mapEnrollment(e));
+    // ENROLLMENTS
+    for (const remoteEnrollment of enrollmentsRes.data || []) {
+      const localEnrollment: any = await db.enrollments.get(
+        remoteEnrollment.id
+      );
+
+      if (localEnrollment && localEnrollment.synced === false) {
+        continue;
+      }
+
+      await db.enrollments.put(
+        mapEnrollment(remoteEnrollment)
+      );
     }
 
-    try { await purgeDeletedFromDexie(); } catch { /* best effort */ }
+    try {
+      await purgeDeletedFromDexie();
+    } catch (error) {
+      console.warn("Local deletion cleanup failed:", error);
+    }
 
-    // UserManagement already listens for this — makes the 15s pull actually refresh the UI
     window.dispatchEvent(new Event("dataSynced"));
+
     console.log("Tenant data pull complete.");
   } catch (error) {
     console.warn("Pull tenant data failed:", error);
@@ -212,22 +421,26 @@ export async function pullAllTenantData(tenantId: string) {
 }
 
 // ==========================================
-// 4. PULL SETTINGS (unchanged — still backend; switch to a Supabase
-//    settings table later via supabase.from("settings")...maybeSingle())
+// 4. PULL SETTINGS — RENDER BACKEND
 // ==========================================
+
 export async function pullSettings() {
   if (!hasValidAuth()) {
-    console.log("Skipping settings pull - not authenticated yet");
+    console.log("Skipping settings pull - not authenticated.");
     return null;
   }
-  const user = JSON.parse(localStorage.getItem("currentUser") || "{}");
-  const tenantId = user?.tenantId;
+
+  const tenantId = getCurrentTenantId();
+
   if (!tenantId) {
-    console.warn("No tenantId found for settings pull");
+    console.warn("No tenantId found for settings pull.");
     return null;
   }
+
   try {
-    return await apiFetch(`/api/settings/get?tenant_id=${tenantId}`);
+    return await apiFetch(
+      `/api/settings/get?tenant_id=${encodeURIComponent(tenantId)}`
+    );
   } catch (error) {
     console.error("Failed to pull settings:", error);
     return null;
@@ -235,155 +448,367 @@ export async function pullSettings() {
 }
 
 // ==========================================
-// 5. MANUAL SYNC DOWN (unchanged)
+// 5. MANUAL SYNC DOWN
 // ==========================================
-export async function syncDown() {
-  const user = JSON.parse(localStorage.getItem("currentUser") || "{}");
-  if (user?.tenantId) {
-    await pullAllTenantData(user.tenantId);
-  }
-}
 
-// ==========================================
-// 6. PUSH LOCAL DATA TO CLOUD — DIRECT TO SUPABASE
-// ==========================================
-export async function syncUp() {
+export async function syncDown() {
   if (!hasValidAuth()) {
-    console.log("Skipping sync up - not authenticated yet");
+    console.log("Skipping sync down - not authenticated.");
     return;
   }
 
-  console.log("Starting Sync Up (direct to Supabase)...");
-  try {
-    const { db } = await import("../database/db");
-    const localUsers = await db.users.toArray();
-    const usersToSync = localUsers.filter((u: any) => !u.synced && u.role !== "admin");
+  const tenantId = getCurrentTenantId();
 
-    for (const user of usersToSync) {
-      const row = mapUserToRow(user);
-      const { error } = await supabase.from("users").upsert(row, { onConflict: "id" });
-      if (error) {
-        console.warn(`User ${user.id} sync failed:`, error.message);
-        continue; // stays synced:false → retried next cycle
-      }
-
-      // Best-effort enrolment copy (assigned_courses already lives on the row)
-      const assignedCourses: string[] = user.assignedCourses ?? [];
-      if (assignedCourses.length > 0) {
-        try {
-          const rows = assignedCourses.map((courseId) => ({
-            tenant_id: row.tenant_id,
-            user_id: user.id,
-            course_id: courseId,
-            status: "active",
-          }));
-          const { error: enrError } = await supabase
-            .from("enrollments")
-            .upsert(rows, { onConflict: "user_id,course_id" });
-          if (enrError) console.warn("Enrolment copy failed:", enrError.message);
-        } catch (e) {
-          console.warn("Enrolment copy failed:", e);
-        }
-      }
-
-      await db.users.update(user.id, { synced: true });
-    }
-    console.log("Sync Up complete.");
-  } catch (error) {
-    console.error("Sync Up failed:", error);
+  if (tenantId) {
+    await pullAllTenantData(tenantId);
   }
 }
 
 // ==========================================
-// HELPER FUNCTIONS
+// 6. PUSH LOCAL DATA TO SUPABASE
 // ==========================================
-function toAmount(v: unknown): number {
-  const n = parseFloat(String(v ?? "0").replace(/,/g, "").trim());
-  return Number.isFinite(n) ? n : 0;
+
+export async function syncUp() {
+  if (!hasValidAuth()) {
+    console.log("Skipping sync up - not authenticated.");
+    return;
+  }
+
+  if (syncUpRunning) {
+    console.log("Sync Up already running. Skipping duplicate call.");
+    return;
+  }
+
+  syncUpRunning = true;
+
+  console.log("Starting Sync Up (direct to Supabase)...");
+
+  try {
+    const { db } = await import("../database/db");
+
+    const tenantId = getCurrentTenantId();
+
+    if (!tenantId) {
+      console.warn("Sync Up stopped - no tenant ID.");
+      return;
+    }
+
+    const localUsers = await db.users.toArray();
+
+    const usersToSync = localUsers.filter((user) => {
+      const userTenantId = user.tenantId;
+
+      return (
+        !user.synced &&
+        user.role !== "admin" &&
+        userTenantId === tenantId
+      );
+    });
+
+    for (const user of usersToSync) {
+      try {
+        const row = mapUserToRow(user, tenantId);
+
+        const { error: userError } = await supabase
+          .from("users")
+          .upsert(row, { onConflict: "id" });
+
+        if (userError) {
+          console.warn(
+            `User ${user.id} sync failed:`,
+            userError.message
+          );
+          continue;
+        }
+
+        // Local User type uses assignedCourses.
+        const assignedCourses = normalizeStringArray(
+          user.assignedCourses
+        );
+
+        let enrollmentSyncFailed = false;
+
+        if (assignedCourses.length > 0) {
+          const enrollmentRole =
+            user.role === "trainer" ? "trainer" : "trainee";
+
+          const enrollmentRows = assignedCourses.map((courseId) => ({
+            tenant_id: tenantId,
+            user_id: user.id,
+            course_id: courseId,
+            role: enrollmentRole,
+            status: "active",
+            deleted_at: null,
+          }));
+
+          const { error: enrollmentError } = await supabase
+            .from("enrollments")
+            .upsert(enrollmentRows, {
+              onConflict: "user_id,course_id",
+            });
+
+          if (enrollmentError) {
+            enrollmentSyncFailed = true;
+
+            console.warn(
+              `Enrollment sync failed for user ${user.id}:`,
+              enrollmentError.message
+            );
+          }
+        }
+
+        if (!enrollmentSyncFailed) {
+          await db.users.update(user.id, {
+            synced: true,
+          });
+        }
+      } catch (error) {
+        console.warn(
+          `Failed to sync user ${user.id}:`,
+          error
+        );
+      }
+    }
+
+    console.log("Sync Up complete.");
+  } catch (error) {
+    console.error("Sync Up failed:", error);
+  } finally {
+    syncUpRunning = false;
+  }
 }
 
-// Dexie (camelCase) → public.users row (snake_case).
-// Empty phone → NULL so the partial unique index uniq_user_phone_active
-// can't collide on '' between two phone-less users.
-function mapUserToRow(u: any) {
+// ==========================================
+// 7. MAP LOCAL USER TO SUPABASE ROW
+// ==========================================
+
+function mapUserToRow(user: any, tenantId: string) {
+  const assignedCourses = normalizeStringArray(
+    user.assignedCourses
+  );
+
+  const assignedDepartments = normalizeStringArray(
+    user.assignedDepartments
+  );
+
   return {
-    id: u.id,
-    tenant_id: u.tenantId || u.tenant_id || "",
-    username: u.username,
-    phone: u.phone?.trim() ? u.phone.trim() : null,
-    email: u.email?.trim() ? u.email.trim() : null,
-    password: u.password || "",
-    role: u.role || "trainee",
-    assigned_courses: u.assignedCourses ?? [],
-    profile_pic: u.profilePic || null,
+    id: user.id,
+    tenant_id: tenantId,
+
+    username: String(user.username || "").trim(),
+
+    phone: user.phone?.trim()
+      ? user.phone.trim()
+      : null,
+
+    email: user.email?.trim()
+      ? user.email.trim()
+      : null,
+
+    password: user.password || "",
+
+    role: normalizeRole(user.role),
+
+    assigned_courses: assignedCourses,
+
+    // Exact quoted SQL column name.
+    assignedDepartments,
+
+    profile_pic:
+      user.profilePic ||
+      null,
+
     tuition: {
-      expected: toAmount(u.tuition?.expected),
-      paid: toAmount(u.tuition?.paid),
+      expected: toAmount(user.tuition?.expected),
+      paid: toAmount(user.tuition?.paid),
     },
+
     remuneration: {
-      net_salary: toAmount(u.remuneration?.netSalary),
-      per_diem: toAmount(u.remuneration?.perDiem),
+      net_salary: toAmount(
+        user.remuneration?.netSalary
+      ),
+
+      per_diem: toAmount(
+        user.remuneration?.perDiem
+      ),
     },
+
     synced: true,
   };
 }
 
-// Remote → Dexie. Shape matches mapUserFromSupabase in UserManagement.tsx so
-// both pull paths write identical records.
-function mapUser(u: any) {
-  const tuition = u.tuition || {};
-  const remuneration = u.remuneration || {};
+// ==========================================
+// 8. MAP SUPABASE USER TO DEXIE
+// ==========================================
+
+function mapUser(remoteUser: any, localUser?: any) {
+  const tuition = remoteUser.tuition || {};
+  const remuneration = remoteUser.remuneration || {};
+
   return {
-    ...u, // keeps password, assignedDepartments, etc.
-    username: u.username,
-    email: u.email || "",
-    phone: u.phone || "",
-    password: u.password || "",
-    role: u.role || "trainee",
-    profilePic: u.profile_pic || u.profilePic || "",
-    assignedCourses: u.assigned_courses || u.assignedCourses || [],
-    tenantId: u.tenant_id || u.tenantId,
-    createdAt: u.created_at || u.createdAt || "",
-    // jsonb fields — the old version dropped these, so every 15s pull
-    // REPLACED the Dexie record and wiped tuition/remuneration
-    tuition: { expected: tuition.expected ?? 0, paid: tuition.paid ?? 0 },
+    ...localUser,
+    ...remoteUser,
+
+    id: remoteUser.id,
+
+    username: remoteUser.username || "",
+
+    email: remoteUser.email || "",
+
+    phone: remoteUser.phone || "",
+
+    password: remoteUser.password || "",
+
+    role: normalizeRole(remoteUser.role),
+
+    profilePic:
+      remoteUser.profile_pic ||
+      remoteUser.profilePic ||
+      localUser?.profilePic ||
+      "",
+
+    assignedCourses: normalizeStringArray(
+      remoteUser.assigned_courses ??
+      remoteUser.assignedCourses
+    ),
+
+    assignedDepartments: normalizeStringArray(
+      remoteUser.assignedDepartments ??
+      remoteUser.assigned_departments ??
+      localUser?.assignedDepartments
+    ),
+
+    tenantId:
+      remoteUser.tenant_id ||
+      remoteUser.tenantId ||
+      localUser?.tenantId,
+
+    createdAt:
+      remoteUser.created_at ||
+      remoteUser.createdAt ||
+      localUser?.createdAt ||
+      "",
+
+    tuition: {
+      expected: tuition.expected ?? 0,
+      paid: tuition.paid ?? 0,
+    },
+
     remuneration: {
-      netSalary: remuneration.net_salary ?? remuneration.netSalary ?? 0,
-      perDiem: remuneration.per_diem ?? remuneration.perDiem ?? 0,
+      netSalary:
+        remuneration.net_salary ??
+        remuneration.netSalary ??
+        0,
+
+      perDiem:
+        remuneration.per_diem ??
+        remuneration.perDiem ??
+        0,
     },
-    paymentHistory: u.payment_history || u.paymentHistory || [],
-    remunerationHistory: u.remuneration_history || u.remunerationHistory || [],
+
+    // These history fields are not columns in the supplied SQL.
+    // Keep local values rather than replacing them with empty arrays.
+    paymentHistory:
+      localUser?.paymentHistory ??
+      remoteUser.paymentHistory ??
+      [],
+
+    remunerationHistory:
+      localUser?.remunerationHistory ??
+      remoteUser.remunerationHistory ??
+      [],
+
     synced: true,
   };
 }
 
-function mapCourse(c: any) {
+// ==========================================
+// 9. MAP SUPABASE COURSE TO DEXIE
+// ==========================================
+
+function mapCourse(course: any) {
   return {
-    ...c,
-    name: c.name || "",
-    description: c.description || "",
-    tuitionType: c.tuition_type || c.tuitionType || "free",
-    amount: c.amount ?? 0,
-    startDate: c.start_date || c.startDate || "",
-    period: c.period || "",
-    trainerId: c.trainer_id || c.trainerId || "",
-    mediaUrl: c.logo || c.mediaUrl || "",
-    tenantId: c.tenant_id || c.tenantId,
-    createdAt: c.created_at || c.createdAt || "",
+    ...course,
+
+    name: course.name || "",
+
+    description: course.description || "",
+
+    tuitionType:
+      course.tuition_type ||
+      course.tuitionType ||
+      "free",
+
+    amount: course.amount ?? 0,
+
+    startDate:
+      course.start_date ||
+      course.startDate ||
+      "",
+
+    period: course.period || "",
+
+    trainerId:
+      course.trainer_id ||
+      course.trainerId ||
+      "",
+
+    mediaUrl:
+      course.logo ||
+      course.mediaUrl ||
+      "",
+
+    tenantId:
+      course.tenant_id ||
+      course.tenantId,
+
+    createdAt:
+      course.created_at ||
+      course.createdAt ||
+      "",
+
     synced: true,
   };
 }
 
-function mapEnrollment(e: any) {
+// ==========================================
+// 10. MAP SUPABASE ENROLLMENT TO DEXIE
+// ==========================================
+
+function mapEnrollment(enrollment: any) {
   return {
-    ...e,
-    userId: e.user_id || e.userId || "",
-    courseId: e.course_id || e.courseId || "",
-    tenantId: e.tenant_id || e.tenantId,
-    status: e.status || "active",
-    role: e.role || "trainee",
-    enrolledAt: e.enrolled_at || e.enrolledAt || "",
-    createdAt: e.created_at || e.createdAt || "",
+    ...enrollment,
+
+    id: enrollment.id,
+
+    userId:
+      enrollment.user_id ||
+      enrollment.userId ||
+      "",
+
+    courseId:
+      enrollment.course_id ||
+      enrollment.courseId ||
+      "",
+
+    tenantId:
+      enrollment.tenant_id ||
+      enrollment.tenantId,
+
+    status: enrollment.status || "active",
+
+    role: enrollment.role || "trainee",
+
+    enrolledAt:
+      enrollment.enrolled_at ||
+      enrollment.enrolledAt ||
+      "",
+
+    createdAt:
+      enrollment.created_at ||
+      enrollment.createdAt ||
+      "",
+
     synced: true,
   };
 }

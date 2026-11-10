@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import type { CSSProperties, InputHTMLAttributes, ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { Navigate, useLocation } from "react-router-dom";
 import { loginUser, addUser } from "../database/userDB";
 import { loginTenant } from "../api/authApi";
@@ -222,10 +222,9 @@ function SafeLogo({
 }
 
 /* ============ BRANDING APP BAR (login screens) ============
-   Professional glass bar — LEFT: back chevron + logo + business name + phone;
-   RIGHT: email + address stack (hides below 481px). Safe-area aware for
-   notched phones; translucency + blur keeps it feeling native over brand
-   panels and photo backgrounds alike. */
+   Balanced MD3 top bar — LEFT: back chevron + logo + business name + phone;
+   RIGHT: email + address stack. No avatar, no menu. The right stack hides on
+   very narrow screens. Fixed to the top while the card scrolls underneath. */
 function StartupAppBar({
   logo,
   name,
@@ -243,38 +242,149 @@ function StartupAppBar({
 }) {
   const contactRow = (icon: string, text: string, key: string) =>
     text ? (
-      <div key={key} className="st-barcontact">
-        <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill={C.onSurfaceVariant} style={{ flexShrink: 0 }}>
+      <div
+        key={key}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "flex-end",
+          gap: 6,
+          minWidth: 0,
+          maxWidth: "100%",
+        }}
+      >
+        <svg
+          width="12"
+          height="12"
+          viewBox="0 0 24 24"
+          fill={C.onSurfaceVariant}
+          style={{ flexShrink: 0 }}
+        >
           <path d={icon} />
         </svg>
-        <span className="st-barcontact-text">{text}</span>
+        <span
+          style={{
+            fontSize: 12,
+            lineHeight: 1.2,
+            color: C.onSurfaceVariant,
+            letterSpacing: "0.01em",
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            textAlign: "right",
+          }}
+        >
+          {text}
+        </span>
       </div>
     ) : null;
 
   return (
-    <header className="st-appbar">
-      <div className="st-appbar-inner">
+    <header
+      style={{
+        position: "fixed",
+        top: 0,
+        left: 0,
+        right: 0,
+        zIndex: 20,
+        background: C.surface,
+        borderBottom: `1px solid ${C.outline}`,
+        boxShadow: "0 1px 2px rgba(60,64,67,0.12), 0 2px 6px 2px rgba(60,64,67,0.06)",
+      }}
+    >
+      <div
+        style={{
+          width: "100%",
+          minHeight: 64,
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+          padding: "8px 8px",
+          boxSizing: "border-box",
+        }}
+      >
         {onBack && (
-          <button onClick={onBack} aria-label="Back" className="st-appbar-back">
+          <button
+            onClick={onBack}
+            aria-label="Back"
+            style={{
+              width: 44,
+              height: 44,
+              flexShrink: 0,
+              marginLeft: -4,
+              borderRadius: "50%",
+              border: "none",
+              background: "transparent",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: C.onSurface,
+            }}
+          >
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
               <polyline points="15 18 9 12 15 6" />
             </svg>
           </button>
         )}
 
-        <SafeLogo src={logo} name={name || undefined} size={42} radius={12} centered={false} />
+        {/* LEFT — identity: logo tile + business name + phone */}
+        <SafeLogo src={logo} name={name || undefined} size={44} radius={12} centered={false} />
         <div style={{ flex: "1 1 0", minWidth: 0 }}>
-          <div className="st-appbar-name">{name || "Welcome"}</div>
+          <div
+            style={{
+              fontSize: "clamp(16px, 4.2vw, 19px)",
+              fontWeight: 500,
+              color: C.onSurface,
+              lineHeight: 1.25,
+              letterSpacing: "-0.01em",
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              textAlign: "left",
+            }}
+          >
+            {name || "Welcome"}
+          </div>
           {phone && (
-            <div className="st-appbar-phone">
-              <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill={C.onSurfaceVariant} style={{ flexShrink: 0 }}>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 5,
+                marginTop: 2,
+                minWidth: 0,
+              }}
+            >
+              <svg
+                width="12"
+                height="12"
+                viewBox="0 0 24 24"
+                fill={C.onSurfaceVariant}
+                style={{ flexShrink: 0 }}
+              >
                 <path d={PHONE_ICON} />
               </svg>
-              <span>{phone}</span>
+              <span
+                style={{
+                  fontSize: 12,
+                  lineHeight: 1.2,
+                  color: C.onSurfaceVariant,
+                  letterSpacing: "0.01em",
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  textAlign: "left",
+                }}
+              >
+                {phone}
+              </span>
             </div>
           )}
         </div>
 
+        {/* RIGHT — email + address; visibility is controlled by the
+            stylesheet (.appbar-contact flexes on ≥481px, hides below) */}
         {(email || address) && (
           <div className="appbar-contact">
             {contactRow(EMAIL_ICON, email, "bar-email")}
@@ -341,7 +451,6 @@ function MD3Button({
   const inactive = disabled || loading;
   return (
     <button
-      className="st-btn"
       type={type}
       disabled={inactive}
       style={{
@@ -387,87 +496,6 @@ function MD3Button({
   );
 }
 
-/* ============ PROFESSIONAL FORM PRIMITIVES ============ */
-
-const PERSON_ICON =
-  "M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z";
-
-const LOCK_ICON =
-  "M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z";
-
-const EYE_ICON =
-  "M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z";
-
-const EYE_OFF_ICON =
-  "M12 7c2.76 0 5 2.24 5 5 0 .65-.13 1.26-.36 1.83l2.92 2.92c1.51-1.26 2.7-2.89 3.43-4.75-1.73-4.39-6-7.5-11-7.5-1.4 0-2.74.25-3.98.7l2.16 2.16C10.74 7.13 11.35 7 12 7zM2 4.27l2.28 2.28.46.46C3.08 8.3 1.78 10.02 1 12c1.73 4.39 6 7.5 11 7.5 1.55 0 3.03-.3 4.38-.84l.42.42L19.73 22 21 20.73 3.27 3 2 4.27zM7.53 9.8l1.55 1.55c-.05.21-.08.43-.08.65 0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.55 1.55c-.67.33-1.41.53-2.2.53-2.76 0-5-2.24-5-5 0-.79.2-1.53.53-2.2zm4.31-.78l3.15 3.15.02-.16c0-1.66-1.34-3-3-3l-.17.01z";
-
-const WARN_ICON = "M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z";
-
-/** Input with optional leading icon and trailing slot (eye toggle). */
-function Field({
-  label,
-  icon,
-  rightSlot,
-  ...rest
-}: {
-  label?: string;
-  icon?: string;
-  rightSlot?: ReactNode;
-} & InputHTMLAttributes<HTMLInputElement>) {
-  return (
-    <label className="st-field">
-      {label ? <span className="st-field-label">{label}</span> : null}
-      <span className="st-field-box">
-        {icon && (
-          <svg className="st-field-ico" aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill={C.onSurfaceVariant}>
-            <path d={icon} />
-          </svg>
-        )}
-        <input className="md3-input" style={icon ? { paddingLeft: 46 } : undefined} {...rest} />
-        {rightSlot}
-      </span>
-    </label>
-  );
-}
-
-/** Password field with a self-contained visibility toggle. */
-function PasswordField({ label, ...rest }: { label?: string } & InputHTMLAttributes<HTMLInputElement>) {
-  const [show, setShow] = useState(false);
-  return (
-    <Field
-      label={label}
-      icon={LOCK_ICON}
-      type={show ? "text" : "password"}
-      rightSlot={
-        <button
-          type="button"
-          tabIndex={-1}
-          className="st-field-eye"
-          aria-label={show ? "Hide password" : "Show password"}
-          onClick={() => setShow((s) => !s)}
-        >
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
-            <path d={show ? EYE_OFF_ICON : EYE_ICON} />
-          </svg>
-        </button>
-      }
-      {...rest}
-    />
-  );
-}
-
-/** Inline error alert — replaces bare red text with an app-grade callout. */
-function ErrorAlert({ children }: { children: ReactNode }) {
-  return (
-    <div className="st-alert" role="alert">
-      <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style={{ flexShrink: 0, marginTop: 1 }}>
-        <path d={WARN_ICON} />
-      </svg>
-      <span>{children}</span>
-    </div>
-  );
-}
-
 type AppScreen = "main" | "login" | "admin_sms" | "admin_otp" | "admin_register";
 
 const AuthLayout = ({
@@ -489,178 +517,57 @@ const AuthLayout = ({
   showBack?: boolean;
   onBack?: () => void;
   watermark?: boolean;
-  /** When provided, a glass branding bar (logo + business name + contacts)
+  /** When provided, a white branding bar (logo + business name + contacts)
    *  is pinned to the top and the back chevron moves into the bar. */
   appBar?: { logo: string; name: string; phone: string; email: string; address: string };
 }) => (
   <div
-    className="st-root"
-    style={
-      watermark
-        ? { background: "#FFFFFF" }
+    style={{
+      width: "100%",
+      height: "100vh",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundImage: watermark
+        ? "none"
         : background
-        ? {
-            backgroundImage: `url("${cssUrl(background)}")`,
-            backgroundSize: "cover",
-            backgroundPosition: "center",
-            backgroundColor: "#F8F9FA",
-          }
-        : undefined
-    }
+        ? `url("${cssUrl(background)}")`
+        : "linear-gradient(180deg, #F8F9FA 0%, #E3EEFC 100%)",
+      backgroundSize: watermark ? "auto" : "cover",
+      backgroundPosition: "center",
+      backgroundColor: watermark ? "#FFFFFF" : "#F8F9FA",
+      fontFamily: font,
+      overflowX: "hidden",
+      overflowY: "auto",
+      position: "relative",
+      padding: appBar ? "88px 24px 24px" : 24,
+      boxSizing: "border-box",
+    }}
   >
     <style>{`
-      @keyframes fadeUp { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: none; } }
-      @keyframes scrollBg { 0% { background-position: 0px 0px; } 100% { background-position: 120px 120px; } }
+      @keyframes fadeUp {
+        from { opacity: 0; transform: translateY(16px); }
+        to   { opacity: 1; transform: none; }
+      }
+      @keyframes scrollBg {
+        0%   { background-position: 0px 0px; }
+        100% { background-position: 120px 120px; }
+      }
       @keyframes md3Slide { from { left: -40%; } to { left: 100%; } }
       @keyframes md3Flow { from { background-position: 0% 50%; } to { background-position: 150% 50%; } }
       @keyframes md3Spin { to { transform: rotate(360deg); } }
-
-      .st-root {
-        width: 100%;
-        min-height: 100vh;
-        font-family: ${font};
-        background: linear-gradient(180deg, #F8F9FA 0%, #E3EEFC 100%);
-        overflow-x: hidden;
-        position: relative;
-        box-sizing: border-box;
+      .md3-input:focus {
+        border-color: ${C.primary} !important;
+        box-shadow: 0 0 0 3px rgba(26,115,232,0.14) !important;
+        outline: none;
       }
-      @supports (height: 100dvh) { .st-root { min-height: 100dvh; } }
-
-      /* --- App bar --- */
-      .st-appbar {
-        position: fixed; top: 0; left: 0; right: 0; z-index: 20;
-        background: rgba(255,255,255,0.88);
-        -webkit-backdrop-filter: saturate(1.5) blur(12px);
-        backdrop-filter: saturate(1.5) blur(12px);
-        border-bottom: 1px solid ${C.outline};
-        box-shadow: 0 1px 2px rgba(60,64,67,0.08);
-        padding-top: env(safe-area-inset-top);
-      }
-      .st-appbar-inner {
-        max-width: 1160px; margin: 0 auto; width: 100%;
-        min-height: 64px; display: flex; align-items: center; gap: 12px;
-        padding: 8px clamp(12px, 3vw, 28px); box-sizing: border-box;
-      }
-      .st-appbar-back {
-        width: 42px; height: 42px; flex-shrink: 0; margin-left: -6px;
-        border-radius: 50%; border: none; background: transparent; cursor: pointer;
-        display: flex; align-items: center; justify-content: center; color: ${C.onSurface};
-      }
-      .st-appbar-back:hover { background: rgba(32,33,36,0.06); }
-      .st-appbar-name {
-        font-size: clamp(15px, 4.2vw, 18px); font-weight: 500; color: ${C.onSurface};
-        line-height: 1.25; letter-spacing: -0.01em;
-        white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: left;
-      }
-      .st-appbar-phone {
-        display: flex; align-items: center; gap: 5px; margin-top: 2px; min-width: 0;
-        font-size: 12px; line-height: 1.2; color: ${C.onSurfaceVariant};
-        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-      }
-      .st-barcontact {
-        display: flex; align-items: center; justify-content: flex-end; gap: 6px; min-width: 0; max-width: 100%;
-      }
-      .st-barcontact-text {
-        font-size: 12px; line-height: 1.2; color: ${C.onSurfaceVariant}; letter-spacing: 0.01em;
-        white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: right;
-      }
-      .appbar-contact { display: none; flex-direction: column; align-items: flex-end; gap: 3px; max-width: 42%; min-width: 0; }
-      @media (min-width: 481px) { .appbar-contact { display: flex; } }
-
-      /* --- Layouts --- */
-      .st-centerwrap {
-        position: relative; z-index: 1;
-        display: flex; align-items: center; justify-content: center;
-        padding: calc(84px + env(safe-area-inset-top)) clamp(14px, 4vw, 48px) clamp(52px, 9vh, 80px);
-        box-sizing: border-box;
-        min-height: 100vh; min-height: 100dvh;
-      }
-      .st-card {
-        width: 100%; max-width: 432px;
-        background: ${C.surface};
-        border-radius: 24px;
-        padding: clamp(26px, 5vw, 38px) clamp(20px, 5vw, 30px) clamp(24px, 4vw, 30px);
-        box-shadow: 0 1px 3px rgba(60,64,67,0.30), 0 4px 8px 3px rgba(60,64,67,0.15);
-        animation: fadeUp 0.35s cubic-bezier(0.2, 0, 0, 1);
-        box-sizing: border-box; text-align: center; position: relative;
-      }
-      .st-watermark {
-        position: absolute; top: 0; left: 0; right: 0; bottom: 0;
-        background-repeat: repeat; background-size: 120px 120px;
-        opacity: 0.08; animation: scrollBg 30s linear infinite;
-        z-index: 0; pointer-events: none;
-      }
-      .st-bgwash {
-        position: absolute; top: 0; left: 0; right: 0; bottom: 0;
-        background: linear-gradient(180deg, rgba(248,249,250,0.48) 0%, rgba(227,238,252,0.66) 100%);
-        z-index: 0; pointer-events: none;
-      }
-      .st-version {
-        position: absolute; bottom: 14px; left: 0; right: 0;
-        text-align: center; color: ${C.onSurfaceVariant}; font-size: 12px;
-        z-index: 10; pointer-events: none;
-        padding-bottom: env(safe-area-inset-bottom);
-      }
-
-      /* --- Form primitives --- */
-      .st-field { display: block; width: 100%; margin-bottom: 14px; text-align: left; }
-      .st-field-label {
-        display: block; font-size: 13px; font-weight: 500; color: ${C.onSurfaceVariant};
-        margin: 0 2px 6px; letter-spacing: 0.01em;
-      }
-      .st-field-box { position: relative; display: block; }
-      .st-field-box .md3-input {
-        width: 100%; height: 52px; padding: 0 16px;
-        border: 1px solid ${C.outline}; border-radius: 12px;
-        background: #FFFFFF; font-size: 16px; color: ${C.onSurface};
-        box-sizing: border-box; font-family: ${font}; outline: none;
-        transition: border-color 0.15s ease, box-shadow 0.15s ease;
-      }
-      .st-field-box .md3-input:focus { border-color: ${C.primary} !important; box-shadow: 0 0 0 3px rgba(26,115,232,0.14) !important; }
-      .st-field-box .md3-input::placeholder { color: #80868B; }
-      .st-field-ico { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); pointer-events: none; }
-      .st-field-eye {
-        position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
-        width: 40px; height: 40px; border: none; background: transparent; border-radius: 50%;
-        cursor: pointer; display: flex; align-items: center; justify-content: center;
-        color: ${C.onSurfaceVariant};
-      }
-      .st-field-eye:hover { background: rgba(32,33,36,0.06); }
-      .st-alert {
-        display: flex; align-items: flex-start; gap: 8px;
-        background: #FCE8E6; color: #B3261E;
-        border-radius: 10px; padding: 10px 12px; margin: 0 0 12px;
-        font-size: 13px; line-height: 1.45; text-align: left;
-        animation: fadeUp 0.2s ease;
-      }
-
-      /* --- Buttons --- */
-      .st-btn:not(:disabled):hover { box-shadow: 0 2px 6px 2px rgba(60,64,67,0.18), 0 1px 2px rgba(60,64,67,0.30) !important; }
-      .st-btn:not(:disabled):active { transform: scale(0.985); }
-
-      /* --- Extended FAB --- */
-      .st-fab {
-        position: fixed; right: 18px;
-        bottom: max(18px, env(safe-area-inset-bottom));
-        width: 56px; height: 56px; padding: 0; border-radius: 16px; border: none;
-        background: ${C.primaryContainer}; color: ${C.onPrimaryContainer};
-        box-shadow: 0 3px 6px rgba(60,64,67,0.24), 0 1px 2px rgba(60,64,67,0.30);
-        cursor: pointer; display: flex; align-items: center; justify-content: center;
-        z-index: 100;
-        transition: transform 0.15s ease, box-shadow 0.15s ease;
-      }
-      .st-fab:hover { transform: scale(1.04); box-shadow: 0 6px 14px rgba(60,64,67,0.28), 0 2px 4px rgba(60,64,67,0.32); }
-      .st-fab:active { transform: scale(0.97); }
-
+      .md3-input::placeholder { color: #80868B; }
       input:-webkit-autofill { -webkit-box-shadow: 0 0 0 1000px #FFFFFF inset; -webkit-text-fill-color: #202124; }
-
-      @media (max-width: 480px) {
-        .st-card { border-radius: 20px; }
-        .st-fab { right: 14px; }
-      }
-      @media (prefers-reduced-motion: reduce) {
-        .st-card, .st-alert { animation: none; }
-        .st-watermark { animation: none; }
+      /* App bar balance: logo + business name + phone on the LEFT, email +
+         address stack on the RIGHT (stack hides on very narrow screens) */
+      .appbar-contact { display: none; flex-direction: column; align-items: flex-end; gap: 2px; max-width: 42%; min-width: 0; }
+      @media (min-width: 481px) {
+        .appbar-contact { display: flex; }
       }
     `}</style>
 
@@ -676,19 +583,109 @@ const AuthLayout = ({
     )}
 
     {watermark && (
-      <div className="st-watermark" style={{ backgroundImage: logo ? `url("${cssUrl(logo)}")` : "none" }} />
+      <div
+        style={{
+          position: "absolute",
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundImage: logo ? `url("${cssUrl(logo)}")` : "none",
+          backgroundRepeat: "repeat",
+          backgroundSize: "120px 120px",
+          opacity: 0.08,
+          animation: "scrollBg 30s linear infinite",
+          zIndex: 0,
+          pointerEvents: "none",
+        }}
+      />
     )}
 
-    {!watermark && background && <div className="st-bgwash" aria-hidden="true" />}
+    {/* Light wash so the white card + logo always stay readable over the photo */}
+    {!watermark && background && (
+      <div
+        aria-hidden="true"
+        style={{
+          position: "absolute",
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background:
+            "linear-gradient(180deg, rgba(248,249,250,0.48) 0%, rgba(227,238,252,0.66) 100%)",
+          zIndex: 0,
+          pointerEvents: "none",
+        }}
+      />
+    )}
 
-    <div className="st-centerwrap">
-      <div className="st-card">
-        {logo && !appBar && <SafeLogo src={logo} name={logoName} size={88} radius={22} />}
-        {children}
-      </div>
+    {showBack && onBack && !appBar && (
+      <button
+        onClick={onBack}
+        aria-label="Back"
+        style={{
+          position: "absolute",
+          top: 20,
+          left: 20,
+          width: 44,
+          height: 44,
+          borderRadius: "50%",
+          background: "#FFFFFF",
+          border: `1px solid ${C.outline}`,
+          boxShadow: "0 1px 2px rgba(60,64,67,0.18)",
+          cursor: "pointer",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          color: C.onSurface,
+          zIndex: 10,
+        }}
+      >
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="15 18 9 12 15 6" />
+        </svg>
+      </button>
+    )}
+
+    <div
+      style={{
+        position: "relative",
+        zIndex: 1,
+        width: "100%",
+        maxWidth: 420,
+        background: C.surface,
+        borderRadius: 28,
+        padding: "36px 28px 30px",
+        boxShadow: "0 1px 3px rgba(60,64,67,0.30), 0 4px 8px 3px rgba(60,64,67,0.15)",
+        animation: "fadeUp 0.35s cubic-bezier(0.2, 0, 0, 1)",
+        boxSizing: "border-box",
+        textAlign: "center",
+      }}
+    >
+      {/* Card logo only when there is NO app bar (lookup screen) — on
+          app-bar screens the logo lives in the bar, not in the body */}
+      {logo && !appBar && <SafeLogo src={logo} name={logoName} size={88} radius={22} />}
+      {children}
     </div>
 
-    {version && <div className="st-version">Version {version}</div>}
+    {version && (
+      <div
+        style={{
+          position: "absolute",
+          bottom: 18,
+          left: 0,
+          right: 0,
+          textAlign: "center",
+          color: C.onSurfaceVariant,
+          fontSize: 12,
+          fontFamily: font,
+          zIndex: 10,
+          pointerEvents: "none",
+        }}
+      >
+        Version {version}
+      </div>
+    )}
   </div>
 );
 
@@ -1021,12 +1018,28 @@ export default function Startup() {
     return <Navigate to={redirectRoute} replace />;
   }
 
+  const inputStyle: CSSProperties = {
+    width: "100%",
+    height: 54,
+    padding: "0 16px",
+    border: `1px solid ${C.outline}`,
+    outline: "none",
+    background: C.surface,
+    fontSize: 16,
+    color: C.onSurface,
+    boxSizing: "border-box",
+    borderRadius: 12,
+    marginBottom: 12,
+    fontFamily: font,
+    transition: "border-color 0.15s ease, box-shadow 0.15s ease",
+  };
+
   const h1Style: CSSProperties = {
     textAlign: "center",
-    fontSize: "clamp(21px, 5vw, 24px)",
-    fontWeight: 600,
+    fontSize: 24,
+    fontWeight: 500,
     color: C.onSurface,
-    letterSpacing: "-0.015em",
+    letterSpacing: "-0.01em",
     margin: "0 0 8px",
     fontFamily: font,
   };
@@ -1035,8 +1048,17 @@ export default function Startup() {
     textAlign: "center",
     fontSize: 14,
     color: C.onSurfaceVariant,
-    margin: "0 0 22px",
+    margin: "0 0 24px",
     lineHeight: 1.5,
+    fontFamily: font,
+  };
+
+  const errStyle: CSSProperties = {
+    textAlign: "center",
+    color: C.error,
+    fontSize: 13.5,
+    margin: "0 0 12px",
+    lineHeight: 1.45,
     fontFamily: font,
   };
 
@@ -1085,17 +1107,20 @@ export default function Startup() {
           }}
           style={{ width: "100%" }}
         >
-          <PasswordField
+          <input
+            type="password"
+            className="md3-input"
             placeholder="Enter Password"
             value={password}
             onChange={(e) => {
               setPassword(e.target.value);
               setMessage("");
             }}
+            style={inputStyle}
             autoFocus
             autoComplete="current-password"
           />
-          {message && <ErrorAlert>{message}</ErrorAlert>}
+          {message && <p style={errStyle}>{message}</p>}
           <TopLoader show={loading} />
           <MD3Button type="submit" loading={loading} loadingLabel="Signing in…" disabled={!password}>
             Unlock
@@ -1135,26 +1160,30 @@ export default function Startup() {
           }}
           style={{ width: "100%" }}
         >
-          <Field
-            icon={PERSON_ICON}
-            placeholder="Username"
+          <input
             name="username"
+            className="md3-input"
+            placeholder="Username"
             value={username}
             onChange={(e) => setUsername(e.target.value)}
+            style={inputStyle}
             autoFocus
             autoComplete="username"
             autoCapitalize="none"
             autoCorrect="off"
             spellCheck={false}
           />
-          <PasswordField
-            placeholder="Password"
+          <input
+            type="password"
             name="password"
+            className="md3-input"
+            placeholder="Password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
+            style={inputStyle}
             autoComplete="current-password"
           />
-          {message && <ErrorAlert>{message}</ErrorAlert>}
+          {message && <p style={errStyle}>{message}</p>}
           <TopLoader show={loading} />
           <MD3Button type="submit" loading={loading} loadingLabel="Signing in…">
             Login
@@ -1165,7 +1194,7 @@ export default function Startup() {
   }
 
   return (
-    <div style={{ position: "relative", width: "100%", minHeight: "100vh" }}>
+    <div style={{ position: "relative", width: "100%", height: "100vh" }}>
       <AuthLayout watermark logo={branding?.logo || ""} version={appVersion}>
         <h1 style={h1Style}>Welcome</h1>
         <p style={subStyle}>Enter your institution to continue</p>
@@ -1176,22 +1205,23 @@ export default function Startup() {
           }}
           style={{ width: "100%" }}
         >
-          <Field
-            icon={BRIEFCASE_ICON}
-            placeholder="Enter Institution Name"
+          <input
             type="text"
+            className="md3-input"
+            placeholder="Enter Institution Name"
             value={businessName}
             onChange={(e) => {
               setBusinessName(e.target.value);
               setLookupError("");
             }}
+            style={inputStyle}
             autoFocus
             autoComplete="organization"
             autoCapitalize="none"
             autoCorrect="off"
             spellCheck={false}
           />
-          {lookupError && <ErrorAlert>{lookupError}</ErrorAlert>}
+          {lookupError && <p style={errStyle}>{lookupError}</p>}
           <TopLoader show={lookupLoading} />
           <MD3Button type="submit" loading={lookupLoading} loadingLabel="Finding…" disabled={!businessName.trim()}>
             Continue
@@ -1199,14 +1229,39 @@ export default function Startup() {
         </form>
       </AuthLayout>
 
-      {/* MD3 extended FAB — labelled so the action is discoverable */}
+      {/* MD3 FAB — primary container tone, rounded-square */}
       <button
-        className="st-fab"
         onClick={handleStartAdminRegister}
+        style={{
+          position: "fixed",
+          right: 24,
+          bottom: 24,
+          width: 56,
+          height: 56,
+          borderRadius: 16,
+          border: "none",
+          background: C.primaryContainer,
+          color: C.onPrimaryContainer,
+          boxShadow: "0 3px 6px rgba(60,64,67,0.24), 0 1px 2px rgba(60,64,67,0.30)",
+          cursor: "pointer",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          zIndex: 100,
+          transition: "transform 0.15s ease, box-shadow 0.15s ease",
+        }}
         title="Register New Institution"
         aria-label="Register New Institution"
+        onMouseEnter={(e) => {
+          e.currentTarget.style.transform = "scale(1.06)";
+          e.currentTarget.style.boxShadow = "0 6px 14px rgba(60,64,67,0.28), 0 2px 4px rgba(60,64,67,0.32)";
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.transform = "scale(1)";
+          e.currentTarget.style.boxShadow = "0 3px 6px rgba(60,64,67,0.24), 0 1px 2px rgba(60,64,67,0.30)";
+        }}
       >
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
           <circle cx="8.5" cy="7" r="4" />
           <line x1="20" y1="8" x2="20" y2="14" />
