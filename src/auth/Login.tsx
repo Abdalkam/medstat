@@ -3,6 +3,17 @@ import type { CSSProperties, FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "../auth/supabase";
 import { loginTenant } from "../api/authApi";
+import * as supabaseModule from "../auth/supabase";
+
+/* ================= VERSION-PROOF AUTH BINDING =================
+   Compiles against BOTH supabase.ts versions:
+   - current:  tryReauthenticate()              (no parameters)
+   - upgraded: tryReauthenticate(force = false) + getReauthReason()
+   On the upgraded version `true` really skips the 30 s cooldown;
+   on the current version the argument is safely ignored. */
+const tryReauthenticate = supabaseModule.tryReauthenticate as unknown as (
+  force?: boolean
+) => Promise<string | null>;
 
 /* ================= LOGO SOURCE NORMALIZER (self-contained) =================
    Works with ANY version of authApi.ts — no import needed for this part. */
@@ -425,6 +436,11 @@ export default function Login() {
   const [error, setError] = useState("");
   const [focusedField, setFocusedField] = useState<"" | "business" | "username" | "password">("");
 
+  // Offline fallback login: set when loginTenant() could not reach the
+  // backend and returned a placeholder session instead of a real JWT.
+  const [offlineResult, setOfflineResult] = useState<{ authToken: string } | null>(null);
+  const [checkingOnline, setCheckingOnline] = useState(false);
+
   /* ---------- branding state ----------
      Seeded synchronously from EITHER branding cache (institutionBranding /
      localBusinessSettings) so the app bar already carries the logo, business
@@ -602,10 +618,17 @@ export default function Login() {
 
     try {
       setBusy(true);
-      const { authToken, user } = await loginTenant(payload);
+      const result = await loginTenant(payload);
+      const { authToken, user } = result;
 
-      // Keys match what AppLayout.tsx reads after login
-      localStorage.setItem("currentUser", JSON.stringify(user));
+      // Keys match what AppLayout.tsx reads after login. The password is
+      // cached alongside the profile (same pattern startup.tsx already
+      // uses) so tryReauthenticate() can silently re-login this device
+      // whenever the backend was unreachable at sign-in time.
+      localStorage.setItem(
+        "currentUser",
+        JSON.stringify({ ...user, password })
+      );
       localStorage.setItem("authToken", authToken);
       const tenantId = user.tenantId || (user as any).tenant_id || "";
       if (tenantId) localStorage.setItem("activeTenantId", tenantId);
@@ -614,6 +637,14 @@ export default function Login() {
       else localStorage.removeItem("rememberedBusiness");
 
       window.dispatchEvent(new Event("userChanged"));
+
+      // Offline fallback session (backend unreachable): show the notice
+      // instead of entering the app as if everything were online.
+      if (result.offline) {
+        setOfflineResult({ authToken });
+        return;
+      }
+
       // NOTE: if your app routes by role instead, replace with:
       //   navigate(user.role === "admin" ? "/admin" : user.role === "trainer" ? "/trainer" : "/user", { replace: true });
       navigate("/", { replace: true });
@@ -621,6 +652,41 @@ export default function Login() {
       setError(err?.message || "Login failed. Please try again.");
     } finally {
       setBusy(false);
+    }
+  };
+
+  /* ---------- offline fallback actions ---------- */
+
+  const continueOffline = () => {
+    navigate("/", { replace: true });
+  };
+
+  /** Wakes the backend, then re-logs-in silently with the credentials
+   *  cached a moment ago; on success the app continues with a real JWT
+   *  and the session never was "offline" from the user's perspective. */
+  const tryOnlineNow = async () => {
+    if (checkingOnline) return;
+    setCheckingOnline(true);
+    setError("");
+    try {
+      // `true` skips the 30 s cooldown so this click always really retries.
+      const token = await tryReauthenticate(true);
+
+      if (token) {
+        setOfflineResult(null);
+        window.dispatchEvent(new Event("userChanged"));
+        navigate("/", { replace: true });
+      } else {
+        setError(
+          "Server is still waking up. You can continue offline — everything will sync automatically."
+        );
+      }
+    } catch {
+      setError(
+        "Could not reach the server. You can continue offline and try again later."
+      );
+    } finally {
+      setCheckingOnline(false);
     }
   };
 
@@ -782,6 +848,81 @@ export default function Login() {
               {businessName ? `to continue to ${businessName}` : "Use your business account to continue"}
             </p>
 
+            {offlineResult && (
+              <div
+                role="status"
+                style={{
+                  background: "#FEF7E0",
+                  border: "1px solid #F0E3B3",
+                  borderRadius: 12,
+                  padding: "14px 16px",
+                  fontSize: 13,
+                  lineHeight: 1.5,
+                  textAlign: "left",
+                  color: "#6B5A14",
+                }}
+              >
+                <div style={{ fontWeight: 600, marginBottom: 4 }}>
+                  Signed in offline
+                </div>
+                Your data is saved on this device and will sync automatically
+                once the server is reachable. SMS sending stays disabled until
+                then.
+                <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
+                  <button
+                    type="button"
+                    onClick={tryOnlineNow}
+                    disabled={checkingOnline}
+                    style={{
+                      flex: 1,
+                      height: 42,
+                      border: "none",
+                      borderRadius: 999,
+                      background: C.primary,
+                      color: C.onPrimary,
+                      fontSize: 14,
+                      fontWeight: 500,
+                      fontFamily: font,
+                      cursor: checkingOnline ? "default" : "pointer",
+                    }}
+                  >
+                    {checkingOnline ? "Connecting…" : "Try online now"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={continueOffline}
+                    style={{
+                      flex: 1,
+                      height: 42,
+                      border: `1px solid ${C.outline}`,
+                      borderRadius: 999,
+                      background: "#FFFFFF",
+                      color: C.onSurface,
+                      fontSize: 14,
+                      fontWeight: 500,
+                      fontFamily: font,
+                      cursor: "pointer",
+                    }}
+                  >
+                    Continue offline
+                  </button>
+                </div>
+                {error && (
+                  <div
+                    style={{
+                      marginTop: 10,
+                      fontSize: 12,
+                      lineHeight: 1.45,
+                      color: C.errorText,
+                    }}
+                  >
+                    {error}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {offlineResult === null && (
             <form onSubmit={handleSubmit} noValidate style={{ display: "flex", flexDirection: "column", gap: 16 }}>
               {/* Business identifier */}
               <div>
@@ -959,6 +1100,7 @@ export default function Login() {
                 {busy ? "Signing in…" : "Sign in"}
               </button>
             </form>
+            )}
           </section>
         </main>
       </div>

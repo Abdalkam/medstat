@@ -1,5 +1,5 @@
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import type { CSSProperties, ReactNode } from "react";
 
 import { getUsers } from "../database/userDB";
@@ -7,11 +7,28 @@ import { db } from "../database/db";
 import { sendSms } from "../api/smsApi";
 import {
   hasValidAuth,
-  tryReauthenticate,
   recordSmsLogs,
   syncUnsyncedSmsLogs,
   pullRemoteSmsLogs,
 } from "../auth/supabase";
+import * as supabaseModule from "../auth/supabase";
+
+/* ============ VERSION-PROOF AUTH BINDINGS ============
+   Compile against BOTH supabase.ts versions:
+   - current:  tryReauthenticate() without parameters, no
+               getReauthReason export
+   - upgraded: tryReauthenticate(force = false) + getReauthReason()
+   On the upgraded version the real failure reason is shown; on the
+   current version the optional argument is safely ignored and a
+   generic note is displayed instead. */
+const tryReauthenticate = supabaseModule.tryReauthenticate as unknown as (
+  force?: boolean
+) => Promise<string | null>;
+
+const getReauthReason: () => string =
+  (supabaseModule as { getReauthReason?: () => string }).getReauthReason ??
+  (() =>
+    "Silent re-login failed. Check your internet connection, then try again.");
 
 // ============================================================
 // THEME
@@ -281,6 +298,7 @@ export default function SMSmanagement() {
   // Session state: null = still checking, true = online session OK,
   // false = offline session (SMS disabled until re-login).
   const [sessionOk, setSessionOk] = useState<boolean>(hasValidAuth());
+  const [healNote, setHealNote] = useState("");
 
   // ----------------------------------------------------------
   // LOAD SMS HISTORY
@@ -327,15 +345,22 @@ export default function SMSmanagement() {
   // login), SMS is disabled. Try a silent re-login with the cached
   // credentials; on success the cloud history syncs immediately.
 
+  const autoHealAttempts = useRef(0);
+  const autoHealTimer = useRef<number | undefined>(undefined);
+
   const healSession = useCallback(async () => {
     if (hasValidAuth()) {
       setSessionOk(true);
+      setHealNote("");
       return;
     }
 
     try {
-      const token = await tryReauthenticate();
+      // `true` = skip the 30 s cooldown, so a user click (or a
+      // scheduled auto-retry) always performs a real new attempt.
+      const token = await tryReauthenticate(true);
       setSessionOk(Boolean(token));
+      setHealNote(token ? "" : getReauthReason());
 
       if (token) {
         await refreshFromCloud();
@@ -343,8 +368,30 @@ export default function SMSmanagement() {
     } catch (err) {
       console.warn("Session heal failed:", err);
       setSessionOk(false);
+      setHealNote(getReauthReason());
     }
   }, [refreshFromCloud]);
+
+  // ----------------------------------------------------------
+  // SCHEDULED AUTO-RETRY
+  // ----------------------------------------------------------
+  // Render's free tier can take ~1 min to wake up. While the session
+  // is still offline, retry the heal up to 3 times, 60 s apart, then
+  // stop (the banner with "Retry now" stays either way).
+
+  const scheduleAutoHeal = useCallback(() => {
+    if (hasValidAuth()) return;
+    if (autoHealAttempts.current >= 3) return;
+
+    autoHealAttempts.current += 1;
+
+    window.clearTimeout(autoHealTimer.current);
+
+    autoHealTimer.current = window.setTimeout(async () => {
+      await healSession();
+      scheduleAutoHeal();
+    }, 60000);
+  }, [healSession]);
 
   // ----------------------------------------------------------
   // INITIAL DATA
@@ -374,6 +421,9 @@ export default function SMSmanagement() {
           // Repair an offline session (if any) before syncing.
           await healSession();
 
+          // If the server was still waking up, keep retrying briefly.
+          scheduleAutoHeal();
+
           await refreshFromCloud();
         }
       } catch (err) {
@@ -393,8 +443,9 @@ export default function SMSmanagement() {
     return () => {
       mounted = false;
       window.removeEventListener("online", handleOnline);
+      window.clearTimeout(autoHealTimer.current);
     };
-  }, [loadSentLogs, refreshFromCloud, healSession]);
+  }, [loadSentLogs, refreshFromCloud, healSession, scheduleAutoHeal]);
 
   // ----------------------------------------------------------
   // RECIPIENT SELECTION
@@ -705,6 +756,19 @@ export default function SMSmanagement() {
             <span>
               Offline session — SMS sending is disabled. Log out and sign in
               again with internet on this device.
+              {healNote && (
+                <span
+                  style={{
+                    display: "block",
+                    fontWeight: 400,
+                    fontSize: 13,
+                    marginTop: 4,
+                    opacity: 0.85,
+                  }}
+                >
+                  {healNote}
+                </span>
+              )}
             </span>
 
             <button
