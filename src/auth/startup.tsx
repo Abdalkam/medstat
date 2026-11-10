@@ -10,10 +10,15 @@ import {
   stopPeriodicPull,
   pullSettings,
 } from "../database/sync";
-import { supabase } from "../auth/supabase";
+import {
+  supabase,
+  hasValidAuth,
+  tryReauthenticate,
+} from "../auth/supabase";
 import PhoneEntry from "./PhoneEntry";
 import VerifyCode from "./VerifyCode";
 import RegisterAdmin from "./RegisterAdmin";
+import { warmUpBackend } from "../api/smsApi";
 import { getVersion } from "@tauri-apps/api/app";
 
 /* ============ MD3 DESIGN TOKENS (same system as Login.tsx) ============ */
@@ -710,6 +715,22 @@ export default function Startup() {
   useEffect(() => {
     getVersion().then((v) => setAppVersion(v)).catch(() => {});
 
+    // Wake the Render backend (free tier sleeps after ~15 min idle) so the
+    // first real request doesn't time out and push the app into offline mode.
+    warmUpBackend();
+
+    // Self-heal persisted offline sessions: if this device is holding an
+    // offline/fabricated token, silently re-login in the background and
+    // restart cloud sync when it succeeds.
+    if (!hasValidAuth()) {
+      tryReauthenticate().then((token) => {
+        if (token) {
+          enableSyncHooks();
+          startPeriodicPull(60000);
+        }
+      });
+    }
+
     const storedUser = localStorage.getItem("currentUser");
 
     if (storedUser && location.pathname === "/") {
@@ -989,6 +1010,11 @@ export default function Startup() {
 
       localStorage.setItem("currentUser", JSON.stringify(safeUser));
       localStorage.setItem("authToken", "offline-mode-pending-sync");
+      console.warn(
+        "Logged in OFFLINE (backend unreachable). SMS and cloud sync are " +
+          "disabled until an online login succeeds - the app will retry " +
+          "automatically in the background."
+      );
       window.dispatchEvent(new Event("authStateChanged"));
 
       redirectUser(safeUser.role);
