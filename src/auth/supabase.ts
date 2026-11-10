@@ -149,9 +149,57 @@ function normalizeStringArray(value: any): string[] {
 // database (contacts, courses, enrollments, SMS logs).
 
 let reauthInFlight: Promise<string | null> | null = null;
+let reauthCooldown: number | undefined;
+let reauthReason = "";
 
-export function tryReauthenticate(): Promise<string | null> {
+/**
+ * Why the last silent re-login failed ("" when none or on success).
+ * The SMS screen shows this under the offline-session banner so the
+ * user knows whether to wait for the server to wake up or to sign in.
+ */
+export function getReauthReason(): string {
+  return reauthReason;
+}
+
+/**
+ * Wake a sleeping Render instance BEFORE logging in. The free tier
+ * sleeps after 15 min idle and a cold start takes 30-60 s — logging in
+ * directly during a cold start usually fails (or the login endpoint
+ * degrades to an offline token). Pinging /api/health first and WAITING
+ * for the response makes the following login fast and reliable.
+ * Never throws: resolves once the server responded or the wait timed
+ * out (the login attempt below reports any remaining problem).
+ */
+async function wakeBackend(): Promise<void> {
+  const apiBase =
+    import.meta.env.VITE_API_URL ||
+    (import.meta.env.PROD
+      ? "https://medstat-3rxl.onrender.com"
+      : "http://localhost:10000");
+
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), 90000);
+
+  try {
+    await fetch(`${apiBase.replace(/\/+$/, "")}/api/health`, {
+      signal: controller.signal,
+    });
+  } catch {
+    /* unreachable — the login attempt below will surface the error */
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
+export function tryReauthenticate(force = false): Promise<string | null> {
   if (reauthInFlight) return reauthInFlight;
+
+  // `force` (manual "Retry now") skips the 30 s cooldown that follows a
+  // settled attempt, so an explicit user click always retries for real.
+  if (force && reauthCooldown) {
+    window.clearTimeout(reauthCooldown);
+    reauthCooldown = undefined;
+  }
 
   reauthInFlight = (async () => {
     try {
@@ -161,9 +209,14 @@ export function tryReauthenticate(): Promise<string | null> {
       const password = user?.password;
 
       if (!tenantId || !username || !password) {
+        reauthReason =
+          "No saved sign-in details on this device — log out and sign in once.";
         console.log("Re-auth skipped - no cached credentials.");
         return null;
       }
+
+      // Wake the server first (~0.2 s when already awake).
+      await wakeBackend();
 
       // Dynamic import keeps authApi out of the critical init path and
       // avoids any circular-import issues.
@@ -173,9 +226,13 @@ export function tryReauthenticate(): Promise<string | null> {
       const authToken = result?.authToken;
 
       if (!isRealBackendToken(authToken)) {
+        reauthReason =
+          "Server is waking up or unreachable — wait a minute and retry, or log out and sign in.";
         console.warn("Re-auth failed - backend returned no JWT.");
         return null;
       }
+
+      reauthReason = "";
 
       localStorage.setItem("authToken", authToken);
 
@@ -200,13 +257,15 @@ export function tryReauthenticate(): Promise<string | null> {
 
       return authToken;
     } catch (err) {
+      reauthReason =
+        "Could not reach the server — check the internet connection and retry.";
       console.warn("Silent re-login failed:", err);
       return null;
     } finally {
       // Keep the settled promise cached briefly to dedupe bursts
       // (e.g. SMS send + periodic tick firing at the same moment),
       // then allow a fresh attempt.
-      window.setTimeout(() => {
+      reauthCooldown = window.setTimeout(() => {
         reauthInFlight = null;
       }, 30000);
     }
