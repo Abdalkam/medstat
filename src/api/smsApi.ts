@@ -11,7 +11,7 @@
 //     15 min idle and a cold-start request can take 30-60 s.
 //   - warmUpBackend() pings /api/health so the server wakes before use.
 
-import { tryReauthenticate } from "../auth/supabase";
+import { tryReauthenticate, apiFetchAny } from "../auth/supabase";
 
 interface SmsResponse {
   success?: boolean;
@@ -37,9 +37,11 @@ const SMS_TIMEOUT = 90000;
 /**
  * Fire-and-forget ping so a sleeping Render instance wakes up before the
  * user actually needs it (login, SMS, settings). Call once on app mount.
+ * Walks the API origin list, so even networks that cannot resolve the
+ * Render hostname wake the backend through the fallback origins.
  */
 export function warmUpBackend(): void {
-  fetch(`${API_BASE.replace(/\/+$/, "")}/api/health`).catch(() => {
+  apiFetchAny("/api/health", undefined, API_BASE).catch(() => {
     /* unreachable backend — silent; real requests will surface errors */
   });
 }
@@ -114,18 +116,22 @@ export async function sendSms(
   );
 
   const doRequest = (bearer: string) =>
-    fetch(`${API_BASE.replace(/\/+$/, "")}/api/sms/send`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${bearer}`,
+    apiFetchAny(
+      "/api/sms/send",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${bearer}`,
+        },
+        body: JSON.stringify({
+          recipients: cleanRecipients,
+          message: cleanMessage,
+        }),
+        signal: controller.signal,
       },
-      body: JSON.stringify({
-        recipients: cleanRecipients,
-        message: cleanMessage,
-      }),
-      signal: controller.signal,
-    });
+      API_BASE
+    );
 
   try {
     let response = await doRequest(token);

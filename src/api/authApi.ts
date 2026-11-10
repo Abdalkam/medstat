@@ -14,7 +14,7 @@
 //      to a real JWT as soon as the backend is reachable.
 // ============================================================
 
-import { supabase } from "../auth/supabase";
+import { supabase, apiFetchAny } from "../auth/supabase";
 import { db } from "../database/db";
 import { loginUser } from "../database/userDB";
 
@@ -109,11 +109,15 @@ async function cacheUserToLocalDB(user: {
 // ==========================================
 
 export async function sendATCode(phone: string) {
-  const response = await fetch(`${API_BASE}/api/auth/send-code`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ phone }),
-  });
+  const response = await apiFetchAny(
+    "/api/auth/send-code",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ phone }),
+    },
+    API_BASE
+  );
 
   const data = await response.json().catch(() => ({}));
 
@@ -125,11 +129,15 @@ export async function sendATCode(phone: string) {
 }
 
 export async function verifyATCode(phone: string, code: string) {
-  const response = await fetch(`${API_BASE}/api/auth/verify-code`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ phone, code }),
-  });
+  const response = await apiFetchAny(
+    "/api/auth/verify-code",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ phone, code }),
+    },
+    API_BASE
+  );
 
   const data = await response.json().catch(() => ({}));
 
@@ -233,14 +241,18 @@ export async function loginTenant(data: {
   // ------------------------------------------
 
   try {
-    const response = await fetch(`${API_BASE}/api/auth/login`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        ...data,
-        tenantId: targetTenantId,
-      }),
-    });
+    const response = await apiFetchAny(
+      "/api/auth/login",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...data,
+          tenantId: targetTenantId,
+        }),
+      },
+      API_BASE
+    );
 
     if (!response.ok) {
       const err = await response.json().catch(() => ({}));

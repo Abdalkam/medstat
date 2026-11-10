@@ -51,6 +51,100 @@ export const supabase = createClient(
 
 export const OFFLINE_TOKEN = "offline-mode-pending-sync";
 
+// ==========================================
+// API ORIGIN FAILOVER (DNS-BLOCK PROOF)
+// ==========================================
+// Some user networks cannot resolve "*.onrender.com" — their ISP/router
+// DNS fails the name BEFORE any request is sent ("Failed to fetch",
+// net::ERR_NAME_NOT_RESOLVED), even though the site serving this very
+// app is reachable. So every backend call walks a fallback list of API
+// origins, in this order:
+//
+//   1. preferred              — the origin that last worked (sticky)
+//   2. caller's base          — legacy per-module base (dev parity)
+//   3. direct Render          — no proxy hop; best for cold starts
+//   4. dev base               — http://localhost:10000 (dev only)
+//   5. VITE_API_FALLBACK_URL  — optional extra origin (CF Worker etc.)
+//   6. same-origin proxy      — <this site><BASE_URL>api → Render
+//                               (see vercel.json), last resort
+//
+// A call moves to the next origin ONLY when fetch threw a TypeError
+// (DNS / offline / CORS — the server was never reached). An HTTP status
+// (401/500/…) proves the origin IS reachable and is returned as-is.
+// The first origin that answers is remembered for later calls.
+
+const PRIMARY_API_BASE = import.meta.env.PROD
+  ? "https://medstat-3rxl.onrender.com"
+  : "";
+
+const DEV_API_BASE = import.meta.env.PROD
+  ? ""
+  : "http://localhost:10000";
+
+const EXTRA_API_BASE = (
+  (import.meta.env.VITE_API_FALLBACK_URL as string) || ""
+).trim().replace(/\/+$/, "");
+
+// Same-origin proxy (vercel.json rewrite): only for the HTTPS web
+// build. Dev and the Tauri webview (http://tauri.localhost) are
+// excluded — their page origin is not the deployment.
+const SAME_ORIGIN_API_BASE =
+  import.meta.env.PROD &&
+  typeof window !== "undefined" &&
+  window.location.protocol === "https:"
+    ? `${window.location.origin}${(import.meta.env.BASE_URL || "/").replace(/\/+$/, "")}/api`
+    : "";
+
+let preferredApiBase: string | null = null;
+
+/**
+ * fetch() that walks the API origin list on network failures.
+ * Returns the first Response received from ANY origin (any HTTP
+ * status); throws only when EVERY origin failed at the network level.
+ * `firstBase` is tried before the shared list (per-module dev parity).
+ * Never retries on AbortError — a caller-driven abort is intentional.
+ */
+export async function apiFetchAny(
+  path: string,
+  init?: RequestInit,
+  firstBase?: string
+): Promise<Response> {
+  const bases = [
+    ...new Set(
+      [
+        preferredApiBase,
+        firstBase?.replace(/\/+$/, ""),
+        PRIMARY_API_BASE,
+        DEV_API_BASE,
+        EXTRA_API_BASE,
+        SAME_ORIGIN_API_BASE,
+      ].filter((base): base is string => Boolean(base))
+    ),
+  ];
+
+  let lastError: unknown = new TypeError("No API origin configured");
+
+  for (const base of bases) {
+    try {
+      const response = await fetch(`${base}${path}`, init);
+
+      preferredApiBase = base; // remember the winner for later calls
+
+      return response;
+    } catch (err) {
+      lastError = err;
+
+      if (!(err instanceof TypeError)) throw err;
+
+      console.warn(
+        `API origin unreachable (${base}${path}) — trying the next one…`
+      );
+    }
+  }
+
+  throw lastError;
+}
+
 let periodicPullInterval: ReturnType<typeof setInterval> | null = null;
 let periodicPullRunning = false;
 let syncUpRunning = false;
@@ -167,23 +261,17 @@ export function getReauthReason(): string {
  * directly during a cold start usually fails (or the login endpoint
  * degrades to an offline token). Pinging /api/health first and WAITING
  * for the response makes the following login fast and reliable.
- * Never throws: resolves once the server responded or the wait timed
- * out (the login attempt below reports any remaining problem).
+ * Pinging ANY origin wakes the same service — the same-origin proxy
+ * reaches Render server-side even on networks that cannot resolve the
+ * Render hostname. Never throws: resolves once any origin responded or
+ * the wait timed out (the login attempt below reports the problem).
  */
 async function wakeBackend(): Promise<void> {
-  const apiBase =
-    import.meta.env.VITE_API_URL ||
-    (import.meta.env.PROD
-      ? "https://medstat-3rxl.onrender.com"
-      : "http://localhost:10000");
-
   const controller = new AbortController();
   const timeoutId = window.setTimeout(() => controller.abort(), 90000);
 
   try {
-    await fetch(`${apiBase.replace(/\/+$/, "")}/api/health`, {
-      signal: controller.signal,
-    });
+    await apiFetchAny("/api/health", { signal: controller.signal });
   } catch {
     /* unreachable — the login attempt below will surface the error */
   } finally {
@@ -258,7 +346,7 @@ export function tryReauthenticate(force = false): Promise<string | null> {
       return authToken;
     } catch (err) {
       reauthReason =
-        "Could not reach the server — check the internet connection and retry.";
+        "Could not reach the medstat server from this network. Check your internet connection and retry; if it keeps failing, this network may be blocking the server — try another one (e.g. a phone hotspot).";
       console.warn("Silent re-login failed:", err);
       return null;
     } finally {
@@ -381,10 +469,6 @@ export async function sbFetch(
 // BACKEND API — SETTINGS ONLY
 // ==========================================
 
-const API_BASE_URL = import.meta.env.PROD
-  ? "https://medstat-3rxl.onrender.com"
-  : "";
-
 function getAuthHeaders(): Record<string, string> {
   const token = getAuthToken();
 
@@ -404,7 +488,7 @@ async function apiFetch(path: string, retry = true) {
     }
   }
 
-  const response = await fetch(`${API_BASE_URL}${path}`, {
+  const response = await apiFetchAny(path, {
     headers: getAuthHeaders(),
   });
 

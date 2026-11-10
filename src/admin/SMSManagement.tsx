@@ -28,7 +28,7 @@ const tryReauthenticate = supabaseModule.tryReauthenticate as unknown as (
 const getReauthReason: () => string =
   (supabaseModule as { getReauthReason?: () => string }).getReauthReason ??
   (() =>
-    "Silent re-login failed. Check your internet connection, then try again.");
+    "Silent re-login failed. Check your internet connection; if the device was idle, the server may be waking up (free tier) — wait about a minute and press Retry now. If it keeps failing, log out and sign in once.");
 
 // ============================================================
 // THEME

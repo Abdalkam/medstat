@@ -1,15 +1,4 @@
 // src/database/trainerDB.ts — v3: cloud-synced, tombstone-aware trainer CRUD
-//
-// Changes vs v2 (trainers are users, so the flow now mirrors userDB exactly):
-//  1. addTrainer()/updateTrainer() now PUSH to Supabase and manage the
-//     synced flag. v2 wrote locally only — a trainer stayed invisible on
-//     other devices (and in remote pulls) until some unrelated code path
-//     happened to push it.
-//  2. deleteTrainer() cascade extended to assignment submissions and chat
-//     messages (v2 only removed schedules + enrollments), matching
-//     userDB.deleteUser so no orphan rows survive either path.
-//  3. getTenantId() guarded against corrupt localStorage; duplicate /
-//     collision guards are now tenant-scoped and case-insensitive.
 
 import { db } from "./db";
 import type { User } from "../types";

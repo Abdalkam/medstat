@@ -1,8 +1,6 @@
 {
-  "redirects": [{ "source": "/", "destination": "/medstat", "permanent": false }],
-  "rewrites": [
-    { "source": "/medstat/(.*)\\.(js|css|png|jpg|jpeg|svg|ico|webp|gif|json|txt|xml|woff|woff2|ttf|map)", "destination": "/$1.$2" },
-    { "source": "/medstat", "destination": "/index.html" },
-    { "source": "/medstat/:path*", "destination": "/index.html" }
-  ]
+  "framework": "vite",
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }]
 }
