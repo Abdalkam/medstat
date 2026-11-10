@@ -1,3 +1,17 @@
+// src/api/smsApi.ts
+// SMS sending through the Render backend.
+//
+// 2026-11 update:
+//   - Offline/fabricated sessions ("offline-mode-pending-sync", "local-...")
+//     are silently upgraded via tryReauthenticate() BEFORE failing, so a
+//     device that logged in while the backend was asleep heals itself.
+//   - A 401 response (expired JWT, 7-day lifetime) triggers exactly one
+//     silent re-login + retry.
+//   - SMS_TIMEOUT raised 45 s -> 90 s: Render's free tier sleeps after
+//     15 min idle and a cold-start request can take 30-60 s.
+//   - warmUpBackend() pings /api/health so the server wakes before use.
+
+import { tryReauthenticate } from "../auth/supabase";
 
 interface SmsResponse {
   success?: boolean;
@@ -18,23 +32,47 @@ const API_BASE =
     ? "https://medstat-3rxl.onrender.com"
     : "http://localhost:10000");
 
-const SMS_TIMEOUT = 45000;
+const SMS_TIMEOUT = 90000;
+
+/**
+ * Fire-and-forget ping so a sleeping Render instance wakes up before the
+ * user actually needs it (login, SMS, settings). Call once on app mount.
+ */
+export function warmUpBackend(): void {
+  fetch(`${API_BASE.replace(/\/+$/, "")}/api/health`).catch(() => {
+    /* unreachable backend — silent; real requests will surface errors */
+  });
+}
 
 export async function sendSms(
   recipients: string[],
   message: string
 ): Promise<SmsResponse> {
   // ----------------------------------------------------------
-  // AUTHENTICATION
+  // AUTHENTICATION (with silent self-heal)
   // ----------------------------------------------------------
 
-  const token = localStorage.getItem("authToken");
+  let token = localStorage.getItem("authToken");
 
-  if (!token || token === "offline-mode-pending-sync") {
-    throw new Error(
+  // Offline / fabricated session — attempt a silent re-login first.
+  // ("eyJ" = a real backend JWT; anything else — null,
+  // "offline-mode-pending-sync", "local-..." — is a local placeholder.)
+  // Written as an inline check so TypeScript narrows `token` to string
+  // without depending on the type guard's signature.
+  if (!token || !token.startsWith("eyJ")) {
+    token =
+      (await tryReauthenticate()) || localStorage.getItem("authToken");
+  }
+
+  if (!token || !token.startsWith("eyJ")) {
+    const authError: SmsError = new Error(
       "You must be online and logged in to send SMS."
     );
+    authError.status = 0;
+    throw authError;
   }
+
+  // From here on, `token` is a real backend JWT (type: string).
 
   // ----------------------------------------------------------
   // VALIDATION
@@ -75,22 +113,35 @@ export async function sendSms(
     SMS_TIMEOUT
   );
 
+  const doRequest = (bearer: string) =>
+    fetch(`${API_BASE.replace(/\/+$/, "")}/api/sms/send`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${bearer}`,
+      },
+      body: JSON.stringify({
+        recipients: cleanRecipients,
+        message: cleanMessage,
+      }),
+      signal: controller.signal,
+    });
+
   try {
-    const response = await fetch(
-      `${API_BASE.replace(/\/+$/, "")}/api/sms/send`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          recipients: cleanRecipients,
-          message: cleanMessage,
-        }),
-        signal: controller.signal,
+    let response = await doRequest(token);
+
+    // --------------------------------------------------------
+    // EXPIRED/INVALID JWT — one silent re-login + retry
+    // --------------------------------------------------------
+
+    if (response.status === 401) {
+      const newToken = await tryReauthenticate();
+
+      if (newToken && newToken !== token) {
+        token = newToken;
+        response = await doRequest(token);
       }
-    );
+    }
 
     // --------------------------------------------------------
     // RESPONSE PARSING

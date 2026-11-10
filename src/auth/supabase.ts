@@ -1,4 +1,3 @@
-
 // src/auth/supabase.ts
 // Direct Supabase synchronization.
 // Render backend is used only for settings.
@@ -12,6 +11,21 @@
 // Supabase public.enrollments uses:
 //   id (text), tenant_id, user_id, course_id, role, status,
 //   enrolled_at, created_at, deleted_at
+//
+// ============================================================
+// SESSION SELF-HEAL (2026-11 update)
+// ------------------------------------------------------------
+// A device can end up holding a NON-JWT session token:
+//   - "offline-mode-pending-sync"  (login fell back to the local DB)
+//   - "local-<id>"                 (login flow returned no authToken)
+// In that state SMS (401) and cloud pulls were silently disabled forever.
+// Now:
+//   - Only real JWTs ("eyJ...") count as authenticated.
+//   - tryReauthenticate() silently re-logs-in with the cached
+//     credentials and repairs the session.
+//   - The periodic pull, syncUp, pullAllTenantData and the settings
+//     API all attempt the self-heal before giving up.
+// ============================================================
 
 import { createClient } from "@supabase/supabase-js";
 
@@ -35,7 +49,7 @@ export const supabase = createClient(
   supabaseAnonKey
 );
 
-const OFFLINE_TOKEN = "offline-mode-pending-sync";
+export const OFFLINE_TOKEN = "offline-mode-pending-sync";
 
 let periodicPullInterval: ReturnType<typeof setInterval> | null = null;
 let periodicPullRunning = false;
@@ -71,17 +85,29 @@ function getCurrentTenantId(): string | null {
     : null;
 }
 
+/**
+ * A REAL backend session token is a JWT and always starts with "eyJ".
+ * Everything else ("offline-mode-pending-sync", fabricated "local-..."
+ * tokens) is an offline session: Supabase reads still work through the
+ * anon key, but the Render backend (SMS, settings) rejects them with 401.
+ */
+export function isRealBackendToken(
+  token: string | null | undefined
+): token is string {
+  return typeof token === "string" && token.startsWith("eyJ");
+}
+
 function getAuthToken(): string | null {
   const token = localStorage.getItem("authToken");
 
-  if (!token || token === OFFLINE_TOKEN) {
+  if (!isRealBackendToken(token)) {
     return null;
   }
 
   return token;
 }
 
-function hasValidAuth(): boolean {
+export function hasValidAuth(): boolean {
   return Boolean(getAuthToken() && parseStoredUser());
 }
 
@@ -110,6 +136,83 @@ function normalizeStringArray(value: any): string[] {
         typeof item === "string" && item.trim().length > 0
     )
     .map((item: string) => item.trim());
+}
+
+// ==========================================
+// SILENT RE-AUTHENTICATION (SELF-HEAL)
+// ==========================================
+// Upgrades an offline/fabricated session to a real online session using
+// the credentials cached in localStorage.currentUser. Concurrent callers
+// share one in-flight attempt; after a failure a new attempt can be made
+// 30 s later. On success the token + user are rewritten to localStorage,
+// "authStateChanged" is fired, and a background resync heals the local
+// database (contacts, courses, enrollments, SMS logs).
+
+let reauthInFlight: Promise<string | null> | null = null;
+
+export function tryReauthenticate(): Promise<string | null> {
+  if (reauthInFlight) return reauthInFlight;
+
+  reauthInFlight = (async () => {
+    try {
+      const user = parseStoredUser();
+      const tenantId = user?.tenantId || user?.tenant_id;
+      const username = user?.username;
+      const password = user?.password;
+
+      if (!tenantId || !username || !password) {
+        console.log("Re-auth skipped - no cached credentials.");
+        return null;
+      }
+
+      // Dynamic import keeps authApi out of the critical init path and
+      // avoids any circular-import issues.
+      const { loginTenant } = await import("../api/authApi");
+
+      const result = await loginTenant({ tenantId, username, password });
+      const authToken = result?.authToken;
+
+      if (!isRealBackendToken(authToken)) {
+        console.warn("Re-auth failed - backend returned no JWT.");
+        return null;
+      }
+
+      localStorage.setItem("authToken", authToken);
+
+      try {
+        localStorage.setItem(
+          "currentUser",
+          JSON.stringify({
+            ...user,
+            authToken,
+            token: authToken,
+            synced: true,
+          })
+        );
+      } catch { /* ignore quota errors */ }
+
+      window.dispatchEvent(new Event("authStateChanged"));
+      console.log("Session restored online (silent re-login OK).");
+
+      // Fire-and-forget resync - heals contacts/logs without user action.
+      pullAllTenantData(tenantId).catch(() => {});
+      pullSettings().catch(() => {});
+
+      return authToken;
+    } catch (err) {
+      console.warn("Silent re-login failed:", err);
+      return null;
+    } finally {
+      // Keep the settled promise cached briefly to dedupe bursts
+      // (e.g. SMS send + periodic tick firing at the same moment),
+      // then allow a fresh attempt.
+      window.setTimeout(() => {
+        reauthInFlight = null;
+      }, 30000);
+    }
+  })();
+
+  return reauthInFlight;
 }
 
 // ==========================================
@@ -232,9 +335,14 @@ function getAuthHeaders(): Record<string, string> {
   };
 }
 
-async function apiFetch(path: string) {
+async function apiFetch(path: string, retry = true) {
   if (!hasValidAuth()) {
-    throw new Error("No valid authentication token.");
+    // Offline session — try to self-heal before failing.
+    const healed = await tryReauthenticate();
+
+    if (!healed || !hasValidAuth()) {
+      throw new Error("No valid authentication token.");
+    }
   }
 
   const response = await fetch(`${API_BASE_URL}${path}`, {
@@ -243,6 +351,15 @@ async function apiFetch(path: string) {
 
   if (!response.ok) {
     if (response.status === 401) {
+      // Expired/invalid JWT — silently re-login once and retry.
+      if (retry) {
+        const newToken = await tryReauthenticate();
+
+        if (newToken) {
+          return apiFetch(path, false);
+        }
+      }
+
       throw new Error(
         "API fetch failed: 401 - Authentication may have expired."
       );
@@ -279,7 +396,14 @@ export function startPeriodicPull(ms: number = 15000) {
   console.log(`Starting periodic pull every ${ms}ms`);
 
   periodicPullInterval = setInterval(async () => {
-    if (periodicPullRunning || !hasValidAuth()) return;
+    if (periodicPullRunning) return;
+
+    if (!hasValidAuth()) {
+      // Offline/fabricated session — attempt silent re-login first.
+      const healed = await tryReauthenticate();
+
+      if (!healed) return;
+    }
 
     const tenantId = getCurrentTenantId();
 
@@ -312,8 +436,13 @@ export function stopPeriodicPull() {
 
 export async function pullAllTenantData(tenantId: string) {
   if (!hasValidAuth()) {
-    console.log("Skipping pull - not authenticated.");
-    return;
+    // Offline session — attempt silent re-login before skipping.
+    const healed = await tryReauthenticate();
+
+    if (!healed || !hasValidAuth()) {
+      console.log("Skipping pull - not authenticated.");
+      return;
+    }
   }
 
   const currentTenantId = getCurrentTenantId();
@@ -426,8 +555,12 @@ export async function pullAllTenantData(tenantId: string) {
 
 export async function pullSettings() {
   if (!hasValidAuth()) {
-    console.log("Skipping settings pull - not authenticated.");
-    return null;
+    const healed = await tryReauthenticate();
+
+    if (!healed || !hasValidAuth()) {
+      console.log("Skipping settings pull - not authenticated.");
+      return null;
+    }
   }
 
   const tenantId = getCurrentTenantId();
@@ -453,8 +586,12 @@ export async function pullSettings() {
 
 export async function syncDown() {
   if (!hasValidAuth()) {
-    console.log("Skipping sync down - not authenticated.");
-    return;
+    const healed = await tryReauthenticate();
+
+    if (!healed || !hasValidAuth()) {
+      console.log("Skipping sync down - not authenticated.");
+      return;
+    }
   }
 
   const tenantId = getCurrentTenantId();
@@ -469,14 +606,18 @@ export async function syncDown() {
 // ==========================================
 
 export async function syncUp() {
-  if (!hasValidAuth()) {
-    console.log("Skipping sync up - not authenticated.");
-    return;
-  }
-
   if (syncUpRunning) {
     console.log("Sync Up already running. Skipping duplicate call.");
     return;
+  }
+
+  if (!hasValidAuth()) {
+    const healed = await tryReauthenticate();
+
+    if (!healed || !hasValidAuth()) {
+      console.log("Skipping sync up - not authenticated.");
+      return;
+    }
   }
 
   syncUpRunning = true;
@@ -657,7 +798,10 @@ function mapUser(remoteUser: any, localUser?: any) {
 
     phone: remoteUser.phone || "",
 
-    password: remoteUser.password || "",
+    // FIX: keep the LOCAL password for offline login. Cloud rows now hold
+    // bcrypt hashes ("$2b$12$..."); copying a hash into Dexie would break
+    // the plaintext comparison offline login relies on.
+    password: localUser?.password || remoteUser.password || "",
 
     role: normalizeRole(remoteUser.role),
 
@@ -811,4 +955,188 @@ function mapEnrollment(enrollment: any) {
 
     synced: true,
   };
+}
+
+// ==========================================
+// 11. SMS LOGS — LOCAL-FIRST + CLOUD SYNC
+// ==========================================
+// Cloud table (public.sms_logs):
+//   id uuid pk default gen_random_uuid(), tenant_id uuid, phone text,
+//   message text, status text, sent_at timestamp default now(),
+//   sent_by uuid
+//
+// Local Dexie (db.smsLogs): same fields with `sentAt` (ISO string) plus a
+// `synced` flag used to queue locally-recorded rows for upload.
+//
+// Flow: sendSms() succeeds -> SMSmanagement calls recordSmsLogs() (saved
+// locally first, works even offline) -> upload + cloud pull happen here
+// with the same session self-heal as every other sync path.
+
+export interface SmsLogInput {
+  id: string;
+  tenant_id?: string | null;
+  phone: string;
+  message: string;
+  status: string;
+  sent_by?: string | null;
+  sentAt?: string;
+  sent_at?: string;
+  [key: string]: any;
+}
+
+/**
+ * A SMS log row as stored in the LOCAL Dexie table (db.smsLogs).
+ * Unlike SmsLogInput, `sentAt` is always a concrete ISO string — the
+ * local table schema requires it, so rows are normalized to this shape
+ * before every bulkPut().
+ */
+export type LocalSmsLog = SmsLogInput & {
+  sentAt: string;
+  synced: boolean;
+};
+
+function smsLogToRow(log: SmsLogInput) {
+  return {
+    id: log.id,
+    tenant_id: log.tenant_id || null,
+    phone: log.phone,
+    message: log.message,
+    status: log.status || "Success",
+    sent_by: log.sent_by || null,
+    sent_at: log.sentAt || log.sent_at || new Date().toISOString(),
+  };
+}
+
+function mapSmsLogRow(row: any): LocalSmsLog {
+  return {
+    ...row,
+
+    id: row.id,
+
+    tenant_id: row.tenant_id || null,
+
+    phone: row.phone || "",
+
+    message: row.message || "",
+
+    status: row.status || "Unknown",
+
+    sent_by: row.sent_by || null,
+
+    sentAt: row.sent_at || row.sentAt || new Date().toISOString(),
+
+    synced: true,
+  };
+}
+
+/**
+ * Save sent-SMS records to the local database first (ALWAYS works, even
+ * offline). Upload to the cloud is attempted immediately and retried by
+ * syncUnsyncedSmsLogs() on later sync passes.
+ */
+export async function recordSmsLogs(logs: SmsLogInput[]): Promise<void> {
+  if (!Array.isArray(logs) || logs.length === 0) return;
+
+  const { db } = await import("../database/db");
+
+  const rows: LocalSmsLog[] = logs.map((log) => ({
+    ...log,
+
+    synced: false,
+
+    // db.smsLogs requires a concrete timestamp — default to now when
+    // the caller did not provide one (sentAt or snake_case sent_at).
+    sentAt: log.sentAt || log.sent_at || new Date().toISOString(),
+  }));
+
+  await db.smsLogs.bulkPut(rows);
+
+  // Best-effort immediate upload — failures stay queued locally.
+  syncUnsyncedSmsLogs().catch(() => {});
+}
+
+/**
+ * Push locally-recorded SMS logs that have not reached the cloud yet.
+ * Shares the session self-heal: an offline session is silently upgraded
+ * before giving up, so queued logs drain as soon as the device is online.
+ */
+export async function syncUnsyncedSmsLogs(): Promise<void> {
+  if (!hasValidAuth()) {
+    const healed = await tryReauthenticate();
+
+    if (!healed || !hasValidAuth()) return;
+  }
+
+  try {
+    const { db } = await import("../database/db");
+
+    const pending = await db.smsLogs
+      .filter((log: any) => !log.synced)
+      .toArray();
+
+    if (!pending.length) return;
+
+    const tenantId = getCurrentTenantId();
+
+    const rows = pending.map((log: any) =>
+      smsLogToRow({
+        ...log,
+        tenant_id: log.tenant_id || tenantId,
+      })
+    );
+
+    const { error } = await supabase
+      .from("sms_logs")
+      .upsert(rows, { onConflict: "id" });
+
+    if (error) throw error;
+
+    await db.smsLogs.bulkPut(
+      pending.map((log: any) => ({ ...log, synced: true }))
+    );
+
+    console.log(`SMS logs synced: ${pending.length} row(s).`);
+  } catch (err) {
+    console.warn("SMS log upload failed (will retry):", err);
+  }
+}
+
+/**
+ * Pull this tenant's SMS history from the cloud into the local database,
+ * so every device sees the same Sent History.
+ */
+export async function pullRemoteSmsLogs(
+  tenantId: string
+): Promise<void> {
+  if (!hasValidAuth()) {
+    const healed = await tryReauthenticate();
+
+    if (!healed || !hasValidAuth()) {
+      console.log("Skipping SMS log pull - not authenticated.");
+      return;
+    }
+  }
+
+  if (!tenantId) return;
+
+  try {
+    const { db } = await import("../database/db");
+
+    const { data, error } = await supabase
+      .from("sms_logs")
+      .select("*")
+      .eq("tenant_id", tenantId)
+      .order("sent_at", { ascending: false })
+      .limit(1000);
+
+    if (error) throw error;
+
+    if (data && data.length) {
+      await db.smsLogs.bulkPut(data.map(mapSmsLogRow));
+
+      console.log(`SMS logs pulled: ${data.length} row(s).`);
+    }
+  } catch (err) {
+    console.warn("SMS log pull failed:", err);
+  }
 }
