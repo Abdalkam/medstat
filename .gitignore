@@ -37,3 +37,5 @@ src-tauri/Cargo.lock
 .env.*
 node_modules/
 dist/
+
+vercel.json.bak-*
