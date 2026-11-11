@@ -39,3 +39,4 @@ node_modules/
 dist/
 
 vercel.json.bak-*
+.env*
