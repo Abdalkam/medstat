@@ -2,7 +2,7 @@
 // TRAINER live classroom: session control, blackboard with drawing tools,
 // uploaded-material (lesson pages) controls, per-learner mic/cam permissions,
 // raised hands, and the trainer's own AV bar.
-import React, { useEffect, useState, useRef, useCallback } from "react";
+import React, { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import type { CourseMaterial, LivePresentation, User, BusinessSettings, Stroke } from "../types";
 import LiveClassView from "../components/LiveClassView";
@@ -55,10 +55,70 @@ function mapMaterial(m: Record<string, unknown>): CourseMaterial {
   return { id: m.id as string, courseId: m.course_id as string, tenantId: m.tenant_id as string, title: (m.title as string) || "Untitled", description: (m.description as string) || "", fileUrl: (m.file_data as string) || (m.file_url as string) || "", fileName: (m.file_name as string) || (m.title as string) || "Untitled", fileType: (m.file_type as string) || "application/octet-stream", allowDownload: (m.allow_download as boolean) ?? true, uploadedBy: (m.uploaded_by as string) || "", uploadedAt: (m.uploaded_at as string) || (m.created_at as string) || "", isPresentation: (m.is_presentation as boolean) ?? false, presentationOrder: (m.presentation_order as number) ?? 0 };
 }
 
+/* Static blackboard font settings (no UI to change them yet). */
+const FONT_OPTIONS: FontOptions = {
+  fontFamily: "Arial",
+  fontSize: 24,
+  fontColor: "#FFFFFF",
+  fontWeight: "normal",
+  fontStyle: "normal",
+};
+
+/* ---- re-render guards ------------------------------------------------------ */
+/* fetchLiveData() runs every 5s and on every realtime event. These helpers let
+   it skip React state updates when the fetched data is identical to what is
+   already on screen: replacing state with a fresh-but-equal object used to
+   re-render the whole classroom several times a minute, which re-ran inline
+   ref callbacks and made the camera tile blink. */
+
+function sameJson(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+function sameLivePresentation(a: LivePresentation | null, b: LivePresentation | null): boolean {
+  if (!a || !b) return a === b;
+  return (
+    a.id === b.id &&
+    a.materialId === b.materialId &&
+    a.isBlackboard === b.isBlackboard &&
+    a.currentPage === b.currentPage &&
+    sameJson(a.blackboardStrokes, b.blackboardStrokes) &&
+    sameJson(a.blackboardLines, b.blackboardLines) &&
+    sameJson(a.blackboardLabels, b.blackboardLabels)
+  );
+}
+
+/* Course materials can carry large inline base64 payloads (file_data), so
+   compare a cheap signature instead of deep-equality. */
+function sameMaterial(a: CourseMaterial | null, b: CourseMaterial | null): boolean {
+  if (!a || !b) return a === b;
+  return (
+    a.id === b.id &&
+    a.fileName === b.fileName &&
+    a.fileType === b.fileType &&
+    a.isPresentation === b.isPresentation &&
+    a.presentationOrder === b.presentationOrder &&
+    (a.fileUrl?.length ?? 0) === (b.fileUrl?.length ?? 0)
+  );
+}
+
+function sameMaterials(a: CourseMaterial[], b: CourseMaterial[]): boolean {
+  return a.length === b.length && a.every((m, i) => sameMaterial(m, b[i]));
+}
+
 export default function TrainerLiveClassroom() {
   const { courseId } = useParams();
   const navigate = useNavigate();
-  const currentUser = JSON.parse(localStorage.getItem("currentUser") || "{}");
+  /* Read once per mount and parse defensively — JSON.parse on every render
+     was wasteful, and a corrupted localStorage value could throw. */
+  const currentUser = useMemo(() => {
+    try {
+      const raw = localStorage.getItem("currentUser");
+      return raw ? JSON.parse(raw) : {};
+    } catch {
+      return {};
+    }
+  }, []);
   const tenantId = currentUser.tenantId;
 
   const [sessionActive, setSessionActive] = useState(false);
@@ -81,7 +141,6 @@ export default function TrainerLiveClassroom() {
   const [penColor, setPenColor] = useState("#FFFFFF");
   const [penWidth, setPenWidth] = useState(4);
   const [eraserSize, setEraserSize] = useState(30);
-  const [fontOptions] = useState<FontOptions>({ fontFamily: "Arial", fontSize: 24, fontColor: "#FFFFFF", fontWeight: "normal", fontStyle: "normal" });
 
   const fetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const daily = useDaily();
@@ -115,6 +174,21 @@ export default function TrainerLiveClassroom() {
   useDailyEvent("track-started", (event) => { if (event.participant?.local && event.track?.kind === "video") setVideoTrack(event.track as unknown as MediaStreamTrack); });
   useDailyEvent("track-stopped", (event) => { if (event.participant?.local && event.track?.kind === "video") setVideoTrack(null); });
 
+  /* Self-view tile: attach the camera stream once per track. Do NOT build the
+     MediaStream inside an inline ref callback — inline refs re-run on every
+     re-render, and re-assigning srcObject restarts the video element. That is
+     what made the tile blink on every poll / blackboard stroke. */
+  const selfViewRef = useRef<HTMLVideoElement | null>(null);
+  useEffect(() => {
+    const el = selfViewRef.current;
+    if (!el) return;
+    if (videoTrack) {
+      el.srcObject = new MediaStream([videoTrack]);
+      el.play().catch(() => {});
+    }
+    return () => { el.srcObject = null; };
+  }, [videoTrack, isCamOn]);
+
   useEffect(() => {
     const fetchInitial = async () => {
       if (!tenantId) return;
@@ -140,16 +214,19 @@ export default function TrainerLiveClassroom() {
 
     const localPres = await getLivePresentation(courseId);
     if (localPres) {
-      setLiveState(localPres);
+      setLiveState((prev) => (sameLivePresentation(prev, localPres) ? prev : localPres));
       setIsBlackboardMode(localPres.isBlackboard ?? false);
       if (localPres.materialId) {
         const localMat = await db.materials.get(localPres.materialId);
-        if (localMat) setPresentation(localMat);
+        if (localMat) setPresentation((prev) => (sameMaterial(prev, localMat) ? prev : localMat));
       }
     }
 
     const localMats = await getCourseMaterials(courseId);
-    if (localMats.length > 0) setMaterials(localMats.sort((a, b) => (a.presentationOrder ?? 0) - (b.presentationOrder ?? 0)));
+    if (localMats.length > 0) {
+      const sorted = [...localMats].sort((a, b) => (a.presentationOrder ?? 0) - (b.presentationOrder ?? 0));
+      setMaterials((prev) => (sameMaterials(prev, sorted) ? prev : sorted));
+    }
 
     try {
       const { data: liveSess, error: liveSessErr } = await supabase.from("live_session").select("*").eq("course_id", courseId).maybeSingle();
@@ -163,7 +240,7 @@ export default function TrainerLiveClassroom() {
       if (livePresErr) console.error("[live] live_presentations fetch failed:", livePresErr.message);
       if (livePres) {
         const mappedPres = { id: livePres.id, courseId: livePres.course_id, materialId: livePres.material_id || "", isBlackboard: livePres.is_blackboard ?? false, blackboardStrokes: (livePres.blackboard_strokes as Stroke[]) || [], blackboardLines: (livePres.blackboard_lines as string[]) || [], blackboardLabels: (livePres.blackboard_labels as any[]) || [], startedBy: livePres.started_by, updatedAt: livePres.updated_at, currentPage: livePres.current_page ?? 1, tenantId: livePres.tenant_id };
-        setLiveState(mappedPres);
+        setLiveState((prev) => (sameLivePresentation(prev, mappedPres) ? prev : mappedPres));
         setIsBlackboardMode(mappedPres.isBlackboard);
         await updatePresentation(mappedPres);
 
@@ -172,22 +249,24 @@ export default function TrainerLiveClassroom() {
           if (matErr) console.error("[live] presentation material fetch failed:", matErr.message);
           if (mat) {
             const mappedMat = mapMaterial(mat);
-            setPresentation(mappedMat);
+            setPresentation((prev) => (sameMaterial(prev, mappedMat) ? prev : mappedMat));
             await db.materials.put(mappedMat);
           }
         } else setPresentation(null);
       } else if (!localPres) {
-        // FIX: cloud has no live_presentations row (offline, RLS, or failed
-        // insert). Keep whatever the local Dexie copy is showing instead of
-        // wiping the trainer's screen back to "Select a page from the sidebar."
-        setLiveState(null); setIsBlackboardMode(false); setPresentation(null);
+        // Cloud has no live_presentations row (offline, RLS, or a failed
+        // insert). Only clear the screen when there is no local Dexie copy
+        // either; otherwise keep showing it.
+        setLiveState(null);
+        setIsBlackboardMode(false);
+        setPresentation(null);
       }
 
       const { data: mats, error: matsErr } = await supabase.from("course_materials").select("*").eq("course_id", courseId).eq("tenant_id", tenantId).order("presentation_order", { ascending: true });
       if (matsErr) console.error("[live] course_materials fetch failed:", matsErr.message);
       if (mats && mats.length > 0) {
         const mappedMats = mats.map(mapMaterial);
-        setMaterials(mappedMats);
+        setMaterials((prev) => (sameMaterials(prev, mappedMats) ? prev : mappedMats));
         await db.materials.bulkPut(mappedMats);
       }
 
@@ -200,22 +279,23 @@ export default function TrainerLiveClassroom() {
           .filter((h: any) => userMap.has(h.user_id as string))
           .map((h: any) => ({ ...h, username: userMap.get(h.user_id as string)! }))
           .sort((a: any, b: any) => new Date(a.created_at as string).getTime() - new Date(b.created_at as string).getTime());
-        setRaisedHands(mappedHands);
-      } else setRaisedHands([]);
+        setRaisedHands((prev) => (sameJson(prev, mappedHands) ? prev : mappedHands));
+      } else setRaisedHands((prev) => (prev.length === 0 ? prev : []));
 
       const { data: atts } = await supabase.from("active_attendances").select("user_id").eq("course_id", courseId);
       if (atts && atts.length > 0) {
         const attUserIds = atts.map((a: Record<string, unknown>) => a.user_id as string).filter((id: string) => id !== currentUser.id);
         const { data: attUsers } = await supabase.from("users").select("*").in("id", attUserIds).eq("role", "trainee");
-        setActiveLearners(attUsers ? attUsers.map((u: Record<string, unknown>) => ({ id: u.id as string, username: u.username as string, email: (u.email as string) || "", password: (u.password as string) || "", role: (u.role as "trainer" | "trainee" | "admin"), profilePic: (u.profile_pic as string) || "", phone: (u.phone as string) || "", assignedCourses: (u.assigned_courses as string[]) || [], tenantId: u.tenant_id as string, createdAt: u.created_at as string })) : []);
-      } else setActiveLearners([]);
+        const mappedAtt = attUsers ? attUsers.map((u: Record<string, unknown>) => ({ id: u.id as string, username: u.username as string, email: (u.email as string) || "", password: (u.password as string) || "", role: (u.role as "trainer" | "trainee" | "admin"), profilePic: (u.profile_pic as string) || "", phone: (u.phone as string) || "", assignedCourses: (u.assigned_courses as string[]) || [], tenantId: u.tenant_id as string, createdAt: u.created_at as string })) : [];
+        setActiveLearners((prev) => (sameJson(prev, mappedAtt) ? prev : mappedAtt));
+      } else setActiveLearners((prev) => (prev.length === 0 ? prev : []));
 
       const { data: speakers } = await supabase.from("allowed_speakers").select("user_id, can_audio, can_video, allowed").eq("course_id", courseId);
       const permsMap: Record<string, { can_audio: boolean; can_video: boolean }> = {};
       (speakers || []).forEach((s: Record<string, unknown>) => {
         permsMap[s.user_id as string] = { can_audio: (s.can_audio as boolean) ?? (s.allowed as boolean) ?? false, can_video: (s.can_video as boolean) ?? false };
       });
-      setSpeakerPerms(permsMap);
+      setSpeakerPerms((prev) => (sameJson(prev, permsMap) ? prev : permsMap));
     } catch (err) { console.warn("Offline: Using local data for classroom"); }
   }, [courseId, tenantId, currentUser.id]);
 
@@ -310,6 +390,28 @@ export default function TrainerLiveClassroom() {
     try { const n = !isCamOn; await daily!.setLocalVideo(n); setIsCamOn(n); } catch (e) {}
   }
 
+  /* Create a fresh live_presentations row for this course (any previous row is
+     replaced). Shared by toggleBlackboard / startSession / selectPage, which
+     each used to hand-roll the same payload. */
+  async function createLivePresentationRow(materialId: string, isBlackboard: boolean) {
+    if (!courseId || !tenantId) return;
+    await startPresentation(courseId, materialId, currentUser.id);
+    await supabase.from("live_presentations").delete().eq("course_id", courseId);
+    await supabase.from("live_presentations").insert({
+      id: crypto.randomUUID(),
+      tenant_id: tenantId,
+      course_id: courseId,
+      started_by: currentUser.id,
+      material_id: materialId,
+      current_page: 1,
+      is_blackboard: isBlackboard,
+      blackboard_strokes: [],
+      blackboard_lines: [],
+      blackboard_labels: [],
+      updated_at: new Date().toISOString(),
+    });
+  }
+
   async function toggleBlackboard() {
     if (!courseId || !tenantId) return; setActiveTool("pen"); const newMode = !isBlackboardMode; setIsBlackboardMode(newMode);
     if (newMode) setPresentation(null); else if (materials.length > 0) { const currentMatId = liveState?.materialId || materials[0].id; setPresentation(materials.find(m => m.id === currentMatId) || materials[0]); }
@@ -319,10 +421,7 @@ export default function TrainerLiveClassroom() {
       await updatePresentation(updated);
       await supabase.from("live_presentations").update({ is_blackboard: newMode, updated_at: new Date().toISOString() }).eq("id", liveState.id);
     } else {
-      const newPres = { id: crypto.randomUUID(), tenant_id: tenantId, course_id: courseId, started_by: currentUser.id, material_id: "", current_page: 1, is_blackboard: newMode, blackboard_strokes: [], blackboard_lines: [], blackboard_labels: [], updated_at: new Date().toISOString() };
-      await supabase.from("live_presentations").delete().eq("course_id", courseId);
-      await supabase.from("live_presentations").insert(newPres);
-      await startPresentation(courseId, "", currentUser.id);
+      await createLivePresentationRow("", newMode);
       fetchLiveData();
     }
   }
@@ -400,10 +499,10 @@ export default function TrainerLiveClassroom() {
     else { await supabase.from("live_session").insert({ id: crypto.randomUUID(), tenant_id: tenantId, course_id: courseId, trainer_id: currentUser.id, active: true, started_at: new Date().toISOString(), updated_at: new Date().toISOString(), created_at: new Date().toISOString() }); }
     setSessionActive(true);
     if (materials.length > 0 && !presentation) {
-      const firstMat = materials[0]; setPresentation(firstMat); setIsBlackboardMode(false);
-      await startPresentation(courseId, firstMat.id, currentUser.id);
-      await supabase.from("live_presentations").delete().eq("course_id", courseId);
-      await supabase.from("live_presentations").insert({ id: crypto.randomUUID(), tenant_id: tenantId, course_id: courseId, started_by: currentUser.id, material_id: firstMat.id, current_page: 1, is_blackboard: false, blackboard_strokes: [], blackboard_lines: [], blackboard_labels: [], updated_at: new Date().toISOString() });
+      const firstMat = materials[0];
+      setPresentation(firstMat);
+      setIsBlackboardMode(false);
+      await createLivePresentationRow(firstMat.id, false);
     }
   }
 
@@ -415,7 +514,14 @@ export default function TrainerLiveClassroom() {
     await supabase.from("live_presentations").delete().eq("course_id", courseId);
     await supabase.from("allowed_speakers").delete().eq("course_id", courseId);
     await supabase.from("raised_hands").delete().eq("course_id", courseId);
-    if (daily && isVoiceJoined) { daily.leave(); setIsVoiceJoined(false); setIsMicOn(false); setIsCamOn(false); setVideoTrack(null); } navigate("/trainer");
+    if (daily && isVoiceJoined) {
+      daily.leave();
+      setIsVoiceJoined(false);
+      setIsMicOn(false);
+      setIsCamOn(false);
+      setVideoTrack(null);
+    }
+    navigate("/trainer");
   }
 
   async function selectPage(materialId: string) {
@@ -426,9 +532,7 @@ export default function TrainerLiveClassroom() {
       await updatePresentation(updatedPres);
       await supabase.from("live_presentations").update({ material_id: materialId, is_blackboard: false, current_page: 1, updated_at: new Date().toISOString() }).eq("id", liveState.id);
     } else {
-      await startPresentation(courseId, materialId, currentUser.id);
-      await supabase.from("live_presentations").delete().eq("course_id", courseId);
-      await supabase.from("live_presentations").insert({ id: crypto.randomUUID(), tenant_id: tenantId, course_id: courseId, started_by: currentUser.id, material_id: materialId, current_page: 1, is_blackboard: false, blackboard_strokes: [], blackboard_lines: [], blackboard_labels: [], updated_at: new Date().toISOString() });
+      await createLivePresentationRow(materialId, false);
     }
   }
 
@@ -595,7 +699,7 @@ export default function TrainerLiveClassroom() {
             </div>
             <div style={{ width: "50%", height: "100%", flexShrink: 0, display: "flex", flexDirection: "column", overflow: "hidden", background: "#1A1A1A" }}>
               <div style={{ flex: 1, position: "relative", overflow: "hidden", cursor: activeTool === "label" ? "crosshair" : undefined }} onClick={activeTool === "label" ? handleCanvasClick : undefined}>
-                <DrawingBlackboard isTrainer={true} strokes={liveState?.blackboardStrokes || []} onStrokeEnd={handleStrokeEnd} onErase={handleErase} activeTool={drawingActiveTool} penColor={penColor} penWidth={penWidth} eraserSize={eraserSize} fontFamily={fontOptions.fontFamily} fontSize={fontOptions.fontSize} fontColor={fontOptions.fontColor} fontWeight={fontOptions.fontWeight} fontStyle={fontOptions.fontStyle} courseId={courseId!} />
+                <DrawingBlackboard isTrainer={true} strokes={liveState?.blackboardStrokes || []} onStrokeEnd={handleStrokeEnd} onErase={handleErase} activeTool={drawingActiveTool} penColor={penColor} penWidth={penWidth} eraserSize={eraserSize} fontFamily={FONT_OPTIONS.fontFamily} fontSize={FONT_OPTIONS.fontSize} fontColor={FONT_OPTIONS.fontColor} fontWeight={FONT_OPTIONS.fontWeight} fontStyle={FONT_OPTIONS.fontStyle} courseId={courseId!} />
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: "6px", background: "#111", padding: "8px 12px", overflowX: "auto" }}>
                 <button onClick={() => selectTool("pen")} title="Pen" style={toolBtnStyle(activeTool === "pen")}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/></svg></button>
@@ -635,7 +739,7 @@ export default function TrainerLiveClassroom() {
           {/* Trainer self-view */}
           {isCamOn && videoTrack && (
             <div style={videoTileContainerStyle}>
-              <video autoPlay muted playsInline ref={(el) => { if (el && videoTrack) { const stream = new MediaStream([videoTrack]); if (el.srcObject !== stream) el.srcObject = stream; } }} style={{ width: "100%", height: "100%", objectFit: "cover", transform: "scaleX(-1)" }} />
+              <video autoPlay muted playsInline ref={selfViewRef} style={{ width: "100%", height: "100%", objectFit: "cover", transform: "scaleX(-1)" }} />
               <button onClick={() => setIsVideoExpanded(!isVideoExpanded)} style={{ position: "absolute", top: "8px", right: "8px", background: "rgba(0,0,0,0.5)", border: "none", color: "#fff", borderRadius: "8px", padding: "6px 10px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
                 {isVideoExpanded ? "Collapse" : "Expand"}
               </button>

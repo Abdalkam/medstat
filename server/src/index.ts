@@ -72,11 +72,30 @@ function formatPhoneNumber(phone: string): string {
 // (Collections API: pulls money FROM the payer's MoMo account INTO the wallet.
 //  Prepaid contract: usage debits the wallet; hard stop at zero.)
 // ==========================================
-const MTN_TARGET_ENV = process.env.MTN_TARGET_ENV || "sandbox";
+const MTN_TARGET_ENV = process.env.MTN_TARGET_ENV || "sandbox"; // "sandbox" | "production" | country value
 const MTN_IS_SANDBOX = MTN_TARGET_ENV === "sandbox";
-const MTN_BASE_URL = MTN_IS_SANDBOX
-  ? "https://sandbox.momodeveloper.mtn.com"
-  : "https://proxy.momoapi.mtn.com";
+// Base URL — overridable via MTN_BASE_URL because MTN migrated Uganda to the
+// new MoMo platform (announcement 12 Oct 2026):
+//   https://momoapi.momo.africa        NEW platform (Uganda live; credentials
+//                                      come from the Partner Portal: User ID +
+//                                      Credential Token)
+//   https://proxy.momoapi.mtn.com      LEGACY platform (old API User UUID +
+//                                      API Key; being phased out)
+const MTN_BASE_URL = (
+  process.env.MTN_BASE_URL ||
+  (MTN_IS_SANDBOX
+    ? "https://sandbox.momodeveloper.mtn.com"
+    : "https://momoapi.momo.africa")
+).replace(/\/+$/, "");
+// X-Target-Environment header — country-specific in production. MTN Uganda's
+// value is "mtnuganda"; a bare "production" is NOT accepted and would fail
+// auth. Setting MTN_TARGET_ENV directly to a country value also works.
+const MTN_TARGET_ENV_HEADER =
+  MTN_TARGET_ENV === "sandbox"
+    ? "sandbox"
+    : MTN_TARGET_ENV === "production"
+      ? "mtnuganda"
+      : MTN_TARGET_ENV;
 const MTN_SUBSCRIPTION_KEY = process.env.MTN_SUBSCRIPTION_KEY || "";
 const MTN_API_USER = process.env.MTN_API_USER || "";
 const MTN_API_KEY = process.env.MTN_API_KEY || "";
@@ -95,11 +114,15 @@ async function getMomoToken(): Promise<string> {
     return momoTokenCache.value;
   }
   const basic = Buffer.from(`${MTN_API_USER}:${MTN_API_KEY}`).toString("base64");
-  const res = await fetch(`${MTN_BASE_URL}/collection/token/`, {
+  // Sandbox portal documents /collection/token/ (trailing slash); the new
+  // platform docs use /collection/token — match each platform exactly.
+  const res = await fetch(`${MTN_BASE_URL}/collection/token${MTN_IS_SANDBOX ? "/" : ""}`, {
     method: "POST",
     headers: {
       "Authorization": `Basic ${basic}`,
       "X-Reference-Id": MTN_API_USER,
+      // Mandatory since the Oct 2026 "One API" MoMo platform upgrade
+      "X-Target-Environment": MTN_TARGET_ENV_HEADER,
       "Ocp-Apim-Subscription-Key": MTN_SUBSCRIPTION_KEY,
     },
   });
@@ -695,7 +718,7 @@ app.post("/api/wallet/topup", requireAuth, async (req: Request, res: Response) =
       headers: {
         "Authorization": `Bearer ${token}`,
         "X-Reference-Id": referenceId, // becomes the status key
-        "X-Target-Environment": MTN_TARGET_ENV,
+        "X-Target-Environment": MTN_TARGET_ENV_HEADER,
         "Ocp-Apim-Subscription-Key": MTN_SUBSCRIPTION_KEY,
         "Content-Type": "application/json",
       },
@@ -763,7 +786,7 @@ app.post("/api/wallet/topup/status", requireAuth, async (req: Request, res: Resp
     const momoRes = await fetch(`${MTN_BASE_URL}/collection/v1_0/requesttopay/${reference}`, {
       headers: {
         "Authorization": `Bearer ${token}`,
-        "X-Target-Environment": MTN_TARGET_ENV,
+        "X-Target-Environment": MTN_TARGET_ENV_HEADER,
         "Ocp-Apim-Subscription-Key": MTN_SUBSCRIPTION_KEY,
       },
     });

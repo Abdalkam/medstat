@@ -1,3 +1,6 @@
+// src/trainer/AssignmentBuilder.tsx
+// Builds/edits a training module: title & details, unlock rule, and slides of
+// text / media / question blocks.
 import React, { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { supabase } from "../auth/supabase";
@@ -43,7 +46,22 @@ const CARD: React.CSSProperties = {
   boxSizing: "border-box",
 };
 
+/* Container for each block (text / media / question) inside a slide. */
+const BLOCK_BOX: React.CSSProperties = {
+  background: C.bg,
+  border: `1px solid ${C.sep}`,
+  borderRadius: 12,
+  padding: 14,
+};
+
 const MEDIA_BUCKET = "assignment-media";
+
+/* Markup markers for the bold/italic/underline toolbar. */
+const MARKERS: Record<"bold" | "italic" | "underline", string> = {
+  bold: "**",
+  italic: "*",
+  underline: "__",
+};
 
 /* ================================= types ================================== */
 
@@ -97,20 +115,9 @@ interface BusinessInfo {
 
 /* ================================ helpers ================================= */
 
+/* Always a valid uuid — safe to use for database id columns (even when the
+   table has no default on "id") and for local block/slide ids alike. */
 function uid(): string {
-  try {
-    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-      return crypto.randomUUID();
-    }
-  } catch {
-    /* fall through */
-  }
-  return `id-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
-/* Always a valid uuid — safe to use for database id columns,
-   even if the table has no default on "id". */
-function newId(): string {
   try {
     if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
       return crypto.randomUUID();
@@ -678,12 +685,6 @@ export default function AssignmentBuilder() {
 
   /* ----------------------------- text formatting ---------------------------- */
 
-  const MARKERS: Record<"bold" | "italic" | "underline", string> = {
-    bold: "**",
-    italic: "*",
-    underline: "__",
-  };
-
   const applyMarkup = (
     si: number,
     blockId: string,
@@ -834,7 +835,7 @@ export default function AssignmentBuilder() {
         // case the column has no default.
         const created = {
           ...payload,
-          id: newId(),
+          id: uid(),
           trainer_id: user.id,
           created_at: new Date().toISOString(),
         };
@@ -1160,16 +1161,9 @@ export default function AssignmentBuilder() {
                   {/* Blocks */}
                   <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
                     {slide.blocks.map((block) => {
-                      const boxStyle: React.CSSProperties = {
-                        background: C.bg,
-                        border: `1px solid ${C.sep}`,
-                        borderRadius: 12,
-                        padding: 14,
-                      };
-
                       if (block.type === "text") {
                         return (
-                          <div key={block.id} style={boxStyle}>
+                          <div key={block.id} style={BLOCK_BOX}>
                             <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
                               <BlockTag tone="blue">Text</BlockTag>
                               <div style={{ flex: 1 }} />
@@ -1216,7 +1210,7 @@ export default function AssignmentBuilder() {
                       if (block.type === "media") {
                         const url = mediaUrl(block.path);
                         return (
-                          <div key={block.id} style={boxStyle}>
+                          <div key={block.id} style={BLOCK_BOX}>
                             <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
                               <BlockTag tone="purple">Media</BlockTag>
                               <span style={{ color: C.purple, display: "inline-flex", flexShrink: 0 }}>
@@ -1259,7 +1253,7 @@ export default function AssignmentBuilder() {
 
                       // question
                       return (
-                        <div key={block.id} style={boxStyle}>
+                        <div key={block.id} style={BLOCK_BOX}>
                           <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
                             <BlockTag tone="green">Question</BlockTag>
                             <div style={{ flex: 1 }} />

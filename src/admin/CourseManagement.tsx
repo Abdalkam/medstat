@@ -1,6 +1,6 @@
 
 // src/admin/AssignCourses.tsx
-// Medstat / Smartpages — Professional Medical Design
+// Medstat — Material Design 3 (Android) redesign — master/detail assignment layout
 // Course Assignment Manager
 //
 // Features:
@@ -32,78 +32,103 @@ import {
 } from "../database/enrollmentDB";
 
 /* ============================================================================
-   PROFESSIONAL MEDICAL DESIGN SYSTEM
+   MATERIAL DESIGN 3 (MD3) DESIGN SYSTEM — Material You, light scheme
 ============================================================================ */
 
 const C = {
-  primary: "#1769AA",
-  primaryDark: "#12558A",
+  primary: "#0B57D0",
+  // Darker primary shade (reserved). Interactive hovers on primary use the
+  // lighter #1F64D4 state layer per the MD3 spec (see save button below).
+  primaryDark: "#0842A0",
   onPrimary: "#FFFFFF",
 
-  primaryContainer: "#E8F2FA",
-  onPrimaryContainer: "#123B5D",
+  primaryContainer: "#D3E3FD",
+  onPrimaryContainer: "#041E49",
 
   surface: "#FFFFFF",
-  background: "#F5F7FA",
+  background: "#F8FAFD",
 
-  onSurface: "#202B36",
-  onSurfaceVariant: "#667482",
+  onSurface: "#1F1F1F",
+  onSurfaceVariant: "#444746",
 
-  secondaryContainer: "#E9EEF3",
-  surfaceVariant: "#EDF2F6",
+  secondaryContainer: "#DAE2F2",
+  surfaceVariant: "#E9EEF6",
 
-  outline: "#E1E7ED",
-  outlineVariant: "#B8C5D1",
+  outline: "#747775",
+  outlineVariant: "#C4C7C5",
 
-  inset: "#F7F9FB",
-  skeletonBase: "#E9EEF3",
+  inset: "#F0F4F9",
+  skeletonBase: "#E1E6ED",
 
-  green: "#21845B",
-  greenBg: "#E8F5EE",
+  separatorLight: "#E1E6ED",
 
-  orange: "#B7791F",
-  orangeBg: "#FFF5DF",
+  green: "#146C2E",
+  greenBg: "#E6F4EA",
 
-  red: "#C74646",
-  redBg: "#FCECEC",
+  orange: "#B06000",
+  orangeBg: "#FEF7E0",
 
-  purple: "#1769AA",
-  purpleBg: "#E8F2FA",
+  red: "#B3261E",
+  redBg: "#F9DEDC",
 
-  blue: "#1769AA",
-  blueBg: "#E8F2FA",
+  purple: "#8430CE",
+  purpleBg: "#F3E8FD",
 
-  freeText: "#1769AA",
-  freeBg: "#E8F2FA",
+  blue: "#0B57D0",
+  blueBg: "#D3E3FD",
 
-  paidText: "#1769AA",
-  paidBg: "#EDF2F6",
+  freeText: "#146C2E",
+  freeBg: "#E6F4EA",
+
+  paidText: "#B06000",
+  paidBg: "#FEF7E0",
+
+  inverseSurface: "#2D2F31",
+  inverseOnSurface: "#F0F4F9",
+  inversePrimary: "#A8C7FA",
+
+  errorContainer: "#F9DEDC",
+  scrim: "rgba(0,0,0,0.40)",
 };
 
 const font =
-  "'Inter', 'Google Sans', 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+  "'Google Sans', 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif";
+
+/* MD3 elevation — soft, layered, low-contrast shadows. */
 
 const S = {
-  level1: "0 1px 3px rgba(25,45,65,0.06)",
-  level2: "0 4px 12px rgba(25,45,65,0.10)",
+  level1: "0 1px 2px 0 rgba(0,0,0,0.10), 0 1px 3px 1px rgba(0,0,0,0.07)",
+  level2: "0 1px 2px 0 rgba(0,0,0,0.12), 0 2px 6px 2px rgba(0,0,0,0.08)",
+  level3: "0 2px 3px 0 rgba(0,0,0,0.15), 0 6px 10px 4px rgba(0,0,0,0.09)",
 };
 
 const R = {
   sm: 8,
   md: 12,
   lg: 16,
-  xl: 20,
+  xl: 28,
 };
 
 const gutter = "clamp(14px, 3vw, 28px)";
 const PAGE_MAX = 1440;
-const motion = "all 0.2s ease";
+const motion = "all 0.2s cubic-bezier(0.2, 0, 0, 1)";
+
+/* MD3 elevated card: clean white surface, soft shadow, no border. */
 
 const cardBase: CSSProperties = {
   background: C.surface,
-  borderRadius: R.lg,
+  borderRadius: R.md,
   boxShadow: S.level1,
-  border: `1px solid ${C.outline}`,
+  boxSizing: "border-box",
+  minWidth: 0,
+};
+
+/* MD3 group card: outlined, flat — nests sections inside an elevated card. */
+
+const groupBase: CSSProperties = {
+  background: C.surface,
+  border: `1px solid ${C.outlineVariant}`,
+  borderRadius: R.md,
   boxSizing: "border-box",
   minWidth: 0,
 };
@@ -114,12 +139,12 @@ const cardBase: CSSProperties = {
 
 function getAvatarColor(str: string) {
   const colors = [
-    "#1769AA",
-    "#21845B",
-    "#527A9B",
-    "#64748B",
-    "#347D91",
-    "#496B87",
+    "#0B57D0",
+    "#B3261E",
+    "#146C2E",
+    "#B06000",
+    "#8430CE",
+    "#444746",
   ];
 
   let hash = 0;
@@ -129,6 +154,25 @@ function getAvatarColor(str: string) {
   }
 
   return colors[Math.abs(hash) % colors.length];
+}
+
+/* MD3 ripple — transient ink wash spawned at the click point.
+   Purely presentational; rows using it are position:relative + overflow:hidden. */
+
+function spawnRipple(e: {
+  currentTarget: Element;
+  clientX: number;
+  clientY: number;
+}) {
+  const rect = e.currentTarget.getBoundingClientRect();
+
+  const ripple = document.createElement("div");
+
+  ripple.style.cssText = `position:absolute;left:${e.clientX - rect.left}px;top:${e.clientY - rect.top}px;width:40px;height:40px;margin-left:-20px;margin-top:-20px;border-radius:50%;background:${C.primary};pointer-events:none;animation:acRipple 0.6s cubic-bezier(0.2,0,0,1) forwards;`;
+
+  e.currentTarget.appendChild(ripple);
+
+  setTimeout(() => ripple.remove(), 600);
 }
 
 /** Uganda Shillings formatter. */
@@ -203,6 +247,8 @@ function mapEnrollmentFromSupabase(
    SMALL UI COMPONENTS
 ============================================================================ */
 
+/* MD3 assist chip — 8dp shape, tonal container. */
+
 function Chip({
   label,
   bg,
@@ -217,13 +263,13 @@ function Chip({
       style={{
         display: "inline-flex",
         alignItems: "center",
-        padding: "4px 9px",
-        borderRadius: 7,
+        padding: "3px 10px",
+        borderRadius: R.sm,
         background: bg,
         color: fg,
-        fontSize: 11.5,
-        fontWeight: 600,
-        letterSpacing: "0.01em",
+        fontSize: 12,
+        fontWeight: 500,
+        letterSpacing: "0.02em",
         whiteSpace: "nowrap",
         flexShrink: 0,
       }}
@@ -247,14 +293,14 @@ function SectionHeader({
         alignItems: "center",
         justifyContent: "space-between",
         gap: 12,
-        padding: "17px 16px 9px",
+        padding: "12px 8px 6px 16px",
       }}
     >
       <span
         style={{
-          fontSize: 13,
-          color: C.onSurface,
-          fontWeight: 650,
+          fontSize: 14,
+          color: C.onSurfaceVariant,
+          fontWeight: 500,
           letterSpacing: "0.01em",
         }}
       >
@@ -265,6 +311,8 @@ function SectionHeader({
     </div>
   );
 }
+
+/* MD3 text button — transparent pill with 8% primary state layer on hover. */
 
 function MiniTextButton({
   label,
@@ -284,17 +332,23 @@ function MiniTextButton({
         border: "none",
         background: "transparent",
         color: disabled ? C.outlineVariant : C.primary,
-        fontSize: 12.5,
-        fontWeight: 600,
+        fontSize: 14,
+        fontWeight: 500,
+        letterSpacing: "0.01em",
         fontFamily: font,
         cursor: disabled ? "default" : "pointer",
-        padding: "7px 10px",
-        borderRadius: 7,
+        padding: "0 16px",
+        minHeight: 40,
+        borderRadius: R.xl,
         transition: motion,
+        whiteSpace: "nowrap",
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
       }}
       onMouseEnter={(e) => {
         if (!disabled) {
-          e.currentTarget.style.background = C.primaryContainer;
+          e.currentTarget.style.background = "rgba(11,87,208,0.08)";
         }
       }}
       onMouseLeave={(e) => {
@@ -306,17 +360,18 @@ function MiniTextButton({
   );
 }
 
-/** Professional checkbox. */
+/** MD3 checkbox — 20dp, 4dp corners, primary fill + white check when ticked. */
 
 function CheckSquare({ checked }: { checked: boolean }) {
   return (
     <div
       style={{
-        width: 19,
-        height: 19,
-        borderRadius: 5,
+        width: 20,
+        height: 20,
+        borderRadius: 4,
+        boxSizing: "border-box",
         flexShrink: 0,
-        border: checked ? `1px solid ${C.primary}` : `1.7px solid ${C.outlineVariant}`,
+        border: checked ? "none" : `2px solid ${C.outlineVariant}`,
         background: checked ? C.primary : "transparent",
         display: "flex",
         alignItems: "center",
@@ -326,12 +381,12 @@ function CheckSquare({ checked }: { checked: boolean }) {
     >
       {checked && (
         <svg
-          width="13"
-          height="13"
+          width="16"
+          height="16"
           viewBox="0 0 24 24"
           fill="none"
           stroke={C.onPrimary}
-          strokeWidth="3"
+          strokeWidth="2.5"
           strokeLinecap="round"
           strokeLinejoin="round"
         >
@@ -345,7 +400,7 @@ function CheckSquare({ checked }: { checked: boolean }) {
 function Avatar({
   name,
   pic,
-  size = 36,
+  size = 40,
 }: {
   name: string;
   pic?: string;
@@ -386,7 +441,7 @@ function Avatar({
             alignItems: "center",
             justifyContent: "center",
             fontSize: size * 0.42,
-            fontWeight: 600,
+            fontWeight: 500,
           }}
         >
           {(name || "?").charAt(0).toUpperCase()}
@@ -397,7 +452,7 @@ function Avatar({
 }
 
 /* ============================================================================
-   COURSE ICON
+   COURSE ICON — MD3 leading icon tile: 40dp, 12dp corners, container color
 ============================================================================ */
 
 function CourseIcon({
@@ -412,7 +467,7 @@ function CourseIcon({
       style={{
         width: size,
         height: size,
-        borderRadius: 10,
+        borderRadius: R.md,
         background: logo ? "transparent" : C.primaryContainer,
         overflow: "hidden",
         display: "flex",
@@ -451,7 +506,7 @@ function CourseIcon({
 }
 
 /* ============================================================================
-   TICKABLE PERSON ROW
+   TICKABLE PERSON ROW — MD3 list item with ripple + state layers
 ============================================================================ */
 
 function PersonRow({
@@ -467,7 +522,10 @@ function PersonRow({
 }) {
   return (
     <div
-      onClick={onToggle}
+      onClick={(e) => {
+        spawnRipple(e);
+        onToggle();
+      }}
       role="checkbox"
       aria-checked={checked}
       tabIndex={0}
@@ -481,20 +539,39 @@ function PersonRow({
         display: "flex",
         alignItems: "center",
         gap: 12,
-        padding: "10px 16px",
-        minHeight: 60,
-        borderBottom: `1px solid ${C.outline}`,
+        padding: "14px 20px 14px 16px",
+        minHeight: 64,
+        borderBottom: `1px solid ${C.separatorLight}`,
         cursor: "pointer",
         background: checked ? C.primaryContainer : C.surface,
         transition: motion,
+        position: "relative",
+        overflow: "hidden",
       }}
       onMouseEnter={(e) => {
-        if (!checked) e.currentTarget.style.background = C.inset;
+        if (!checked) {
+          e.currentTarget.style.background = C.surfaceVariant;
+          e.currentTarget.style.boxShadow =
+            "inset 0 0 0 9999px rgba(11,87,208,0.08)";
+        }
       }}
       onMouseLeave={(e) => {
         e.currentTarget.style.background = checked
           ? C.primaryContainer
           : C.surface;
+        e.currentTarget.style.boxShadow = "none";
+      }}
+      onMouseDown={(e) => {
+        if (!checked) {
+          e.currentTarget.style.boxShadow =
+            "inset 0 0 0 9999px rgba(11,87,208,0.12)";
+        }
+      }}
+      onMouseUp={(e) => {
+        if (!checked) {
+          e.currentTarget.style.boxShadow =
+            "inset 0 0 0 9999px rgba(11,87,208,0.08)";
+        }
       }}
     >
       <CheckSquare checked={checked} />
@@ -507,9 +584,9 @@ function PersonRow({
       <div style={{ flex: 1, minWidth: 0 }}>
         <div
           style={{
-            fontSize: 13.5,
+            fontSize: 15,
             color: checked ? C.onPrimaryContainer : C.onSurface,
-            fontWeight: 600,
+            fontWeight: 500,
             whiteSpace: "nowrap",
             overflow: "hidden",
             textOverflow: "ellipsis",
@@ -520,7 +597,8 @@ function PersonRow({
 
         <div
           style={{
-            fontSize: 12,
+            fontSize: 13,
+            fontWeight: 400,
             color: checked ? C.onPrimaryContainer : C.onSurfaceVariant,
             whiteSpace: "nowrap",
             overflow: "hidden",
@@ -544,7 +622,7 @@ function PersonRow({
 }
 
 /* ============================================================================
-   TICKABLE COURSE ROW
+   TICKABLE COURSE ROW — MD3 list item with ripple + state layers
 ============================================================================ */
 
 function CourseRow({
@@ -562,7 +640,10 @@ function CourseRow({
 
   return (
     <div
-      onClick={onToggle}
+      onClick={(e) => {
+        spawnRipple(e);
+        onToggle();
+      }}
       role="checkbox"
       aria-checked={checked}
       tabIndex={0}
@@ -576,32 +657,51 @@ function CourseRow({
         display: "flex",
         alignItems: "center",
         gap: 12,
-        padding: "10px 16px",
-        minHeight: 60,
-        borderBottom: `1px solid ${C.outline}`,
+        padding: "14px 20px 14px 16px",
+        minHeight: 64,
+        borderBottom: `1px solid ${C.separatorLight}`,
         cursor: "pointer",
         background: checked ? C.primaryContainer : C.surface,
         transition: motion,
+        position: "relative",
+        overflow: "hidden",
       }}
       onMouseEnter={(e) => {
-        if (!checked) e.currentTarget.style.background = C.inset;
+        if (!checked) {
+          e.currentTarget.style.background = C.surfaceVariant;
+          e.currentTarget.style.boxShadow =
+            "inset 0 0 0 9999px rgba(11,87,208,0.08)";
+        }
       }}
       onMouseLeave={(e) => {
         e.currentTarget.style.background = checked
           ? C.primaryContainer
           : C.surface;
+        e.currentTarget.style.boxShadow = "none";
+      }}
+      onMouseDown={(e) => {
+        if (!checked) {
+          e.currentTarget.style.boxShadow =
+            "inset 0 0 0 9999px rgba(11,87,208,0.12)";
+        }
+      }}
+      onMouseUp={(e) => {
+        if (!checked) {
+          e.currentTarget.style.boxShadow =
+            "inset 0 0 0 9999px rgba(11,87,208,0.08)";
+        }
       }}
     >
       <CheckSquare checked={checked} />
 
-      <CourseIcon logo={course.logo} size={38} />
+      <CourseIcon logo={course.logo} size={40} />
 
       <div style={{ flex: 1, minWidth: 0 }}>
         <div
           style={{
-            fontSize: 13.5,
+            fontSize: 15,
             color: checked ? C.onPrimaryContainer : C.onSurface,
-            fontWeight: 600,
+            fontWeight: 500,
             whiteSpace: "nowrap",
             overflow: "hidden",
             textOverflow: "ellipsis",
@@ -612,7 +712,8 @@ function CourseRow({
 
         <div
           style={{
-            fontSize: 12,
+            fontSize: 13,
+            fontWeight: 400,
             color: checked ? C.onPrimaryContainer : C.onSurfaceVariant,
             marginTop: 3,
           }}
@@ -644,16 +745,16 @@ function SkeletonRow() {
       style={{
         display: "flex",
         alignItems: "center",
-        padding: "13px 16px",
-        minHeight: 58,
-        borderBottom: `1px solid ${C.outline}`,
+        padding: "14px 20px 14px 16px",
+        minHeight: 64,
+        borderBottom: `1px solid ${C.separatorLight}`,
       }}
     >
       <div
         style={{
-          width: 38,
-          height: 38,
-          borderRadius: 10,
+          width: 40,
+          height: 40,
+          borderRadius: R.md,
           background: C.skeletonBase,
           animation: "acShimmer 1.5s ease-in-out infinite",
           flexShrink: 0,
@@ -694,7 +795,7 @@ function SkeletonRow() {
 }
 
 /* ============================================================================
-   SEARCH BOX
+   SEARCH BOX — MD3 search bar: 48dp tonal pill, leading icon, trailing clear
 ============================================================================ */
 
 function SearchBox({
@@ -710,21 +811,21 @@ function SearchBox({
     <div
       style={{
         position: "relative",
-        height: 42,
+        height: 48,
         boxSizing: "border-box",
       }}
     >
       <svg
         style={{
           position: "absolute",
-          left: 13,
+          left: 14,
           top: "50%",
           transform: "translateY(-50%)",
           pointerEvents: "none",
           color: C.onSurfaceVariant,
         }}
-        width="17"
-        height="17"
+        width="18"
+        height="18"
         viewBox="0 0 24 24"
         fill="none"
         stroke="currentColor"
@@ -743,13 +844,13 @@ function SearchBox({
         onChange={(e) => onChange(e.target.value)}
         style={{
           width: "100%",
-          height: 42,
-          paddingLeft: 40,
-          paddingRight: value ? 40 : 14,
-          backgroundColor: C.inset,
-          border: `1px solid ${C.outline}`,
-          borderRadius: 10,
-          fontSize: 13,
+          height: 48,
+          paddingLeft: 46,
+          paddingRight: value ? 44 : 16,
+          backgroundColor: C.surfaceVariant,
+          border: "1px solid transparent",
+          borderRadius: 24,
+          fontSize: 14,
           color: C.onSurface,
           outline: "none",
           fontFamily: font,
@@ -757,12 +858,10 @@ function SearchBox({
           transition: motion,
         }}
         onFocus={(e) => {
-          e.currentTarget.style.borderColor = C.primary;
-          e.currentTarget.style.background = C.surface;
+          e.currentTarget.style.background = C.separatorLight;
         }}
         onBlur={(e) => {
-          e.currentTarget.style.borderColor = C.outline;
-          e.currentTarget.style.background = C.inset;
+          e.currentTarget.style.background = C.surfaceVariant;
         }}
       />
 
@@ -773,11 +872,11 @@ function SearchBox({
           aria-label="Clear search"
           style={{
             position: "absolute",
-            right: 5,
+            right: 6,
             top: "50%",
             transform: "translateY(-50%)",
-            width: 30,
-            height: 30,
+            width: 32,
+            height: 32,
             borderRadius: "50%",
             border: "none",
             background: "transparent",
@@ -787,7 +886,14 @@ function SearchBox({
             alignItems: "center",
             justifyContent: "center",
             fontFamily: font,
-            fontSize: 19,
+            fontSize: 16,
+            transition: "background 0.15s ease",
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.background = C.separatorLight;
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = "transparent";
           }}
         >
           ×
@@ -822,7 +928,7 @@ function EmptyState({
         style={{
           width: 64,
           height: 64,
-          borderRadius: 18,
+          borderRadius: R.xl,
           background: C.primaryContainer,
           display: "flex",
           alignItems: "center",
@@ -836,7 +942,7 @@ function EmptyState({
           viewBox="0 0 24 24"
           fill="none"
           stroke={C.primary}
-          strokeWidth="1.6"
+          strokeWidth="1.8"
           strokeLinecap="round"
           strokeLinejoin="round"
         >
@@ -849,7 +955,7 @@ function EmptyState({
         style={{
           color: C.onSurface,
           fontSize: 15,
-          fontWeight: 650,
+          fontWeight: 500,
         }}
       >
         {title}
@@ -859,6 +965,7 @@ function EmptyState({
         style={{
           color: C.onSurfaceVariant,
           fontSize: 13,
+          fontWeight: 400,
           marginTop: 7,
           lineHeight: 1.6,
           maxWidth: 300,
@@ -1458,7 +1565,7 @@ export default function AssignCourses({
   }
 
   /* --------------------------------------------------------------------------
-     TUITION STYLE
+     TUITION STYLE — MD3 chip
   -------------------------------------------------------------------------- */
 
   const tuitionPill = (
@@ -1466,8 +1573,8 @@ export default function AssignCourses({
   ): CSSProperties => ({
     display: "inline-flex",
     alignItems: "center",
-    padding: "4px 9px",
-    borderRadius: 7,
+    padding: "3px 10px",
+    borderRadius: R.sm,
     background:
       course.tuitionType === "paid"
         ? C.paidBg
@@ -1476,8 +1583,9 @@ export default function AssignCourses({
       course.tuitionType === "paid"
         ? C.paidText
         : C.freeText,
-    fontSize: 11.5,
-    fontWeight: 600,
+    fontSize: 12,
+    fontWeight: 500,
+    letterSpacing: "0.02em",
     whiteSpace: "nowrap",
     flexShrink: 0,
   });
@@ -1501,7 +1609,7 @@ export default function AssignCourses({
       <style>{`
         @keyframes acShimmer {
           0% { opacity: 1; }
-          50% { opacity: 0.4; }
+          50% { opacity: 0.35; }
           100% { opacity: 1; }
         }
 
@@ -1518,12 +1626,23 @@ export default function AssignCourses({
 
         @keyframes acSnackbar {
           from {
-            transform: translate(-50%, 15px);
+            transform: translate(-50%, 100%);
             opacity: 0;
           }
           to {
             transform: translate(-50%, 0);
             opacity: 1;
+          }
+        }
+
+        @keyframes acRipple {
+          from {
+            transform: scale(0);
+            opacity: 0.12;
+          }
+          to {
+            transform: scale(4);
+            opacity: 0;
           }
         }
 
@@ -1560,13 +1679,19 @@ export default function AssignCourses({
 
         .acList::-webkit-scrollbar-thumb,
         .acDetailList::-webkit-scrollbar-thumb {
-          background: #CBD5DF;
+          background: #C4C7C5;
           border-radius: 10px;
         }
 
         .acList::-webkit-scrollbar-track,
         .acDetailList::-webkit-scrollbar-track {
           background: transparent;
+        }
+
+        /* Rows keep inline hairline separators; the last child of a group
+           card drops it so the card outline stays clean. */
+        .acGroup > div:last-child {
+          border-bottom: none !important;
         }
 
         .acLayout button:focus-visible,
@@ -1620,7 +1745,7 @@ export default function AssignCourses({
         }}
       >
         {/* ==================================================================
-            PAGE HEADER
+            PAGE HEADER — MD3 top app bar (flat, no card)
         ================================================================== */}
 
         <div
@@ -1632,7 +1757,7 @@ export default function AssignCourses({
             rowGap: 14,
             columnGap: 16,
             width: "100%",
-            animation: "acFadeUp 0.35s ease both",
+            animation: "acFadeUp 0.35s cubic-bezier(0.2,0,0,1) both",
           }}
         >
           <div style={{ flex: "1 1 230px", minWidth: 0 }}>
@@ -1641,9 +1766,9 @@ export default function AssignCourses({
                 margin: 0,
                 color: C.onSurface,
                 fontSize: "clamp(23px, 3vw, 28px)",
-                fontWeight: 650,
-                letterSpacing: "-0.7px",
-                lineHeight: 1.3,
+                fontWeight: 500,
+                letterSpacing: "-0.01em",
+                lineHeight: 1.25,
               }}
             >
               Course Assignments
@@ -1653,7 +1778,7 @@ export default function AssignCourses({
               style={{
                 margin: "6px 0 0",
                 color: C.onSurfaceVariant,
-                fontSize: 13.5,
+                fontSize: 14,
                 fontWeight: 400,
                 lineHeight: 1.5,
               }}
@@ -1662,17 +1787,15 @@ export default function AssignCourses({
             </p>
           </div>
 
-          {/* MODE SWITCH */}
+          {/* MODE SWITCH — MD3 segmented buttons */}
 
           <div
             style={{
               display: "inline-flex",
               alignItems: "center",
-              padding: 4,
               border: `1px solid ${C.outline}`,
-              borderRadius: 11,
-              background: C.surface,
-              gap: 3,
+              borderRadius: R.xl,
+              overflow: "hidden",
               flexShrink: 0,
             }}
           >
@@ -1681,7 +1804,7 @@ export default function AssignCourses({
                 ["course", "By Course"],
                 ["user", "By User"],
               ] as const
-            ).map(([key, label]) => {
+            ).map(([key, label], i) => {
               const active = mode === key;
 
               return (
@@ -1699,23 +1822,43 @@ export default function AssignCourses({
                   }}
                   style={{
                     border: "none",
-                    borderRadius: 8,
+                    borderLeft:
+                      i > 0 ? `1px solid ${C.outline}` : "none",
                     background: active
-                      ? C.primary
+                      ? C.primaryContainer
                       : "transparent",
                     color: active
-                      ? C.onPrimary
-                      : C.onSurfaceVariant,
-                    padding: "9px 17px",
-                    fontSize: 13,
-                    fontWeight: active ? 600 : 500,
+                      ? C.onPrimaryContainer
+                      : C.onSurface,
+                    padding: "0 16px",
+                    fontSize: 14,
+                    fontWeight: active ? 500 : 400,
                     fontFamily: font,
+                    letterSpacing: "0.01em",
                     cursor: "pointer",
-                    minHeight: 37,
+                    minHeight: 40,
                     transition: motion,
                     whiteSpace: "nowrap",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 6,
                   }}
                 >
+                  {active && (
+                    <svg
+                      width="16"
+                      height="16"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <polyline points="20 6 9 17 4 12" />
+                    </svg>
+                  )}
                   {label}
                 </button>
               );
@@ -1731,11 +1874,11 @@ export default function AssignCourses({
           className="acLayout"
           style={{
             paddingTop: 20,
-            animation: "acFadeUp 0.4s ease both",
+            animation: "acFadeUp 0.4s cubic-bezier(0.2,0,0,1) both",
           }}
         >
           {/* ================================================================
-              MASTER LIST
+              MASTER LIST — MD3 elevated card
           ================================================================ */}
 
           <div
@@ -1752,7 +1895,7 @@ export default function AssignCourses({
             <div
               style={{
                 padding: "15px 16px",
-                borderBottom: `1px solid ${C.outline}`,
+                borderBottom: `1px solid ${C.separatorLight}`,
                 background: C.surface,
               }}
             >
@@ -1766,8 +1909,8 @@ export default function AssignCourses({
               >
                 <span
                   style={{
-                    fontSize: 13,
-                    fontWeight: 650,
+                    fontSize: 14,
+                    fontWeight: 500,
                     color: C.onSurface,
                   }}
                 >
@@ -1838,7 +1981,10 @@ export default function AssignCourses({
                     return (
                       <div
                         key={course.id}
-                        onClick={() => selectCourse(course.id)}
+                        onClick={(e) => {
+                          spawnRipple(e);
+                          selectCourse(course.id);
+                        }}
                         role="button"
                         tabIndex={0}
                         onKeyDown={(e) => {
@@ -1854,23 +2000,24 @@ export default function AssignCourses({
                           display: "flex",
                           alignItems: "center",
                           gap: 12,
-                          padding: "12px 16px",
+                          padding: "14px 20px 14px 16px",
                           minHeight: 66,
-                          borderBottom: `1px solid ${C.outline}`,
+                          borderBottom: `1px solid ${C.separatorLight}`,
                           cursor: "pointer",
                           background: active
                             ? C.primaryContainer
                             : C.surface,
-                          borderLeft: active
-                            ? `3px solid ${C.primary}`
-                            : "3px solid transparent",
                           transition: motion,
                           boxSizing: "border-box",
+                          position: "relative",
+                          overflow: "hidden",
                         }}
                         onMouseEnter={(e) => {
                           if (!active) {
                             e.currentTarget.style.background =
-                              C.inset;
+                              C.surfaceVariant;
+                            e.currentTarget.style.boxShadow =
+                              "inset 0 0 0 9999px rgba(11,87,208,0.08)";
                           }
                         }}
                         onMouseLeave={(e) => {
@@ -1878,11 +2025,24 @@ export default function AssignCourses({
                             active
                               ? C.primaryContainer
                               : C.surface;
+                          e.currentTarget.style.boxShadow = "none";
+                        }}
+                        onMouseDown={(e) => {
+                          if (!active) {
+                            e.currentTarget.style.boxShadow =
+                              "inset 0 0 0 9999px rgba(11,87,208,0.12)";
+                          }
+                        }}
+                        onMouseUp={(e) => {
+                          if (!active) {
+                            e.currentTarget.style.boxShadow =
+                              "inset 0 0 0 9999px rgba(11,87,208,0.08)";
+                          }
                         }}
                       >
                         <CourseIcon
                           logo={course.logo}
-                          size={42}
+                          size={40}
                         />
 
                         <div
@@ -1893,11 +2053,11 @@ export default function AssignCourses({
                         >
                           <div
                             style={{
-                              fontSize: 13.5,
+                              fontSize: 15,
                               color: active
                                 ? C.onPrimaryContainer
                                 : C.onSurface,
-                              fontWeight: 600,
+                              fontWeight: 500,
                               whiteSpace: "nowrap",
                               overflow: "hidden",
                               textOverflow: "ellipsis",
@@ -1923,7 +2083,7 @@ export default function AssignCourses({
 
                             <span
                               style={{
-                                fontSize: 11.5,
+                                fontSize: 12,
                                 color: active
                                   ? C.onPrimaryContainer
                                   : C.onSurfaceVariant,
@@ -1980,7 +2140,10 @@ export default function AssignCourses({
                   return (
                     <div
                       key={u.id}
-                      onClick={() => selectUser(u.id)}
+                      onClick={(e) => {
+                        spawnRipple(e);
+                        selectUser(u.id);
+                      }}
                       role="button"
                       tabIndex={0}
                       onKeyDown={(e) => {
@@ -1996,23 +2159,24 @@ export default function AssignCourses({
                         display: "flex",
                         alignItems: "center",
                         gap: 12,
-                        padding: "12px 16px",
+                        padding: "14px 20px 14px 16px",
                         minHeight: 66,
-                        borderBottom: `1px solid ${C.outline}`,
+                        borderBottom: `1px solid ${C.separatorLight}`,
                         cursor: "pointer",
                         background: active
                           ? C.primaryContainer
                           : C.surface,
-                        borderLeft: active
-                          ? `3px solid ${C.primary}`
-                          : "3px solid transparent",
                         transition: motion,
                         boxSizing: "border-box",
+                        position: "relative",
+                        overflow: "hidden",
                       }}
                       onMouseEnter={(e) => {
                         if (!active) {
                           e.currentTarget.style.background =
-                            C.inset;
+                            C.surfaceVariant;
+                          e.currentTarget.style.boxShadow =
+                            "inset 0 0 0 9999px rgba(11,87,208,0.08)";
                         }
                       }}
                       onMouseLeave={(e) => {
@@ -2020,12 +2184,25 @@ export default function AssignCourses({
                           active
                             ? C.primaryContainer
                             : C.surface;
+                        e.currentTarget.style.boxShadow = "none";
+                      }}
+                      onMouseDown={(e) => {
+                        if (!active) {
+                          e.currentTarget.style.boxShadow =
+                            "inset 0 0 0 9999px rgba(11,87,208,0.12)";
+                        }
+                      }}
+                      onMouseUp={(e) => {
+                        if (!active) {
+                          e.currentTarget.style.boxShadow =
+                            "inset 0 0 0 9999px rgba(11,87,208,0.08)";
+                        }
                       }}
                     >
                       <Avatar
                         name={u.username}
                         pic={u.profilePic}
-                        size={42}
+                        size={40}
                       />
 
                       <div
@@ -2036,11 +2213,11 @@ export default function AssignCourses({
                       >
                         <div
                           style={{
-                            fontSize: 13.5,
+                            fontSize: 15,
                             color: active
                               ? C.onPrimaryContainer
                               : C.onSurface,
-                            fontWeight: 600,
+                            fontWeight: 500,
                             whiteSpace: "nowrap",
                             overflow: "hidden",
                             textOverflow: "ellipsis",
@@ -2067,7 +2244,7 @@ export default function AssignCourses({
 
                           <span
                             style={{
-                              fontSize: 11.5,
+                              fontSize: 12,
                               color: active
                                 ? C.onPrimaryContainer
                                 : C.onSurfaceVariant,
@@ -2101,7 +2278,7 @@ export default function AssignCourses({
           </div>
 
           {/* ================================================================
-              DETAIL PANEL
+              DETAIL PANEL — MD3 elevated card
           ================================================================ */}
 
           <div
@@ -2135,8 +2312,8 @@ export default function AssignCourses({
                     display: "flex",
                     alignItems: "center",
                     gap: 13,
-                    padding: "16px 18px",
-                    borderBottom: `1px solid ${C.outline}`,
+                    padding: "16px 20px",
+                    borderBottom: `1px solid ${C.separatorLight}`,
                     background: C.surface,
                   }}
                 >
@@ -2144,7 +2321,7 @@ export default function AssignCourses({
                     <>
                       <CourseIcon
                         logo={selectedCourse.logo}
-                        size={46}
+                        size={40}
                       />
 
                       <div
@@ -2157,7 +2334,7 @@ export default function AssignCourses({
                           style={{
                             fontSize: 15,
                             color: C.onSurface,
-                            fontWeight: 650,
+                            fontWeight: 500,
                             whiteSpace: "nowrap",
                             overflow: "hidden",
                             textOverflow: "ellipsis",
@@ -2183,7 +2360,7 @@ export default function AssignCourses({
 
                           <span
                             style={{
-                              fontSize: 11.5,
+                              fontSize: 12,
                               color: C.onSurfaceVariant,
                             }}
                           >
@@ -2197,7 +2374,7 @@ export default function AssignCourses({
                       <Avatar
                         name={selectedUser.username}
                         pic={selectedUser.profilePic}
-                        size={46}
+                        size={40}
                       />
 
                       <div
@@ -2210,7 +2387,7 @@ export default function AssignCourses({
                           style={{
                             fontSize: 15,
                             color: C.onSurface,
-                            fontWeight: 650,
+                            fontWeight: 500,
                             whiteSpace: "nowrap",
                             overflow: "hidden",
                             textOverflow: "ellipsis",
@@ -2240,7 +2417,7 @@ export default function AssignCourses({
 
                           <span
                             style={{
-                              fontSize: 11.5,
+                              fontSize: 12,
                               color: C.onSurfaceVariant,
                             }}
                           >
@@ -2257,7 +2434,7 @@ export default function AssignCourses({
                 <div
                   style={{
                     padding: "12px 16px",
-                    borderBottom: `1px solid ${C.outline}`,
+                    borderBottom: `1px solid ${C.separatorLight}`,
                     background: C.surface,
                   }}
                 >
@@ -2273,226 +2450,253 @@ export default function AssignCourses({
                 </div>
 
                 {/* ========================================================
-                    ASSIGNMENT LIST
+                    ASSIGNMENT LIST — MD3 group cards
                 ======================================================== */}
 
-                <div className="acDetailList">
+                <div className="acDetailList" style={{ paddingBottom: 16 }}>
                   {mode === "course" && selectedCourse ? (
                     <>
                       {/* TRAINERS */}
 
-                      <SectionHeader
-                        title={`Trainers (${filteredTrainers.filter((u: any) => draft.has(u.id)).length}/${filteredTrainers.length})`}
-                        right={
+                      <div
+                        className="acGroup"
+                        style={{
+                          ...groupBase,
+                          overflow: "hidden",
+                          margin: "12px 16px 0",
+                        }}
+                      >
+                        <SectionHeader
+                          title={`Trainers (${filteredTrainers.filter((u: any) => draft.has(u.id)).length}/${filteredTrainers.length})`}
+                          right={
+                            <div
+                              style={{
+                                display: "flex",
+                                gap: 2,
+                              }}
+                            >
+                              <MiniTextButton
+                                label="Tick all"
+                                onClick={() =>
+                                  setSectionAll(
+                                    filteredTrainers.map(
+                                      (u: any) => u.id
+                                    ),
+                                    true
+                                  )
+                                }
+                              />
+
+                              <MiniTextButton
+                                label="Clear"
+                                onClick={() =>
+                                  setSectionAll(
+                                    filteredTrainers.map(
+                                      (u: any) => u.id
+                                    ),
+                                    false
+                                  )
+                                }
+                              />
+                            </div>
+                          }
+                        />
+
+                        {filteredTrainers.length === 0 ? (
                           <div
                             style={{
-                              display: "flex",
-                              gap: 2,
+                              padding: 20,
+                              color: C.onSurfaceVariant,
+                              fontSize: 13,
+                              textAlign: "center",
                             }}
                           >
-                            <MiniTextButton
-                              label="Tick all"
-                              onClick={() =>
-                                setSectionAll(
-                                  filteredTrainers.map(
-                                    (u: any) => u.id
-                                  ),
-                                  true
-                                )
-                              }
-                            />
-
-                            <MiniTextButton
-                              label="Clear"
-                              onClick={() =>
-                                setSectionAll(
-                                  filteredTrainers.map(
-                                    (u: any) => u.id
-                                  ),
-                                  false
-                                )
-                              }
-                            />
+                            {trainers.length === 0
+                              ? "No trainers available."
+                              : `No trainers match "${detailSearch}"`}
                           </div>
-                        }
-                      />
-
-                      {filteredTrainers.length === 0 ? (
-                        <div
-                          style={{
-                            padding: 20,
-                            color: C.onSurfaceVariant,
-                            fontSize: 12.5,
-                            textAlign: "center",
-                          }}
-                        >
-                          {trainers.length === 0
-                            ? "No trainers available."
-                            : `No trainers match "${detailSearch}"`}
-                        </div>
-                      ) : (
-                        filteredTrainers.map((u: any) => (
-                          <PersonRow
-                            key={u.id}
-                            user={u}
-                            checked={draft.has(u.id)}
-                            pending={
-                              pendingPairs.get(
-                                `${u.id}:${selectedCourse.id}`
-                              ) === true
-                            }
-                            onToggle={() =>
-                              toggleDraft(u.id)
-                            }
-                          />
-                        ))
-                      )}
+                        ) : (
+                          filteredTrainers.map((u: any) => (
+                            <PersonRow
+                              key={u.id}
+                              user={u}
+                              checked={draft.has(u.id)}
+                              pending={
+                                pendingPairs.get(
+                                  `${u.id}:${selectedCourse.id}`
+                                ) === true
+                              }
+                              onToggle={() =>
+                                toggleDraft(u.id)
+                              }
+                            />
+                          ))
+                        )}
+                      </div>
 
                       {/* TRAINEES */}
 
-                      <SectionHeader
-                        title={`Trainees (${filteredTrainees.filter((u: any) => draft.has(u.id)).length}/${filteredTrainees.length})`}
-                        right={
+                      <div
+                        className="acGroup"
+                        style={{
+                          ...groupBase,
+                          overflow: "hidden",
+                          margin: "12px 16px 0",
+                        }}
+                      >
+                        <SectionHeader
+                          title={`Trainees (${filteredTrainees.filter((u: any) => draft.has(u.id)).length}/${filteredTrainees.length})`}
+                          right={
+                            <div
+                              style={{
+                                display: "flex",
+                                gap: 2,
+                              }}
+                            >
+                              <MiniTextButton
+                                label="Tick all"
+                                onClick={() =>
+                                  setSectionAll(
+                                    filteredTrainees.map(
+                                      (u: any) => u.id
+                                    ),
+                                    true
+                                  )
+                                }
+                              />
+
+                              <MiniTextButton
+                                label="Clear"
+                                onClick={() =>
+                                  setSectionAll(
+                                    filteredTrainees.map(
+                                      (u: any) => u.id
+                                    ),
+                                    false
+                                  )
+                                }
+                              />
+                            </div>
+                          }
+                        />
+
+                        {filteredTrainees.length === 0 ? (
                           <div
                             style={{
-                              display: "flex",
-                              gap: 2,
+                              padding: 20,
+                              color: C.onSurfaceVariant,
+                              fontSize: 13,
+                              textAlign: "center",
                             }}
                           >
-                            <MiniTextButton
-                              label="Tick all"
-                              onClick={() =>
-                                setSectionAll(
-                                  filteredTrainees.map(
-                                    (u: any) => u.id
-                                  ),
-                                  true
-                                )
-                              }
-                            />
-
-                            <MiniTextButton
-                              label="Clear"
-                              onClick={() =>
-                                setSectionAll(
-                                  filteredTrainees.map(
-                                    (u: any) => u.id
-                                  ),
-                                  false
-                                )
-                              }
-                            />
+                            {trainees.length === 0
+                              ? "No trainees available."
+                              : `No trainees match "${detailSearch}"`}
                           </div>
-                        }
-                      />
-
-                      {filteredTrainees.length === 0 ? (
-                        <div
-                          style={{
-                            padding: 20,
-                            color: C.onSurfaceVariant,
-                            fontSize: 12.5,
-                            textAlign: "center",
-                          }}
-                        >
-                          {trainees.length === 0
-                            ? "No trainees available."
-                            : `No trainees match "${detailSearch}"`}
-                        </div>
-                      ) : (
-                        filteredTrainees.map((u: any) => (
-                          <PersonRow
-                            key={u.id}
-                            user={u}
-                            checked={draft.has(u.id)}
-                            pending={
-                              pendingPairs.get(
-                                `${u.id}:${selectedCourse.id}`
-                              ) === true
-                            }
-                            onToggle={() =>
-                              toggleDraft(u.id)
-                            }
-                          />
-                        ))
-                      )}
+                        ) : (
+                          filteredTrainees.map((u: any) => (
+                            <PersonRow
+                              key={u.id}
+                              user={u}
+                              checked={draft.has(u.id)}
+                              pending={
+                                pendingPairs.get(
+                                  `${u.id}:${selectedCourse.id}`
+                                ) === true
+                              }
+                              onToggle={() =>
+                                toggleDraft(u.id)
+                              }
+                            />
+                          ))
+                        )}
+                      </div>
                     </>
                   ) : selectedUser ? (
                     <>
                       {/* USER COURSES */}
 
-                      <SectionHeader
-                        title={`Available courses (${filteredCoursesDetail.filter((c: any) => draft.has(c.id)).length}/${filteredCoursesDetail.length})`}
-                        right={
+                      <div
+                        className="acGroup"
+                        style={{
+                          ...groupBase,
+                          overflow: "hidden",
+                          margin: "12px 16px 0",
+                        }}
+                      >
+                        <SectionHeader
+                          title={`Available courses (${filteredCoursesDetail.filter((c: any) => draft.has(c.id)).length}/${filteredCoursesDetail.length})`}
+                          right={
+                            <div
+                              style={{
+                                display: "flex",
+                                gap: 2,
+                              }}
+                            >
+                              <MiniTextButton
+                                label="Tick all"
+                                onClick={() =>
+                                  setSectionAll(
+                                    filteredCoursesDetail.map(
+                                      (c: any) => c.id
+                                    ),
+                                    true
+                                  )
+                                }
+                              />
+
+                              <MiniTextButton
+                                label="Clear"
+                                onClick={() =>
+                                  setSectionAll(
+                                    filteredCoursesDetail.map(
+                                      (c: any) => c.id
+                                    ),
+                                    false
+                                  )
+                                }
+                              />
+                            </div>
+                          }
+                        />
+
+                        {filteredCoursesDetail.length === 0 ? (
                           <div
                             style={{
-                              display: "flex",
-                              gap: 2,
+                              padding: "24px 16px",
+                              color: C.onSurfaceVariant,
+                              fontSize: 13,
+                              textAlign: "center",
                             }}
                           >
-                            <MiniTextButton
-                              label="Tick all"
-                              onClick={() =>
-                                setSectionAll(
-                                  filteredCoursesDetail.map(
-                                    (c: any) => c.id
-                                  ),
-                                  true
-                                )
-                              }
-                            />
-
-                            <MiniTextButton
-                              label="Clear"
-                              onClick={() =>
-                                setSectionAll(
-                                  filteredCoursesDetail.map(
-                                    (c: any) => c.id
-                                  ),
-                                  false
-                                )
-                              }
-                            />
+                            {courses.length === 0
+                              ? "No courses available. Create a course in Course Management."
+                              : `No courses match "${detailSearch}"`}
                           </div>
-                        }
-                      />
-
-                      {filteredCoursesDetail.length === 0 ? (
-                        <div
-                          style={{
-                            padding: "24px 16px",
-                            color: C.onSurfaceVariant,
-                            fontSize: 12.5,
-                            textAlign: "center",
-                          }}
-                        >
-                          {courses.length === 0
-                            ? "No courses available. Create a course in Course Management."
-                            : `No courses match "${detailSearch}"`}
-                        </div>
-                      ) : (
-                        filteredCoursesDetail.map((c: any) => (
-                          <CourseRow
-                            key={c.id}
-                            course={c}
-                            checked={draft.has(c.id)}
-                            pending={
-                              pendingPairs.get(
-                                `${selectedUser.id}:${c.id}`
-                              ) === true
-                            }
-                            onToggle={() =>
-                              toggleDraft(c.id)
-                            }
-                          />
-                        ))
-                      )}
+                        ) : (
+                          filteredCoursesDetail.map((c: any) => (
+                            <CourseRow
+                              key={c.id}
+                              course={c}
+                              checked={draft.has(c.id)}
+                              pending={
+                                pendingPairs.get(
+                                  `${selectedUser.id}:${c.id}`
+                                ) === true
+                              }
+                              onToggle={() =>
+                                toggleDraft(c.id)
+                              }
+                            />
+                          ))
+                        )}
+                      </div>
                     </>
                   ) : null}
                 </div>
 
                 {/* ========================================================
-                    SAVE BAR
+                    SAVE BAR — MD3 elevated white bar
                 ======================================================== */}
 
                 <div
@@ -2501,10 +2705,12 @@ export default function AssignCourses({
                     display: "flex",
                     alignItems: "center",
                     gap: 14,
-                    padding: "14px 17px",
-                    borderTop: `1px solid ${C.outline}`,
-                    background: C.surface,
+                    padding: "14px 16px",
+                    margin: "12px 16px 16px",
                     marginTop: "auto",
+                    borderRadius: R.lg,
+                    background: C.surface,
+                    boxShadow: S.level2,
                   }}
                 >
                   <div
@@ -2517,8 +2723,8 @@ export default function AssignCourses({
                       <div>
                         <div
                           style={{
-                            fontSize: 12.5,
-                            fontWeight: 650,
+                            fontSize: 14,
+                            fontWeight: 500,
                             color: C.onSurface,
                           }}
                         >
@@ -2530,37 +2736,29 @@ export default function AssignCourses({
                             display: "flex",
                             alignItems: "center",
                             flexWrap: "wrap",
-                            gap: 10,
-                            marginTop: 5,
+                            gap: 8,
+                            marginTop: 6,
                           }}
                         >
-                          <span
-                            style={{
-                              fontSize: 12,
-                              fontWeight: 600,
-                              color: C.green,
-                            }}
-                          >
-                            +{addedCount} added
-                          </span>
+                          <Chip
+                            label={`+${addedCount} added`}
+                            bg={C.greenBg}
+                            fg={C.green}
+                          />
 
-                          <span
-                            style={{
-                              fontSize: 12,
-                              fontWeight: 600,
-                              color: C.red,
-                            }}
-                          >
-                            −{removedCount} removed
-                          </span>
+                          <Chip
+                            label={`−${removedCount} removed`}
+                            bg={C.redBg}
+                            fg={C.red}
+                          />
                         </div>
                       </div>
                     ) : (
                       <div>
                         <div
                           style={{
-                            fontSize: 12.5,
-                            fontWeight: 600,
+                            fontSize: 14,
+                            fontWeight: 500,
                             color: C.onSurfaceVariant,
                           }}
                         >
@@ -2569,7 +2767,7 @@ export default function AssignCourses({
 
                         <div
                           style={{
-                            fontSize: 11.5,
+                            fontSize: 12,
                             color: C.onSurfaceVariant,
                             marginTop: 4,
                           }}
@@ -2590,10 +2788,13 @@ export default function AssignCourses({
                     }
                     disabled={!hasChanges || saving}
                     style={{
-                      height: 42,
-                      borderRadius: 10,
+                      minHeight: 48,
+                      borderRadius: R.xl,
                       border: "none",
                       padding: "0 24px",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      justifyContent: "center",
                       background:
                         !hasChanges || saving
                           ? C.secondaryContainer
@@ -2602,24 +2803,22 @@ export default function AssignCourses({
                         !hasChanges || saving
                           ? C.onSurfaceVariant
                           : C.onPrimary,
-                      fontSize: 13,
-                      fontWeight: 600,
+                      fontSize: 14,
+                      fontWeight: 500,
+                      letterSpacing: "0.01em",
                       fontFamily: font,
                       cursor:
                         !hasChanges || saving
                           ? "default"
                           : "pointer",
-                      boxShadow:
-                        !hasChanges || saving
-                          ? "none"
-                          : "0 2px 5px rgba(23,105,170,0.20)",
                       transition: motion,
+                      whiteSpace: "nowrap",
                       flexShrink: 0,
                     }}
                     onMouseEnter={(e) => {
                       if (hasChanges && !saving) {
                         e.currentTarget.style.background =
-                          C.primaryDark;
+                          "#1F64D4";
                       }
                     }}
                     onMouseLeave={(e) => {
@@ -2641,7 +2840,7 @@ export default function AssignCourses({
       </div>
 
       {/* ====================================================================
-          SNACKBAR
+          SNACKBAR — MD3 inverse surface
       ==================================================================== */}
 
       {snackbar && (
@@ -2653,22 +2852,78 @@ export default function AssignCourses({
             left: "50%",
             bottom: 24,
             transform: "translateX(-50%)",
-            background: snackbar.color,
-            color: C.onPrimary,
-            padding: "13px 22px",
-            borderRadius: 10,
-            fontSize: 13,
-            fontWeight: 600,
+            background: C.inverseSurface,
+            color: C.inverseOnSurface,
+            padding: "14px 20px",
+            borderRadius: R.sm,
+            fontSize: 14,
+            fontWeight: 500,
+            letterSpacing: "0.01em",
             fontFamily: font,
-            boxShadow: S.level2,
+            boxShadow: S.level3,
             zIndex: 1000,
-            animation: "acSnackbar 0.25s ease both",
+            animation: "acSnackbar 0.25s cubic-bezier(0.2,0,0,1) both",
             maxWidth: "min(92vw, 640px)",
             boxSizing: "border-box",
             textAlign: "center",
           }}
         >
-          {snackbar.message}
+          <span
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 10,
+            }}
+          >
+            {snackbar.color === C.green && (
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke={C.inversePrimary}
+                strokeWidth="2.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+                <polyline points="22 4 12 14.01 9 11.01" />
+              </svg>
+            )}
+            {snackbar.color === C.orange && (
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke={C.inversePrimary}
+                strokeWidth="2.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+                <line x1="12" y1="9" x2="12" y2="13" />
+                <line x1="12" y1="17" x2="12.01" y2="17" />
+              </svg>
+            )}
+            {snackbar.color === C.red && (
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="#F2B8B5"
+                strokeWidth="2.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <circle cx="12" cy="12" r="10" />
+                <line x1="15" y1="9" x2="9" y2="15" />
+                <line x1="9" y1="9" x2="15" y2="15" />
+              </svg>
+            )}
+            {snackbar.message}
+          </span>
         </div>
       )}
     </div>
