@@ -1,44 +1,49 @@
 # release.ps1  -  medstat release helper (ASCII-safe for PS 5.1)
-# v3 - free-domain + blank-page guard:
-#   - AppUrl now points at the free Vercel domain medstat-git-main-medstat.vercel.app
-#     (medstat.vercel.app is owned by a DIFFERENT Vercel account - never use it)
-#   - NEW post-deploy SPA shell check: verifies the JS bundle referenced by
-#     index.html really comes back as application/javascript, not text/html
-#     (this is exactly the blank-page bug class seen on fbd507b)
-#   - vercel.json guard now accepts both rewrite shapes (with/without /medstat)
-#   - v3.1 guards verify api/[...path].js and vercel.json are COMMITTED to git:
-#     the 2026-11-11 adfdwp1m3 release served 404 on every /api/* route because
-#     the api proxy was never part of the deployment (untracked/gitignored)
-#   - v3.1 shell check uses /medstat WITHOUT trailing slash + HTTP status check
-#     (routing configs exist where /medstat/ 404s while /medstat serves fine)
-#   - still failover-aware: supabase.ts engine, api/[...path].js proxy,
-#     health check of /medstat/api/health with Render cold-start retries
-#   - v3.2: release 7b798ae shipped vercel.json v1 (root catch-all only) from a
-#     second clone while the fixed file sat UNCOMMITTED on the first machine -
-#     missing /medstat rules are now a HARD FAIL (override with -ForceRelease)
-#   - v3.2: checks reordered - the SPA shell readiness POLL runs first and waits
-#     up to ~3 min for the git build to go live; the old checks fired seconds
-#     after push and always tested the PREVIOUS release
-#   - v3.3 AUTO-FIX: if vercel.json lacks the /medstat rules (the 7b798ae bug -
-#     a clone with the old v1 catch-all pushed over the fixed file), the script
-#     backs it up (vercel.json.bak-*) and writes the canonical routing file
-#     itself, so a stale v1 can never be pushed again
-#   - v3.3 NEW -CliDeploy switch: deploy straight from this machine with
-#     "npx vercel --prod", which works even when the Vercel<->GitHub
-#     integration is dead (git build never fires). One-time setup:
-#       npx vercel login
-#       npx vercel link
-#   - v3.3.1: auto-fix now MERGES - keeps the project's own framework /
-#     buildCommand / outputDirectory keys (confirmed on the user's v1 file:
-#     vite + "npm run build" + dist), replaces ONLY the rewrites array
+# v4 - FULL AUTO git + vercel, auto-generated vercel domains only (no domain name needed):
+#   - git AUTO-SYNC: add/commit -> pull --rebase -> build -> tag -> push, and a
+#     failed push retries ONCE after an automatic re-sync (survives releases
+#     made from the other machine / second clone)
+#   - vercel AUTO-DEPLOY: a CLI deploy ("vercel --prod") is now the DEFAULT
+#     whenever the vercel CLI (or npx) is installed and the project is linked.
+#     The script AUTO-LINKS non-interactively ("vercel link --yes --project
+#     <name from package.json>") when you are logged in. The ONLY one-time
+#     manual step left is:   npx vercel login   (vercel login is interactive)
+#   - vercel AUTO-GENERATED domains: NO hardcoded app URL anymore. The script
+#     reads the production aliases of the newest production deployment
+#     (vercel ls / vercel inspect --json) and verifies the app on that URL.
+#     Everything stays on the free *.vercel.app domains vercel auto-generates
+#     (per-deployment URL + stable project domain) - nothing to buy or own.
+#   - the alias picker never picks medstat.vercel.app (owned by a DIFFERENT
+#     vercel account - never use it) and prefers the stable project domain
+#     over the git-branch domains
+#   - -AppUrl is now an OPTIONAL override (default: empty = auto-detect)
+#   - kept from v3.x: failover guards, committed api/[...path].js check,
+#     vercel.json auto-fix with merge (v3.3.1), routing order guard (v3.3),
+#     SPA shell readiness poll first (v3.2), health check with Render
+#     cold-start retries
+#   history:
+#     v3     free-domain + blank-page guard: SPA shell check verifies the JS
+#            bundle comes back as application/javascript (fbd507b bug class);
+#            vercel.json guard accepts both rewrite shapes
+#     v3.1   guards verify api/[...path].js + vercel.json are COMMITTED to git
+#            (adfdwp1m3 served 404 on every /api/* because the proxy was
+#            untracked); shell check uses /medstat WITHOUT trailing slash
+#     v3.2   missing /medstat rules = HARD FAIL (-ForceRelease overrides);
+#            checks reordered: the readiness POLL runs first (up to ~3 min) so
+#            the checks test the NEW release, not the previous one (7b798ae)
+#     v3.3   vercel.json AUTO-FIX: backs up and writes the canonical routing;
+#            -CliDeploy switch: deploy via "npx vercel --prod" when the
+#            Vercel<->GitHub integration is dead
+#     v3.3.1 auto-fix MERGES: keeps framework / buildCommand / outputDirectory
+#            (vite + "npm run build" + dist), replaces ONLY the rewrites array
 [CmdletBinding()]
 param(
   [Parameter(Position = 0)]
   [string]$Message = "release update",
-  # Free Vercel domain: auto-aliases the latest production deploy from main.
-  # The script pushes to main before deploying, so this URL always reflects
-  # the code being released.
-  [string]$AppUrl  = "https://medstat-git-main-medstat.vercel.app",
+  # v4: OPTIONAL override only. Leave empty (default) and the live URL is
+  # auto-detected from vercel: every deployment gets a free auto-generated
+  # *.vercel.app domain, plus a stable project domain - no custom domain.
+  [string]$AppUrl  = "",
   [switch]$BumpPatch,
   [switch]$SkipBuild,
   [switch]$NoDeploy,
@@ -46,10 +51,8 @@ param(
   [switch]$SkipShellCheck,
   # v3.2: ship even when the vercel.json routing guards fail (not recommended)
   [switch]$ForceRelease,
-  # v3.3: deploy from this machine with the vercel CLI (npx vercel --prod),
-  # bypassing the Vercel<->GitHub integration entirely. One-time setup:
-  #   npx vercel login
-  #   npx vercel link
+  # v3.3: kept for compatibility - a CLI deploy from this machine is now the
+  # DEFAULT whenever the vercel CLI is available and the project is linked
   [switch]$CliDeploy
 )
 
@@ -63,6 +66,115 @@ function Warn([string]$msg) { Write-Host "[warn] $msg" -ForegroundColor Yellow }
 function GuardFail([string]$msg) {
   if ($ForceRelease) { Warn "GUARD OVERRIDDEN by -ForceRelease: $msg" }
   else { Fail $msg }
+}
+
+# --- vercel/git CLI plumbing (v4) ---------------------------------------------
+# resolves the vercel CLI once: "vercel" (global install) or "npx vercel"
+$script:VercelCmd = @()
+if (Get-Command vercel -ErrorAction SilentlyContinue)  { $script:VercelCmd = @("vercel") }
+elseif (Get-Command npx -ErrorAction SilentlyContinue) { $script:VercelCmd = @("npx", "vercel") }
+
+function Invoke-Vercel([string[]]$VercelArgs) {
+  # runs the vercel CLI (directly or via npx); returns $null when unavailable,
+  # otherwise an object with ExitCode and Output. EAP=Continue so native
+  # stderr can never abort the script.
+  if ($script:VercelCmd.Count -eq 0) { return $null }
+  $all  = @($script:VercelCmd) + $VercelArgs
+  $exe  = $all[0]
+  $rest = @()
+  if ($all.Count -gt 1) { $rest = @($all | Select-Object -Skip 1) }
+  $eap = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    $out  = (& $exe @rest 2>&1) | Out-String
+    $code = $LASTEXITCODE
+  } catch {
+    return $null
+  } finally {
+    $ErrorActionPreference = $eap
+  }
+  return [pscustomobject]@{ ExitCode = $code; Output = $out }
+}
+
+function Invoke-Git([string[]]$GitArgs) {
+  # runs git with EAP=Continue so native stderr (progress, warnings) is
+  # captured instead of aborting the script under $ErrorActionPreference=Stop
+  $eap = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    $out  = (& git @GitArgs 2>&1) | Out-String
+    $code = $LASTEXITCODE
+  } catch {
+    return [pscustomobject]@{ ExitCode = 1; Output = "$_" }
+  } finally {
+    $ErrorActionPreference = $eap
+  }
+  return [pscustomobject]@{ ExitCode = $code; Output = $out }
+}
+
+function Get-JsonPart([string]$s) {
+  # strips ANSI escape codes, then returns everything from the first { or [
+  if (-not $s) { return "" }
+  $s = $s -replace "$([char]27)\[[0-9;]*[A-Za-z]", ""
+  $a = $s.IndexOf("[")
+  $o = $s.IndexOf("{")
+  if ($o -ge 0 -and ($a -lt 0 -or $o -lt $a)) { return $s.Substring($o) }
+  if ($a -ge 0) { return $s.Substring($a) }
+  return ""
+}
+
+function Get-StableAlias([string]$inspectJson) {
+  # picks the best AUTO-GENERATED *.vercel.app production alias from
+  # "vercel inspect --json" (the .alias array). Rules (v4):
+  #   - never medstat.vercel.app (a DIFFERENT vercel account owns it)
+  #   - prefer the stable project domain (no "-git-" segment)
+  #   - else prefer a "-git-main-" branch domain, else any remaining alias
+  $raw = @()
+  try {
+    $obj = (Get-JsonPart $inspectJson) | ConvertFrom-Json
+    $alias = $obj.alias
+    if (-not $alias -and $obj.aliases)    { $alias = $obj.aliases }
+    if (-not $alias -and $obj.deployment) { $alias = $obj.deployment.alias }
+    foreach ($a in @($alias)) {
+      if (-not $a) { continue }
+      if ($a -is [string]) { $raw += $a }
+      else {
+        $p = $a.PSObject.Properties |
+             Where-Object { $_.Value -is [string] -and $_.Value -match "\.vercel\.app$" } |
+             Select-Object -First 1
+        if ($p) { $raw += $p.Value }
+      }
+    }
+  } catch {}
+  $cands = @($raw | ForEach-Object {
+      $d = "$_".Trim()
+      if ($d -match "^https?://") { $d = $d.Substring($d.IndexOf("://") + 3) }
+      $d.TrimEnd("/").ToLower()
+    } |
+    Where-Object { $_ -match "\.vercel\.app$" -and $_ -ne "medstat.vercel.app" } |
+    Select-Object -Unique)
+  if ($cands.Count -eq 0) { return "" }
+  $pick = @($cands | Where-Object { $_ -notmatch "-git-" } | Select-Object -First 1)
+  if (-not $pick) { $pick = @($cands | Where-Object { $_ -match "-git-main-" } | Select-Object -First 1) }
+  if (-not $pick) { $pick = @($cands | Select-Object -First 1) }
+  return ("https://" + $pick[0])
+}
+
+function Get-LatestProdDeployment([string]$lsJson) {
+  # newest READY production deployment from "vercel ls --json" output (v4)
+  $url = ""
+  try {
+    $deps = (Get-JsonPart $lsJson) | ConvertFrom-Json
+    if ($deps -isnot [System.Array]) { $deps = @($deps) }
+    $prod = @($deps | Where-Object { $_.target -eq "production" -and $_.state -eq "READY" })
+    if ($prod.Count -eq 0) { $prod = @($deps | Where-Object { $_.state -eq "READY" }) }
+    $best = $prod |
+            Sort-Object -Property { if ($_.created_at) { $_.created_at } elseif ($_.created) { $_.created } else { 0 } } -Descending |
+            Select-Object -First 1
+    if ($best -and $best.url) { $url = "$($best.url)".Trim() }
+  } catch {}
+  if ($url -and $url -notmatch "^https?://") { $url = "https://" + $url }
+  return $url
 }
 
 # --- 1. sanity checks -------------------------------------------------------
@@ -177,9 +289,10 @@ if ($LASTEXITCODE -ne 0) { Fail "git rev-parse failed - cannot read the current 
 if ($branch -notin @("main", "master")) {
   Warn "on branch '$branch', not main/master"
 }
-$hasVercel = $null -ne (Get-Command vercel -ErrorAction SilentlyContinue)
-if (-not $hasVercel -and -not $NoDeploy) {
-  Warn "vercel CLI not found - git push only"
+# v4: CLI availability note (replaces the old $hasVercel check)
+if ($script:VercelCmd.Count -eq 0 -and -not $NoDeploy) {
+  Warn "vercel CLI not found (and no npx) - this release will ship via git push only"
+  Warn "install Node.js (gives you npx) to unlock the automatic deploy + auto URL detection"
 }
 
 # --- 2. commit pending changes ----------------------------------------------
@@ -192,6 +305,23 @@ if ($dirty) {
   Ok "committed"
 } else {
   Ok "working tree clean"
+}
+
+# --- 2b. auto-sync with remote (v4) ------------------------------------------
+# releases can come from two different machines - pull --rebase keeps them in
+# sync automatically instead of letting the push fail later
+$up = Invoke-Git @("rev-parse", "--abbrev-ref", "@{u}")
+if ($up.ExitCode -eq 0) {
+  Step "git pull --rebase (auto-sync with remote)"
+  $pull = Invoke-Git @("pull", "--rebase")
+  if ($pull.Output.Trim()) { Write-Host $pull.Output.TrimEnd() }
+  if ($pull.ExitCode -ne 0) {
+    Invoke-Git @("rebase", "--abort") | Out-Null
+    Fail "git pull --rebase failed (network, or local and remote diverged). Sync manually, then re-run this script"
+  }
+  Ok "in sync with remote"
+} else {
+  Warn "branch '$branch' has no upstream yet - skipping auto-sync (the first push needs:  git push -u origin $branch)"
 }
 
 # --- 3. optional version bump ------------------------------------------------
@@ -222,63 +352,79 @@ Step "tagging $tag"
 git tag -f $tag
 if ($LASTEXITCODE -ne 0) { Fail "git tag failed" }
 
-# --- 6. push ------------------------------------------------------------------
+# --- 6. push (v4: one automatic re-sync retry) ---------------------------------
 Step "git push"
-git push
-if ($LASTEXITCODE -ne 0) { Fail "git push failed" }
-git push origin $tag --force
-if ($LASTEXITCODE -ne 0) { Fail "git tag push failed" }
+$pushed = $false
+for ($i = 1; $i -le 2; $i++) {
+  $push = Invoke-Git @("push")
+  if ($push.Output.Trim()) { Write-Host $push.Output.TrimEnd() }
+  if ($push.ExitCode -eq 0) { $pushed = $true; break }
+  if ($i -eq 1) {
+    Step "push failed - re-syncing with remote (pull --rebase) and retrying once"
+    $up2 = Invoke-Git @("rev-parse", "--abbrev-ref", "@{u}")
+    if ($up2.ExitCode -ne 0) {
+      Fail "git push failed: branch '$branch' has no upstream - run once:  git push -u origin $branch"
+    }
+    $pull = Invoke-Git @("pull", "--rebase")
+    if ($pull.ExitCode -ne 0) {
+      Invoke-Git @("rebase", "--abort") | Out-Null
+      Fail "could not auto-sync with remote (local and remote diverged). Resolve manually, then re-run this script"
+    }
+    $tg = Invoke-Git @("tag", "-f", $tag)   # rebase moved the branch - re-point the release tag
+    if ($tg.ExitCode -ne 0) { Fail "git tag failed after re-sync" }
+  }
+}
+if (-not $pushed) {
+  Fail "git push failed after one automatic retry (if this branch has no upstream yet:  git push -u origin $branch)"
+}
+$tagPush = Invoke-Git @("push", "origin", $tag, "--force")
+if ($tagPush.ExitCode -ne 0) { Fail "git tag push failed" }
 Ok "pushed ($tag)"
 
-# --- 7. deploy -----------------------------------------------------------------
+# --- 7. deploy (v4: CLI deploy is the default; the git integration is backup) ---
 if ($NoDeploy) { Ok "done - deploy skipped (-NoDeploy)"; exit 0 }
 
-# v3.3: optional CLI deploy straight from this machine - the only path that
-# works when the Vercel<->GitHub integration is broken (git build never fires).
-# One-time setup:  npx vercel login   then   npx vercel link
-$linked    = Test-Path ".vercel\project.json"
-$deployUrl = ""
-if ($CliDeploy) {
-  if (-not $linked) {
-    Fail "-CliDeploy needs a one-time link first:  npx vercel login   then   npx vercel link   (the code is already pushed - fix the link and just re-run this script)"
+# v4 auto-link: when the CLI is installed and you are logged in, the project is
+# linked non-interactively (one-time). The login itself cannot be automated.
+$linked = Test-Path ".vercel\project.json"
+if (-not $linked -and $script:VercelCmd.Count -gt 0) {
+  Step "vercel auto-link (one-time, project name from package.json)"
+  $who = Invoke-Vercel @("whoami")
+  if ($who -and $who.ExitCode -eq 0) {
+    $pkgName = ""
+    try { $pkgName = (Get-Content package.json -Raw | ConvertFrom-Json).name } catch {}
+    if ($pkgName) {
+      $lnk = Invoke-Vercel @("link", "--yes", "--project", $pkgName)
+      if ($lnk -and $lnk.ExitCode -eq 0 -and (Test-Path ".vercel\project.json")) {
+        $linked = $true
+        Ok "linked to vercel project '$pkgName'"
+      } else {
+        if ($lnk) { Write-Host $lnk.Output.TrimEnd() -ForegroundColor Yellow }
+        Warn "auto-link failed - run once manually:  vercel link   (or:  npx vercel link)"
+      }
+    } else {
+      Warn "package.json has no 'name' field - cannot auto-link; run once:  vercel link"
+    }
+  } else {
+    Warn "vercel CLI is not logged in - run ONCE:  npx vercel login   then re-run this script"
+    Warn "after that one-time login, linking + deploying + URL detection all run automatically"
   }
-  $vcExe = ""; $vcPre = @()
-  if ($hasVercel) { $vcExe = "vercel" }
-  elseif (Get-Command npx -ErrorAction SilentlyContinue) { $vcExe = "npx"; $vcPre = @("vercel") }
-  else { Fail "no vercel CLI and no npx found - install Node.js or run: npm i -g vercel" }
-  $vcLabel = (@($vcExe) + $vcPre) -join " "
-  Step "cli deploy: $vcLabel --prod"
-  $vcArgs = $vcPre + @("--prod", "--yes")
-  $eap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
-  $vcOut = (& $vcExe @vcArgs 2>&1) | Out-String
-  $ErrorActionPreference = $eap
-  if ($LASTEXITCODE -ne 0) { Write-Host $vcOut; Fail "vercel CLI deploy failed - see output above" }
-  Write-Host $vcOut.TrimEnd()
-  $mUrl = [regex]::Matches($vcOut, "https://[a-z0-9-]+\.vercel\.app") |
+}
+
+$deployUrl = ""
+if ($script:VercelCmd.Count -gt 0 -and $linked) {
+  Step "vercel CLI deploy (--prod) - independent of the Vercel<->GitHub integration"
+  $dep = Invoke-Vercel @("--prod", "--yes")
+  if (-not $dep) { Fail "vercel CLI could not run - check node.js / vercel installation" }
+  Write-Host $dep.Output.TrimEnd()
+  if ($dep.ExitCode -ne 0) { Fail "vercel CLI deploy failed - see output above" }
+  $mUrl = [regex]::Matches($dep.Output, "https://[a-z0-9-]+\.vercel\.app") |
           Where-Object { $_.Value -notmatch "git-main" } |
           Select-Object -Last 1
   if ($mUrl) { $deployUrl = $mUrl.Value; Ok "fresh deployment: $deployUrl" }
-} elseif ($hasVercel) {
-  if ($linked) {
-    Step "vercel --prod"
-    $eap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
-    $vcOut = (& vercel --prod --yes 2>&1) | Out-String
-    $ErrorActionPreference = $eap
-    if ($LASTEXITCODE -ne 0) { Write-Host $vcOut; Fail "vercel deploy failed" }
-    Write-Host $vcOut.TrimEnd()
-    Ok "deployed to production"
-    $mUrl = [regex]::Matches($vcOut, "https://[a-z0-9-]+\.vercel\.app") |
-            Where-Object { $_.Value -notmatch "git-main" } |
-            Select-Object -Last 1
-    if ($mUrl) { $deployUrl = $mUrl.Value }
-  } else {
-    Warn "vercel CLI present but project not linked (.vercel/project.json missing) - skipping CLI deploy"
-    Warn "one-time:  vercel login ; vercel link   - then re-run with -CliDeploy to deploy without the git integration"
-    Warn "release ships via the git push only; the readiness poll (step 8) waits for that build"
-  }
 } else {
-  Warn "vercel CLI not found - release ships via the git push only; the readiness poll (step 8) will wait for that build to go live"
-  Warn "if the git build never fires (integration broken), run once:  npx vercel login ; npx vercel link   - then re-release with -CliDeploy"
+  Warn "no vercel CLI / project not linked - release ships via the git push only"
+  Warn "the readiness poll (step 8) waits for that git build; for the fully automatic path run once:  npx vercel login"
 }
 
 # --- 7b. verify the fresh CLI deployment immediately (v3.3) ---------------------
@@ -300,24 +446,52 @@ if ($deployUrl) {
   }
 }
 
-# --- 8. deployment readiness: SPA shell poll (v3.2) -----------------------------
-# The git build only STARTS after the push, and checks that run seconds later
-# always test the PREVIOUS release (exactly what happened on 7b798ae).
-# Poll until the live alias serves the bundle as JavaScript (max ~3 min).
-$AppUrl = $AppUrl.TrimEnd("/")
+# --- 7c. resolve the live URL (v4: vercel auto-generated domains) ---------------
+# No hardcoded domain: the stable *.vercel.app domain is read from vercel.
+$liveUrl = ""
+if ($AppUrl) {
+  $liveUrl = $AppUrl.TrimEnd("/")
+  Ok "live URL override (-AppUrl): $liveUrl"
+} elseif ($script:VercelCmd.Count -gt 0 -and $linked) {
+  $checkUrl = $deployUrl
+  if (-not $checkUrl) {
+    Step "auto-detect newest production deployment (vercel ls)"
+    $ls = Invoke-Vercel @("ls", "--json")
+    if ($ls) { $checkUrl = Get-LatestProdDeployment $ls.Output }
+  }
+  if ($checkUrl) {
+    Step "auto-detect the stable vercel domain (vercel inspect)"
+    $alias = ""
+    $ins = Invoke-Vercel @("inspect", $checkUrl, "--json")
+    if ($ins) { $alias = Get-StableAlias $ins.Output }
+    if ($alias) { $liveUrl = $alias; Ok "stable vercel domain: $liveUrl" }
+    else        { $liveUrl = $checkUrl; Ok "using the fresh deployment URL: $liveUrl" }
+  } else {
+    Warn "could not auto-detect a deployment URL (vercel ls found nothing usable)"
+  }
+} else {
+  Warn "cannot auto-detect the live URL (no vercel CLI / project not linked)"
+  Warn "one-time fix:  npx vercel login   (the script then links, deploys and detects everything automatically)"
+  Warn "or pass the URL manually this once:  .\release.ps1 -AppUrl https://<project>-<team>.vercel.app"
+}
 
+# --- 8. deployment readiness: SPA shell poll (v3.2, v4) --------------------------
+# Git builds only go live minutes after the push; CLI deploys alias instantly.
+# Poll until the live URL serves the bundle as JavaScript (max ~3 min).
 $shellOk = $false
 $bundleUrl = ""
-if ($SkipShellCheck) {
+if (-not $liveUrl) {
+  Warn "skipping the SPA shell poll - no live URL (see the step 7c warnings above)"
+} elseif ($SkipShellCheck) {
   Ok "shell check skipped (-SkipShellCheck)"
   $shellOk = $true
 } else {
-  Step "SPA shell readiness poll: $AppUrl/medstat"
+  Step "SPA shell readiness poll: $liveUrl/medstat"
   for ($i = 1; $i -le 8; $i++) {
-    $shellCode = curl.exe -s -o NUL -w "%{http_code}" -m 30 "$AppUrl/medstat"
+    $shellCode = curl.exe -s -o NUL -w "%{http_code}" -m 30 "$liveUrl/medstat"
     $m = $null
     if ("$shellCode" -eq "200") {
-      $shellHtml = (curl.exe -s -m 30 "$AppUrl/medstat") -join ""
+      $shellHtml = (curl.exe -s -m 30 "$liveUrl/medstat") -join ""
       $m = [regex]::Match($shellHtml, '<script[^>]*type="module"[^>]*src="([^"]+)"')
       if (-not $m.Success) { $m = [regex]::Match($shellHtml, '<script[^>]*src="([^"]+)"') }
     }
@@ -326,9 +500,9 @@ if ($SkipShellCheck) {
       if ($bundleUrl -match '^https?://') {
         # already absolute - leave as-is
       } elseif ($bundleUrl.StartsWith("/")) {
-        $bundleUrl = $AppUrl + $bundleUrl
+        $bundleUrl = $liveUrl + $bundleUrl
       } else {
-        $bundleUrl = "$AppUrl/medstat/" + $bundleUrl
+        $bundleUrl = "$liveUrl/medstat/" + $bundleUrl
       }
       $ct = (curl.exe -s -o NUL -w "%{content_type}" -m 30 $bundleUrl) -join ""
       if ($ct -match "javascript") {
@@ -346,19 +520,25 @@ if ($SkipShellCheck) {
   if (-not $shellOk) {
     Warn "shell still not serving JavaScript after ~3 minutes (last bundle checked: $bundleUrl)"
     Warn "likely causes:"
-    Warn "  1. the git build is queued or FAILED - check Vercel dashboard -> Deployments (Source column = your repo)"
-    Warn "  2. the pushed vercel.json still lacks the /medstat/:path* rewrite (v1 routing) - verify what GitHub HEAD has:  curl.exe -s https://raw.githubusercontent.com/<user>/<repo>/main/vercel.json"
+    Warn "  1. the git build is queued or FAILED - check the vercel dashboard -> Deployments"
+    $originUrl = ""
+    try { $originUrl = ("$(git remote get-url origin 2>$null)").Trim() } catch {}
+    if ($originUrl -match "github\.com[:/](.+?)(\.git)?/?$") {
+      Warn ("  2. the pushed vercel.json still lacks the /medstat/:path* rewrite (v1 routing) - check what GitHub HEAD has:  curl.exe -s https://raw.githubusercontent.com/" + $Matches[1] + "/main/vercel.json")
+    } else {
+      Warn "  2. the pushed vercel.json still lacks the /medstat/:path* rewrite (v1 routing)"
+    }
     Warn "skipping the API health check - it cannot pass until routing serves the app"
   }
 }
 
 # --- 9. API health check (v2) ----------------------------------------------------
-$healthUrl = "$AppUrl/medstat/api/health"
+$healthUrl = "$liveUrl/medstat/api/health"
 
 $health = ""
 $healthy = $false
 if (-not $shellOk) {
-  # routing not live - the health check would only read the SPA shell (already warned above)
+  # routing not live (or no live URL) - the health check would only read the SPA shell
 } elseif ($SkipHealthCheck) {
   Ok "health check skipped (-SkipHealthCheck)"
   $healthy = $true
@@ -382,11 +562,16 @@ if (-not $shellOk) {
 }
 
 # --- wrap up ---------------------------------------------------------------------
-if ($deployUrl) { Ok "cli deployment live at $deployUrl/medstat (independent of the git integration)" }
-if ($healthy) {
-  Ok "release complete: $AppUrl/medstat"
-} elseif ($shellOk) {
-  Warn "routing is live but the health check never passed - see warnings above"
+if ($deployUrl) { Ok "fresh deployment live at $deployUrl/medstat" }
+if ($liveUrl) {
+  try { Set-Clipboard -Value "$liveUrl/medstat"; Ok "live URL copied to the clipboard" } catch {}
+  if ($healthy) {
+    Ok "release complete: $liveUrl/medstat"
+  } elseif ($shellOk) {
+    Warn "routing is live but the health check never passed - see warnings above"
+  } else {
+    Warn "release pushed but the deployment is NOT verified - see warnings above"
+  }
 } else {
-  Warn "release pushed but the deployment is NOT serving the app - see warnings above"
+  Warn "release pushed, but the live URL could not be auto-detected - see the step 7c warnings above"
 }
