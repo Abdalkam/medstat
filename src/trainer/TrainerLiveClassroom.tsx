@@ -64,6 +64,10 @@ const FONT_OPTIONS: FontOptions = {
   fontStyle: "normal",
 };
 
+/* Quick pen palette for the blackboard, shown in the sidebar "Blackboard
+   Tools" card. White first — the board surface is dark. */
+const PEN_COLORS: string[] = ["#FFFFFF", "#FFD60A", "#FF3B30", "#FF9F0A", "#34C759", "#00A5F4", "#AF52DE", "#1C1C1E"];
+
 /* ---- re-render guards ------------------------------------------------------ */
 /* fetchLiveData() runs every 5s and on every realtime event. These helpers let
    it skip React state updates when the fetched data is identical to what is
@@ -541,6 +545,29 @@ export default function TrainerLiveClassroom() {
     localStorage.removeItem("currentUser"); localStorage.removeItem("authToken"); localStorage.removeItem("adminDeviceId"); window.dispatchEvent(new Event("authStateChanged")); navigate("/login");
   }
 
+  /* ── Panel toggles ── On phones the chat drawer and the controls drawer
+     share the screen edges, so opening the control sidebar closes the chat
+     first: the two drawers can never stack on top of each other. On desktop
+     all panels are static flex columns and cannot overlap at all. */
+  function toggleSidebar() {
+    const opening = isLeftCollapsed;
+    setIsLeftCollapsed(!isLeftCollapsed);
+    if (opening && isMobile && isChatOpen) setIsChatOpen(false);
+  }
+  function toggleChat() {
+    setIsChatOpen(!isChatOpen);
+  }
+
+  /* Which lesson page is on screen right now (drives the "2 / 12" pill). */
+  const currentPageIndex = useMemo(
+    () => materials.findIndex((m) => m.id === (liveState?.materialId || presentation?.id)),
+    [materials, liveState?.materialId, presentation?.id]
+  );
+
+  /* Sidebar card + section title styles, shared by every control group. */
+  const cardStyle: React.CSSProperties = { background: C.card, borderRadius: "14px", padding: "12px", boxShadow: "0 1px 3px rgba(0,0,0,0.05)", border: "1px solid rgba(0,0,0,0.04)", display: "flex", flexDirection: "column", gap: "10px", flexShrink: 0 };
+  const sectionTitleStyle: React.CSSProperties = { fontSize: "12px", color: C.textTertiary, textTransform: "uppercase", fontWeight: "700", letterSpacing: "0.6px", margin: 0 };
+
   const iosBtnStyle: React.CSSProperties = { display: "flex", alignItems: "center", justifyContent: "center", padding: "10px", border: "none", borderRadius: "10px", flex: 1, cursor: "pointer", transition: "transform 0.1s ease, opacity 0.2s ease", boxShadow: "0 1px 2px rgba(0,0,0,0.05)", WebkitTapHighlightColor: "transparent" };
   const toolBtnStyle = (isActive: boolean): React.CSSProperties => ({ width: "44px", height: "44px", borderRadius: "12px", border: "none", background: isActive ? "rgba(0, 165, 244, 0.2)" : "transparent", color: isActive ? "#00A5F4" : "#8E8E93", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.2s ease", flexShrink: 0 });
   const permBtnStyle = (): React.CSSProperties => ({ border: "none", padding: "4px 8px", borderRadius: "6px", fontSize: "11px", fontWeight: "600", cursor: "pointer" });
@@ -560,6 +587,7 @@ export default function TrainerLiveClassroom() {
   return (
     <div className="tlc-root" style={{ display: "flex", flexDirection: "column", background: C.bg, overflow: "hidden" }}>
       <style>{`@keyframes avspin { to { transform: rotate(360deg); } }
+@keyframes pulseDot { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 .tlc-root { height: 100vh; height: 100dvh; width: 100%; }`}</style>
       <DailyAudio />
 
@@ -605,8 +633,11 @@ export default function TrainerLiveClassroom() {
               </span>
             </div>
           )}
-          <button onClick={() => setIsLeftCollapsed(!isLeftCollapsed)} style={{ width: isMobile ? 32 : 36, height: isMobile ? 32 : 36, borderRadius: 9, background: "rgba(118, 118, 128, 0.12)", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }} title="Toggle Controls">
+          <button onClick={toggleSidebar} style={{ width: isMobile ? 32 : 36, height: isMobile ? 32 : 36, borderRadius: 9, background: isLeftCollapsed ? C.medBlueBg : "rgba(118, 118, 128, 0.12)", border: "none", cursor: "pointer", color: isLeftCollapsed ? C.medBlue : C.textPrimary, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }} title={isLeftCollapsed ? "Show controls" : "Hide controls"}>
             <svg width={isMobile ? 18 : 20} height={isMobile ? 18 : 20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
+          </button>
+          <button onClick={toggleChat} style={{ width: isMobile ? 32 : 36, height: isMobile ? 32 : 36, borderRadius: 9, background: isChatOpen ? C.purpleBg : "rgba(118, 118, 128, 0.12)", border: "none", cursor: "pointer", color: isChatOpen ? C.purple : C.textPrimary, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }} title={isChatOpen ? "Hide chat" : "Show chat"}>
+            <svg width={isMobile ? 18 : 20} height={isMobile ? 18 : 20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
           </button>
           <button onClick={handleLogout} style={{ width: isMobile ? 32 : 36, height: isMobile ? 32 : 36, borderRadius: 9, background: C.redBg, border: "none", cursor: "pointer", color: C.red, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }} title="Logout">
             <svg width={isMobile ? 18 : 20} height={isMobile ? 18 : 20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
@@ -614,81 +645,199 @@ export default function TrainerLiveClassroom() {
         </div>
       </div>
 
-      <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
-        {/* Left control panel — fixed rail on desktop; slide-in drawer on phones */}
-        <div style={isMobile ? {
-          position: "fixed", top: 0, bottom: 0, left: 0, width: "min(86vw, 300px)", zIndex: 60,
-          background: C.panelBg, display: "flex", flexDirection: "column", overflowY: "auto",
+      <div style={{ flex: 1, display: "flex", overflow: "hidden", position: "relative" }}>
+        {/* ═══ CONTROL SIDEBAR — a static rail on desktop (always part of the
+            layout, never floating above the classroom) and a slide-in drawer
+            on phones. ALL classroom controls live here: session, lesson
+            pages, blackboard tools, raised hands, participants. */}
+        <aside style={isMobile ? {
+          position: "fixed", top: 0, bottom: 0, left: 0, width: "min(86vw, 320px)", zIndex: 70,
+          background: C.panelBg, display: "flex", flexDirection: "column", gap: 12,
+          padding: 12, overflowY: "auto", overflowX: "hidden",
           borderRight: `1px solid ${C.separator}`,
           transform: isLeftCollapsed ? "translateX(-105%)" : "translateX(0)",
           transition: "transform 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
           boxShadow: isLeftCollapsed ? "none" : "12px 0 32px rgba(0,0,0,0.18)",
         } : {
-          flex: isLeftCollapsed ? "0 0 0px" : "0 0 240px", minWidth: isLeftCollapsed ? "0" : "200px",
-          overflowY: "auto", transition: "flex 0.3s ease", background: C.panelBg, display: "flex", flexDirection: "column",
+          flex: isLeftCollapsed ? "0 0 0px" : "0 0 272px", minWidth: 0,
+          background: C.panelBg, display: "flex", flexDirection: "column", gap: 12,
+          padding: isLeftCollapsed ? 0 : 12, overflowX: "hidden",
+          overflowY: isLeftCollapsed ? "hidden" : "auto",
+          borderRight: `1px solid ${C.separator}`,
+          transition: "flex 0.3s ease, padding 0.3s ease",
         }}>
-          <div style={{ padding: "12px", margin: "12px", background: C.card, borderRadius: "14px", boxShadow: "0 4px 12px rgba(0,0,0,0.03)", display: "flex", flexDirection: "column", gap: "10px" }}>
+          {/* ── Session card ── */}
+          <div style={cardStyle}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <button onClick={() => navigate("/trainer")} style={{ background: "none", border: "none", color: C.medBlue, cursor: "pointer", display: "flex", alignItems: "center", padding: 0, gap: "4px", fontSize: "14px", fontWeight: "600" }}><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="15 18 9 12 15 6"/></svg>Exit</button>
-              {sessionActive ? <button onClick={stopSession} style={{ padding: "6px 12px", background: C.redBg, color: C.red, border: "none", borderRadius: "8px", fontWeight: "600", cursor: "pointer", fontSize: "12px" }}>End</button> : <button onClick={startSession} disabled={isConnecting} style={{ padding: "6px 12px", background: C.medBlue, color: "#fff", border: "none", borderRadius: "8px", fontWeight: "600", cursor: "pointer", fontSize: "12px", opacity: isConnecting ? 0.6 : 1 }}>Start</button>}
+              <span style={{ display: "inline-flex", alignItems: "center", gap: "6px", padding: "4px 10px", borderRadius: "999px", background: sessionActive ? C.greenBg : C.bg, color: sessionActive ? C.green : C.textTertiary, fontSize: "11px", fontWeight: "700", letterSpacing: "0.5px" }}>
+                <span style={{ width: 7, height: 7, borderRadius: "50%", background: sessionActive ? C.green : C.textTertiary, animation: sessionActive ? "pulseDot 1.6s ease infinite" : undefined }} />
+                {sessionActive ? "LIVE" : "OFFLINE"}
+              </span>
             </div>
-            {presentation && !isBlackboardMode && (<div style={{ display: "flex", background: C.bg, borderRadius: "10px", padding: "4px" }}><button onClick={() => changePage(-1)} style={{ flex: 1, padding: "8px", border: "none", background: "transparent", cursor: "pointer", color: C.medBlue, fontWeight: "600", borderRadius: "8px" }}>‹ Prev</button><button onClick={() => changePage(1)} style={{ flex: 1, padding: "8px", border: "none", background: "transparent", cursor: "pointer", color: C.medBlue, fontWeight: "600", borderRadius: "8px" }}>Next ›</button></div>)}
-
-            <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-              <button onClick={toggleBlackboard} style={{ ...iosBtnStyle, background: isBlackboardMode ? C.purple : C.iosBtnBg, color: isBlackboardMode ? "#FFFFFF" : C.textPrimary, width: "100%" }}>
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ marginRight: 8 }}><rect x="2" y="4" width="20" height="16" rx="2" ry="2"/><line x1="6" y1="20" x2="18" y2="20"/></svg>
-                Toggle Blackboard
-              </button>
-            </div>
-
-            <div style={{ marginTop: "12px", borderTop: `1px solid ${C.separator}`, paddingTop: "12px" }}>
-              <div style={{ fontSize: "13px", color: C.textTertiary, fontWeight: "600", margin: "0 0 8px 0" }}>✋ Raised Hands ({raisedHands.length})</div>
-              {raisedHands.length === 0 ? <p style={{ fontSize: "12px", color: C.textTertiary }}>No hands raised.</p> : <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>{raisedHands.map((hand) => (
-                <div key={hand.user_id as string} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px", background: C.orangeBg, borderRadius: "8px" }}>
-                  <span style={{ fontSize: "13px", fontWeight: "600" }}>{hand.username || "Unknown"}</span>
-                  <div style={{ display: "flex", gap: "6px" }}>
-                    <button onClick={() => grantPermission(hand.user_id as string, "audio")} style={{ background: C.green, color: "#fff", border: "none", padding: "6px 10px", borderRadius: "6px", fontSize: "12px", fontWeight: "600", cursor: "pointer" }}>🎤 Mic</button>
-                    <button onClick={() => grantPermission(hand.user_id as string, "video")} style={{ background: C.medBlue, color: "#fff", border: "none", padding: "6px 10px", borderRadius: "6px", fontSize: "12px", fontWeight: "600", cursor: "pointer" }}>📹 Cam</button>
-                  </div>
-                </div>
-              ))}</div>}
-            </div>
+            {sessionActive ? (
+              <button onClick={stopSession} style={{ width: "100%", padding: "10px", background: C.redBg, color: C.red, border: "none", borderRadius: "10px", fontWeight: "700", cursor: "pointer", fontSize: "13px" }}>End Class</button>
+            ) : (
+              <button onClick={startSession} disabled={isConnecting} style={{ width: "100%", padding: "10px", background: C.medBlue, color: "#FFFFFF", border: "none", borderRadius: "10px", fontWeight: "700", cursor: "pointer", fontSize: "13px", opacity: isConnecting ? 0.6 : 1 }}>{isConnecting ? "Connecting…" : "Start Class"}</button>
+            )}
           </div>
 
-          <div style={{ padding: "0 12px 12px 12px" }}>
-            <p style={{ fontSize: "13px", color: C.textTertiary, textTransform: "uppercase", fontWeight: "600", letterSpacing: "0.5px", margin: "0 0 8px 0" }}>Attending Now ({activeLearners.length})</p>
-            <div style={{ display: "flex", flexDirection: "column", gap: "6px", marginBottom: "20px" }}>
-              {activeLearners.length === 0 && <p style={{ fontSize: "12px", color: C.textTertiary }}>No learners active.</p>}
-              {activeLearners.map(learner => {
-                const perms = speakerPerms[learner.id];
+          {/* ── Lesson card: current page, prev/next, blackboard toggle ── */}
+          <div style={cardStyle}>
+            <p style={sectionTitleStyle}>Lesson</p>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px", background: C.bg, borderRadius: "10px", padding: "8px 10px" }}>
+              <span style={{ fontSize: "12px", fontWeight: "600", color: C.textPrimary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
+                {isBlackboardMode ? "Blackboard" : presentation ? presentation.title : "No page selected"}
+              </span>
+              {!isBlackboardMode && materials.length > 0 && (
+                <span style={{ fontSize: "11px", fontWeight: "700", color: C.medBlue, background: C.medBlueBg, padding: "3px 8px", borderRadius: "999px", flexShrink: 0 }}>
+                  {currentPageIndex >= 0 ? `${currentPageIndex + 1} / ${materials.length}` : `– / ${materials.length}`}
+                </span>
+              )}
+            </div>
+            {presentation && !isBlackboardMode && (
+              <div style={{ display: "flex", background: C.bg, borderRadius: "10px", padding: "4px" }}>
+                <button onClick={() => changePage(-1)} style={{ flex: 1, padding: "8px", border: "none", background: "transparent", cursor: "pointer", color: C.medBlue, fontWeight: "600", borderRadius: "8px" }}>‹ Prev</button>
+                <button onClick={() => changePage(1)} style={{ flex: 1, padding: "8px", border: "none", background: "transparent", cursor: "pointer", color: C.medBlue, fontWeight: "600", borderRadius: "8px" }}>Next ›</button>
+              </div>
+            )}
+            <button onClick={toggleBlackboard} style={{ ...iosBtnStyle, background: isBlackboardMode ? C.purple : C.iosBtnBg, color: isBlackboardMode ? "#FFFFFF" : C.textPrimary, width: "100%" }}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ marginRight: 8 }}><rect x="2" y="4" width="20" height="16" rx="2" ry="2"/><line x1="6" y1="20" x2="18" y2="20"/></svg>
+              {isBlackboardMode ? "Exit Blackboard" : "Blackboard Mode"}
+            </button>
+          </div>
+
+          {/* ── Blackboard tools card — only while blackboard mode is on.
+              The old tool strip under the canvas moved here so every
+              control lives in the sidebar. ── */}
+          {isBlackboardMode && (
+            <div style={cardStyle}>
+              <p style={sectionTitleStyle}>Blackboard Tools</p>
+              <div style={{ display: "flex", gap: "8px" }}>
+                <button onClick={() => selectTool("pen")} title="Pen" style={{ ...toolBtnStyle(activeTool === "pen"), background: activeTool === "pen" ? "rgba(0, 165, 244, 0.2)" : C.bg }}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/></svg></button>
+                <button onClick={() => selectTool("eraser")} title="Eraser" style={{ ...toolBtnStyle(activeTool === "eraser"), background: activeTool === "eraser" ? "rgba(0, 165, 244, 0.2)" : C.bg }}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M20 20H7L3 16C2.5 15.5 2.5 14.5 3 14L13 4L20 11L11 20"/></svg></button>
+                <button onClick={() => bbInput.trim() && selectTool("label")} title="Pin Label" style={{ ...toolBtnStyle(activeTool === "label"), background: activeTool === "label" ? "rgba(175, 82, 222, 0.2)" : C.bg }}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/></svg></button>
+              </div>
+              {activeTool === "pen" && (
+                <>
+                  <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+                    {PEN_COLORS.map((col) => (
+                      <button key={col} onClick={() => setPenColor(col)} title={col} style={{ width: 22, height: 22, borderRadius: "50%", border: penColor === col ? "2px solid #00A5F4" : "2px solid rgba(0,0,0,0.08)", background: col, cursor: "pointer", padding: 0, flexShrink: 0 }} />
+                    ))}
+                    <label title="Custom colour" style={{ position: "relative", width: 22, height: 22, borderRadius: "50%", overflow: "hidden", border: "2px solid rgba(0,0,0,0.08)", cursor: "pointer", flexShrink: 0, background: "conic-gradient(#FF3B30, #FF9F0A, #34C759, #00A5F4, #AF52DE, #FF3B30)" }}>
+                      <input type="color" value={penColor} onChange={(e) => setPenColor(e.target.value)} style={{ position: "absolute", inset: 0, opacity: 0, cursor: "pointer", width: "100%", height: "100%" }} />
+                    </label>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                    <span style={{ fontSize: "11px", color: C.textTertiary, fontWeight: "600", width: 44 }}>Width</span>
+                    <input type="range" min="1" max="20" value={penWidth} onChange={(e) => setPenWidth(Number(e.target.value))} style={{ flex: 1, accentColor: "#00A5F4" }} />
+                    <span style={{ fontSize: "11px", fontWeight: "700", color: C.textPrimary, width: 20, textAlign: "right" }}>{penWidth}</span>
+                  </div>
+                </>
+              )}
+              {activeTool === "eraser" && (
+                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                  <span style={{ fontSize: "11px", color: C.textTertiary, fontWeight: "600", width: 44 }}>Size</span>
+                  <input type="range" min="10" max="100" value={eraserSize} onChange={(e) => setEraserSize(Number(e.target.value))} style={{ flex: 1, accentColor: "#00A5F4" }} />
+                  <span style={{ fontSize: "11px", fontWeight: "700", color: C.textPrimary, width: 20, textAlign: "right" }}>{eraserSize}</span>
+                </div>
+              )}
+              <div style={{ display: "flex", gap: "6px", alignItems: "center", background: C.bg, borderRadius: "10px", padding: "4px 4px 4px 10px" }}>
+                <input
+                  type="text"
+                  placeholder={activeTool === "label" ? "Type, then tap the board…" : "Type to send to board…"}
+                  value={bbInput}
+                  onChange={(e) => setBbInput(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter" && activeTool !== "label") sendBlackboardLine(); }}
+                  style={{ flex: 1, minWidth: 0, background: "transparent", border: "none", outline: "none", color: C.textPrimary, fontSize: "13px" }}
+                />
+                {activeTool !== "label" && (
+                  <button onClick={sendBlackboardLine} title="Send to board" style={{ width: 32, height: 32, borderRadius: "50%", border: "none", background: bbInput.trim() ? C.medBlue : "rgba(118, 118, 128, 0.12)", color: bbInput.trim() ? "#FFFFFF" : C.textTertiary, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+                  </button>
+                )}
+              </div>
+              {activeTool === "label" && (
+                <p style={{ fontSize: "11px", color: C.purple, fontWeight: "600", margin: 0 }}>Tap anywhere on the blackboard to pin the label.</p>
+              )}
+              <button onClick={clearBlackboard} style={{ width: "100%", padding: "9px", background: C.redBg, color: C.red, border: "none", borderRadius: "10px", fontWeight: "700", fontSize: "12px", cursor: "pointer" }}>Clear Board</button>
+            </div>
+          )}
+
+          {/* ── Raised hands card ── */}
+          <div style={cardStyle}>
+            <p style={sectionTitleStyle}>Raised Hands ({raisedHands.length})</p>
+            {raisedHands.length === 0 ? (
+              <p style={{ fontSize: "12px", color: C.textTertiary, margin: 0 }}>No hands raised right now.</p>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                {raisedHands.map((hand) => (
+                  <div key={hand.user_id as string} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "6px", padding: "8px", background: C.orangeBg, borderRadius: "8px" }}>
+                    <span style={{ fontSize: "13px", fontWeight: "600", color: C.textPrimary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>{hand.username || "Unknown"}</span>
+                    <div style={{ display: "flex", gap: "6px", flexShrink: 0 }}>
+                      <button onClick={() => grantPermission(hand.user_id as string, "audio")} style={{ background: C.green, color: "#fff", border: "none", padding: "6px 10px", borderRadius: "6px", fontSize: "12px", fontWeight: "600", cursor: "pointer" }}>🎤 Mic</button>
+                      <button onClick={() => grantPermission(hand.user_id as string, "video")} style={{ background: C.medBlue, color: "#fff", border: "none", padding: "6px 10px", borderRadius: "6px", fontSize: "12px", fontWeight: "600", cursor: "pointer" }}>📹 Cam</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* ── Participants card: per-learner mic / camera permissions ── */}
+          <div style={cardStyle}>
+            <p style={sectionTitleStyle}>Participants ({activeLearners.length})</p>
+            {activeLearners.length === 0 ? (
+              <p style={{ fontSize: "12px", color: C.textTertiary, margin: 0 }}>No learners have joined yet.</p>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                {activeLearners.map(learner => {
+                  const perms = speakerPerms[learner.id];
+                  return (
+                    <div key={learner.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "6px", padding: "8px", background: C.bg, borderRadius: "8px" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px", minWidth: 0 }}>
+                        <div style={{ width: "24px", height: "24px", borderRadius: "50%", background: C.greenBg, color: C.green, display: "flex", alignItems: "center", justifyContent: "center", fontSize: "11px", fontWeight: "600", flexShrink: 0 }}>{learner.username?.charAt(0).toUpperCase()}</div>
+                        <span style={{ fontSize: "12px", fontWeight: "500", color: C.textPrimary, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{learner.username}</span>
+                        {perms?.can_audio && <span title="Mic allowed" style={{ fontSize: 11 }}>🎤</span>}
+                        {perms?.can_video && <span title="Camera allowed" style={{ fontSize: 11 }}>📹</span>}
+                      </div>
+                      <div style={{ display: "flex", gap: "4px", flexShrink: 0 }}>
+                        {!perms?.can_audio && <button onClick={() => grantPermission(learner.id, "audio")} style={{ ...permBtnStyle(), background: C.greenBg, color: C.green }} title="Allow mic">🎤</button>}
+                        {!perms?.can_video && <button onClick={() => grantPermission(learner.id, "video")} style={{ ...permBtnStyle(), background: C.medBlueBg, color: C.medBlue }} title="Allow camera">📹</button>}
+                        {perms?.can_audio && <button onClick={() => revokePermission(learner.id, "audio")} style={{ ...permBtnStyle(), background: C.redBg, color: C.red }}>Mute</button>}
+                        {perms?.can_video && <button onClick={() => revokePermission(learner.id, "video")} style={{ ...permBtnStyle(), background: C.redBg, color: C.red }}>Cam off</button>}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* ── Lesson pages card ── */}
+          <div style={cardStyle}>
+            <p style={sectionTitleStyle}>Lesson Pages ({materials.length})</p>
+            <div style={{ display: "flex", flexDirection: "column", gap: "6px", maxHeight: 230, overflowY: "auto" }}>
+              {materials.length === 0 && <p style={{ fontSize: "12px", color: C.textTertiary, margin: 0 }}>No pages uploaded for this course yet.</p>}
+              {/* mat.fileType can be undefined — use ?? "" for safe fallback */}
+              {materials.map((mat) => {
+                const meta = getFileMeta(mat.fileType ?? "");
+                const isActive = liveState?.materialId === mat.id && !isBlackboardMode;
                 return (
-                  <div key={learner.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px", background: C.card, borderRadius: "8px" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: "8px", minWidth: 0 }}>
-                      <div style={{ width: "24px", height: "24px", borderRadius: "50%", background: C.greenBg, color: C.green, display: "flex", alignItems: "center", justifyContent: "center", fontSize: "11px", fontWeight: "600", flexShrink: 0 }}>{learner.username?.charAt(0).toUpperCase()}</div>
-                      <span style={{ fontSize: "12px", fontWeight: "500", color: C.textPrimary, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{learner.username}</span>
-                      {perms?.can_audio && <span title="Mic allowed" style={{ fontSize: 11 }}>🎤</span>}
-                      {perms?.can_video && <span title="Camera allowed" style={{ fontSize: 11 }}>📹</span>}
-                    </div>
-                    <div style={{ display: "flex", gap: "4px", flexShrink: 0 }}>
-                      {!perms?.can_audio && <button onClick={() => grantPermission(learner.id, "audio")} style={{ ...permBtnStyle(), background: C.greenBg, color: C.green }} title="Allow mic">🎤</button>}
-                      {!perms?.can_video && <button onClick={() => grantPermission(learner.id, "video")} style={{ ...permBtnStyle(), background: C.medBlueBg, color: C.medBlue }} title="Allow camera">📹</button>}
-                      {perms?.can_audio && <button onClick={() => revokePermission(learner.id, "audio")} style={{ ...permBtnStyle(), background: C.redBg, color: C.red }}>Mute</button>}
-                      {perms?.can_video && <button onClick={() => revokePermission(learner.id, "video")} style={{ ...permBtnStyle(), background: C.redBg, color: C.red }}>Cam off</button>}
-                    </div>
+                  <div key={mat.id} onClick={() => selectPage(mat.id)} style={{ display: "flex", alignItems: "center", padding: "10px", gap: "10px", cursor: "pointer", background: isActive ? C.medBlueBg : C.bg, borderRadius: "10px" }}>
+                    <div style={{ width: "30px", height: "30px", borderRadius: "8px", background: meta.bg, color: meta.color, display: "flex", alignItems: "center", justifyContent: "center", fontSize: "15px", flexShrink: 0 }}>{meta.icon}</div>
+                    <div style={{ fontSize: "13px", color: isActive ? C.medBlue : C.textPrimary, fontWeight: isActive ? "600" : "500", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{mat.title}</div>
                   </div>
                 );
               })}
             </div>
-
-            <p style={{ fontSize: "13px", color: C.textTertiary, fontWeight: "600", margin: "0 0 8px 0" }}>Lesson Pages</p>
-            {/* FIX: mat.fileType can be undefined — use ?? "" for safe fallback */}
-            {materials.map((mat) => { const meta = getFileMeta(mat.fileType ?? ""); const isActive = liveState?.materialId === mat.id && !isBlackboardMode; return (<div key={mat.id} onClick={() => selectPage(mat.id)} style={{ display: "flex", alignItems: "center", padding: "12px", gap: "10px", cursor: "pointer", background: isActive ? C.medBlueBg : C.card, borderRadius: "10px", marginBottom: "6px" }}><div style={{ width: "32px", height: "32px", borderRadius: "8px", background: meta.bg, color: meta.color, display: "flex", alignItems: "center", justifyContent: "center", fontSize: "16px" }}>{meta.icon}</div><div style={{ fontSize: "14px", color: isActive ? C.medBlue : C.textPrimary, fontWeight: isActive ? "600" : "500" }}>{mat.title}</div></div>); })}
           </div>
-        </div>
+        </aside>
 
-        {/* Dim backdrop behind the mobile control drawer */}
+        {/* Dim backdrop behind the mobile control drawer (sits above the chat
+            drawer and its backdrop, below the sidebar itself) */}
         {isMobile && !isLeftCollapsed && (
-          <div onClick={() => setIsLeftCollapsed(true)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.35)", zIndex: 55 }} />
+          <div onClick={() => setIsLeftCollapsed(true)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.35)", zIndex: 65 }} />
         )}
 
         {/* Classroom main area */}
@@ -701,17 +850,9 @@ export default function TrainerLiveClassroom() {
               <div style={{ flex: 1, position: "relative", overflow: "hidden", cursor: activeTool === "label" ? "crosshair" : undefined }} onClick={activeTool === "label" ? handleCanvasClick : undefined}>
                 <DrawingBlackboard isTrainer={true} strokes={liveState?.blackboardStrokes || []} onStrokeEnd={handleStrokeEnd} onErase={handleErase} activeTool={drawingActiveTool} penColor={penColor} penWidth={penWidth} eraserSize={eraserSize} fontFamily={FONT_OPTIONS.fontFamily} fontSize={FONT_OPTIONS.fontSize} fontColor={FONT_OPTIONS.fontColor} fontWeight={FONT_OPTIONS.fontWeight} fontStyle={FONT_OPTIONS.fontStyle} courseId={courseId!} />
               </div>
-              <div style={{ display: "flex", alignItems: "center", gap: "6px", background: "#111", padding: "8px 12px", overflowX: "auto" }}>
-                <button onClick={() => selectTool("pen")} title="Pen" style={toolBtnStyle(activeTool === "pen")}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/></svg></button>
-                <button onClick={() => selectTool("eraser")} title="Eraser" style={toolBtnStyle(activeTool === "eraser")}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M20 20H7L3 16C2.5 15.5 2.5 14.5 3 14L13 4L20 11L11 20"/></svg></button>
-                {activeTool === "pen" && <label style={{ ...toolBtnStyle(false), width: "auto", padding: "0 8px", gap: "6px" }}><input type="color" value={penColor} onChange={e => setPenColor(e.target.value)} style={{ width: "22px", height: "22px", border: "none", background: "none", cursor: "pointer", padding: 0 }} /></label>}
-                {activeTool === "pen" && <input type="range" min="1" max="20" value={penWidth} onChange={e => setPenWidth(Number(e.target.value))} style={{ width: "60px", accentColor: "#00A5F4" }} />}
-                {activeTool === "eraser" && <input type="range" min="10" max="100" value={eraserSize} onChange={e => setEraserSize(Number(e.target.value))} style={{ width: "80px", accentColor: "#00A5F4" }} />}
-                <input type="text" placeholder={activeTool === "label" ? "Click board to pin..." : "Type to write..."} value={bbInput} onChange={(e) => setBbInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && activeTool !== "label") sendBlackboardLine(); }} style={{ flex: 1, minWidth: "100px", background: "transparent", border: "none", outline: "none", color: "#FFF", fontSize: "15px" }} />
-                <button onClick={() => bbInput.trim() && selectTool("label")} title="Pin Label" style={toolBtnStyle(activeTool === "label")}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/></svg></button>
-                <button onClick={sendBlackboardLine} style={{ width: "36px", height: "36px", borderRadius: "50%", border: "none", background: bbInput.trim() && activeTool !== "label" ? "#00A5F4" : "rgba(255,255,255,0.1)", color: bbInput.trim() && activeTool !== "label" ? "#fff" : "#666", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg></button>
-                <button onClick={clearBlackboard} title="Clear Board" style={{ width: "44px", height: "44px", borderRadius: "12px", border: "none", background: "transparent", color: "#FF3B30", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
-              </div>
+              {/* Blackboard tool strip moved to the control sidebar
+                  ("Blackboard Tools" card) so the canvas stays clean and
+                  every control lives in one place. */}
             </div>
           </div>
 
@@ -747,13 +888,17 @@ export default function TrainerLiveClassroom() {
           )}
         </div>
 
-        {/* ── Chat Sidebar: fixed panel on desktop; slide-in drawer on phones ── */}
+        {/* ── Chat panel — desktop: a normal flex column AFTER the canvas, so
+              it can never overlap the control sidebar (three static columns:
+              sidebar | canvas | chat). Phones: a drawer over the canvas only
+              (z 50, below the control drawer's z 70), and opening the control
+              sidebar closes the chat first. ── */}
         {isMobile && isChatOpen && (
-          <div onClick={() => setIsChatOpen(false)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.35)", zIndex: 55 }} />
+          <div onClick={() => setIsChatOpen(false)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.35)", zIndex: 45 }} />
         )}
         <div style={isMobile ? {
-          position: "fixed", top: 0, bottom: 0, right: 0, width: "min(86vw, 360px)", zIndex: 60,
-          background: "#1C1C1E", borderLeft: "1px solid #E5E5EA", overflow: "hidden",
+          position: "fixed", top: 0, bottom: 0, right: 0, width: "min(86vw, 360px)", zIndex: 50,
+          background: "#1C1C1E", borderLeft: "1px solid #2C2C2E", overflow: "hidden",
           transform: isChatOpen ? "translateX(0)" : "translateX(105%)",
           transition: "transform 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
         } : {
@@ -768,7 +913,7 @@ export default function TrainerLiveClassroom() {
           <ClassChat
             courseId={courseId || ""}
             isChatOpen={isChatOpen}
-            toggleChatOpen={() => setIsChatOpen(!isChatOpen)}
+            toggleChatOpen={toggleChat}
           />
         </div>
 
