@@ -1,0 +1,16 @@
+﻿.git
+.github
+.vercel
+node_modules
+dist
+android
+src-tauri
+nextjs-boilerplate
+server/node_modules
+.env
+.env.*
+*.lnk
+*.log
+*.zip
+*.bak
+*.bak-*

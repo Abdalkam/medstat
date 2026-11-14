@@ -1,19 +1,27 @@
+
 {
-    "framework":  "vite",
-    "buildCommand":  "npm run build",
-    "outputDirectory":  "dist",
-    "rewrites":  [
-                     {
-                         "source":  "/medstat/api/:path*",
-                         "destination":  "/api/:path*"
-                     },
-                     {
-                         "source":  "/medstat/:path*",
-                         "destination":  "/:path*"
-                     },
-                     {
-                         "source":  "/(.*)",
-                         "destination":  "/index.html"
-                     }
-                 ]
+  "framework": "vite",
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "redirects": [
+    {
+      "source": "/",
+      "destination": "/medstat/",
+      "permanent": false
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/medstat/api/:path*",
+      "destination": "/api/:path*"
+    },
+    {
+      "source": "/medstat/:path*",
+      "destination": "/:path*"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
 }
