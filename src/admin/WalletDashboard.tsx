@@ -95,14 +95,16 @@ function parseNum(val: unknown): number {
   return isNaN(num) ? 0 : num;
 }
 
-/** UGX has no minor units — balances are bigint, always whole. */
+/** UGX has no minor units — balances are bigint, always whole.
+ *  HARDENED: Supabase returns bigint columns as TEXT and a failed wallet read
+ *  can leave amount undefined — Number() || 0 makes every input safe. */
 function formatUgx(amount: number): string {
-  return "UGX " + Math.round(amount).toLocaleString("en-US");
+  return "UGX " + Math.round(Number(amount) || 0).toLocaleString("en-US");
 }
 
 function formatUgxCompact(amount: number): string {
-  if (amount === 0) return "UGX 0";
-  return "UGX " + new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(amount);
+  if (!amount) return "UGX 0";
+  return "UGX " + new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(Number(amount));
 }
 
 function formatDateTime(iso: string): string {
@@ -528,8 +530,12 @@ export default function WalletDashboard() {
 
   /* ---------- derived numbers ---------- */
 
-  const balance = wallet?.balance_ugx ?? 0;
-  const threshold = wallet?.low_balance_threshold_ugx ?? 5000;
+  // HARDENED: bigint columns arrive as strings and a failed read leaves the
+  // field undefined — coerce once here so every derivation below is numeric.
+  const balance = Number(wallet?.balance_ugx ?? 0) || 0;
+  const threshold = wallet?.low_balance_threshold_ugx != null
+    ? Number(wallet.low_balance_threshold_ugx) || 5000
+    : 5000;
 
   const successfulTx = useMemo(() => transactions.filter((t) => t.status === "successful"), [transactions]);
 
@@ -540,13 +546,13 @@ export default function WalletDashboard() {
 
   const loadedThisMonth = useMemo(
     () => successfulTx.filter((t) => t.direction === "credit" && new Date(t.created_at) >= monthStart)
-      .reduce((s, t) => s + t.amount_ugx, 0),
+      .reduce((s, t) => s + Number(t.amount_ugx || 0), 0),
     [successfulTx, monthStart],
   );
 
   const spentThisMonth = useMemo(
     () => successfulTx.filter((t) => t.direction === "debit" && new Date(t.created_at) >= monthStart)
-      .reduce((s, t) => s + t.amount_ugx, 0),
+      .reduce((s, t) => s + Number(t.amount_ugx || 0), 0),
     [successfulTx, monthStart],
   );
 
@@ -559,7 +565,7 @@ export default function WalletDashboard() {
       next.setDate(d.getDate() + 1);
       const value = successfulTx
         .filter((t) => t.direction === "debit" && new Date(t.created_at) >= d && new Date(t.created_at) < next)
-        .reduce((s, t) => s + t.amount_ugx, 0);
+        .reduce((s, t) => s + Number(t.amount_ugx || 0), 0);
       return { day: d.toLocaleDateString("en-US", { weekday: "short" }), value };
     });
   }, [successfulTx]);

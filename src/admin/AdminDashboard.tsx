@@ -113,14 +113,16 @@ function parseNum(val: any): number {
   return isNaN(num) ? 0 : num;
 }
 
+// HARDENED: a missing/NaN amount can never crash rendering again (fixes the
+// "Cannot read properties of undefined (reading 'toLocaleString')" white screen).
 function formatCurrency(amount: number): string {
-  if (amount === 0) return "0.00";
-  return amount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  if (!amount) return "0.00";
+  return Number(amount).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 function formatCompact(amount: number): string {
-  if (amount === 0) return "0";
-  return new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(amount);
+  if (!amount) return "0";
+  return new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(Number(amount));
 }
 
 function getAvatarColor(str: string) {
@@ -638,12 +640,14 @@ export default function AdminDashboard() {
     // MTN PREPAID WALLET: live prepaid balance — click opens /admin/wallet
     {
       label: "Wallet",
-      value: wallet ? `UGX ${formatCompact(wallet.balance_ugx)}` : "—",
+      // HARDENED: balance_ugx can be undefined (API shape) or a string (Supabase
+      // bigint columns arrive as text) — Number() makes both render correctly.
+      value: wallet ? `UGX ${formatCompact(Number(wallet.balance_ugx) || 0)}` : "—",
       bg: walletBg,
       fg: walletFg,
       valueColor: wallet ? walletFg : undefined,
       hint: wallet
-        ? `Prepaid balance: UGX ${wallet.balance_ugx.toLocaleString("en-US")}${walletEmpty ? " — SMS sending is blocked until you top up" : walletLow ? " — below the low-balance threshold, top up soon" : ""}`
+        ? `Prepaid balance: UGX ${Number(wallet.balance_ugx ?? 0).toLocaleString("en-US")}${walletEmpty ? " — SMS sending is blocked until you top up" : walletLow ? " — below the low-balance threshold, top up soon" : ""}`
         : "Wallet not loaded yet — open Wallet & Top-up",
       onClick: () => navigate("/admin/wallet"),
       icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12V7H5a2 2 0 0 1 0-4h14v4" /><path d="M3 5v14a2 2 0 0 0 2 2h16v-5" /><path d="M18 12a2 2 0 0 0 0 4h4v-4Z" /></svg>,
