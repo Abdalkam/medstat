@@ -19,6 +19,21 @@
  *   - built-in material viewer (PDF with page anchor, video, audio, image)
  *     - swap in your own <LiveClassView /> at the marked spot if you prefer
  *
+ * RESPONSIVE - fits any device screen size:
+ *   - app-shell layout: fills the viewport (100dvh with h-screen fallback);
+ *     nothing scrolls at page level - the viewer and sidebar scroll
+ *     internally, so no double scrollbars on any device.
+ *   - <768px (phones): the sidebar becomes a slide-over overlay with a
+ *     backdrop; while it is closed a floating people button (bottom-right,
+ *     clear of the app bar) reopens it, with a raised-hands badge. The app
+ *     bar itself stays clean: course title and Leave only - no open/close
+ *     icon button there.
+ *   - >=768px (tablet / desktop): the sidebar docks on the right and stays
+ *     open; the content column shifts with md:pr-[356px].
+ *   - the viewer uses fluid flex heights instead of fixed vh, so PDFs,
+ *     videos and images fit short landscape phones just as well as
+ *     large desktop monitors.
+ *
  * Open the page with  ?course=<courseId>  or pass courseId as a prop.
  * ---------------------------------------------------------------------------
  */
@@ -166,9 +181,12 @@ function MaterialPanel({
     material.title || material.file_name || material.name || "Material";
 
   return (
-    <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-      <div className="flex items-center gap-2 border-b border-slate-200 px-4 py-2.5">
-        <span className="truncate text-sm font-semibold text-slate-700">{title}</span>
+    <section className="flex h-full min-h-[260px] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+      {/* Viewer title bar - never grows, always truncates on small screens */}
+      <div className="flex shrink-0 items-center gap-2 border-b border-slate-200 px-3 py-2 sm:px-4 sm:py-2.5">
+        <span className="truncate text-sm font-semibold text-slate-700 sm:text-base">
+          {title}
+        </span>
         {kind === "pdf" && (
           <span className="ml-auto shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-500">
             Page {page}
@@ -176,8 +194,9 @@ function MaterialPanel({
         )}
       </div>
 
+      {/* Viewer body - fills the remaining height fluidly on any screen */}
       {!url ? (
-        <div className="flex h-[60vh] items-center justify-center text-sm text-slate-400">
+        <div className="flex flex-1 items-center justify-center px-6 text-center text-sm text-slate-400">
           This material has no downloadable file.
         </div>
       ) : kind === "pdf" ? (
@@ -185,21 +204,27 @@ function MaterialPanel({
           key={`${String(material.id)}-${page}`}
           title={title}
           src={`${url}#page=${page}&zoom=page-width&view=FitH`}
-          className="h-[70vh] w-full bg-slate-100"
+          className="h-full w-full min-h-0 flex-1 bg-slate-100"
         />
       ) : kind === "video" ? (
         <video
           key={String(material.id)}
           src={url}
           controls
-          className="h-[70vh] w-full bg-black"
+          playsInline
+          className="h-full w-full min-h-0 flex-1 bg-black"
         />
       ) : kind === "audio" ? (
-        <div className="flex h-[70vh] items-center justify-center px-6">
-          <audio key={String(material.id)} src={url} controls className="w-full max-w-md" />
+        <div className="flex flex-1 items-center justify-center px-4 sm:px-6">
+          <audio
+            key={String(material.id)}
+            src={url}
+            controls
+            className="w-full max-w-md"
+          />
         </div>
       ) : kind === "image" ? (
-        <div className="flex h-[70vh] items-center justify-center bg-slate-100 p-4">
+        <div className="flex flex-1 items-center justify-center overflow-hidden bg-slate-100 p-3 sm:p-4">
           <img
             key={String(material.id)}
             src={url}
@@ -208,7 +233,7 @@ function MaterialPanel({
           />
         </div>
       ) : (
-        <div className="flex h-[60vh] flex-col items-center justify-center gap-3 text-center">
+        <div className="flex flex-1 flex-col items-center justify-center gap-3 px-4 text-center">
           <p className="text-sm text-slate-500">
             This file type cannot be previewed inline.
           </p>
@@ -494,8 +519,16 @@ export default function TrainerLiveClassroom({
   }
 
   return (
-    <div className="min-h-screen bg-slate-50">
-      {/* Fixed right sidebar: people, hands, presentation controls */}
+    /* App shell - fills the viewport on every device. 100dvh tracks the
+       mobile browser's collapsing address bar; browsers without dvh support
+       fall back to the h-screen class. Nothing scrolls at page level. */
+    <div
+      className="flex h-screen flex-col overflow-hidden bg-slate-50"
+      style={{ height: "100dvh" }}
+    >
+      {/* Right panel: docked on md+, slide-over overlay with backdrop below md.
+          The app bar has no open/close button - when the panel is closed on a
+          phone, LiveSidebar shows its own floating reopen button instead. */}
       <LiveSidebar
         participants={participants}
         role="trainer"
@@ -509,43 +542,44 @@ export default function TrainerLiveClassroom({
         currentUserId={trainerId}
       />
 
-      <div className="lg:pr-[356px]">
-        {/* Header */}
-        <header className="sticky top-0 z-20 flex items-center gap-3 border-b border-slate-200 bg-white/90 px-4 py-3 backdrop-blur lg:px-6">
+      {/* Content column: clears the docked panel on tablet/desktop */}
+      <div className="flex min-h-0 flex-1 flex-col md:pr-[356px]">
+        {/* Header - course title + Leave only, no open/close icon button */}
+        <header className="flex shrink-0 items-center gap-2 border-b border-slate-200 bg-white/90 px-3 py-2.5 backdrop-blur sm:gap-3 sm:px-4 sm:py-3 lg:px-6">
           <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[#5b5fc7]/10 text-[#5b5fc7]">
             <IconPeople size={19} />
           </span>
           <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-semibold text-slate-800">
+            <p className="truncate text-sm font-semibold text-slate-800 sm:text-base">
               {courseTitle || "Live classroom"}
             </p>
             <p className="flex items-center gap-1.5 text-xs text-slate-500">
-              <span className="inline-block h-2 w-2 rounded-full bg-emerald-500" />
+              <span className="inline-block h-2 w-2 shrink-0 rounded-full bg-emerald-500" />
               Live · {participants.length} participant
               {participants.length === 1 ? "" : "s"}
             </p>
           </div>
           <button
             onClick={() => window.history.back()}
-            className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-50"
+            className="shrink-0 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-50"
           >
             Leave
           </button>
         </header>
 
         {error && (
-          <div className="mx-4 mt-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 lg:mx-6">
+          <div className="mx-3 mt-3 shrink-0 rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-xs text-red-700 sm:mx-4 sm:px-4 sm:py-3 sm:text-sm lg:mx-6">
             {error}
           </div>
         )}
 
-        <main className="px-4 py-4 lg:px-6">
+        <main className="flex min-h-0 flex-1 flex-col overflow-y-auto px-3 py-3 sm:px-4 sm:py-4 lg:px-6">
           {loading ? (
-            <div className="flex h-[60vh] items-center justify-center text-sm text-slate-400">
+            <div className="flex flex-1 items-center justify-center text-sm text-slate-400">
               Loading classroom…
             </div>
           ) : !currentMaterial ? (
-            <div className="flex h-[60vh] flex-col items-center justify-center gap-2 text-center">
+            <div className="flex flex-1 flex-col items-center justify-center gap-2 px-4 text-center">
               <span className="flex h-12 w-12 items-center justify-center rounded-full bg-slate-100 text-slate-400">
                 <IconPeople size={22} />
               </span>

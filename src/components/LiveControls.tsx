@@ -9,6 +9,11 @@
  *
  * Zero supabase imports and zero "./LiveIcons" imports: icons come from
  * ./LiveSidebar (same folder, exported there), actions arrive as callbacks.
+ *
+ * Responsive: comfortable touch spacing on phones, bottom padding respects
+ * the iPhone/Android home-indicator safe area (env(safe-area-inset-bottom)).
+ * If you render it together with the docked LiveSidebar, pass right padding
+ * so the bar clears the panel:  className="md:pr-[356px]"  while it is open.
  * ---------------------------------------------------------------------------
  */
 
@@ -47,7 +52,7 @@ export default function LiveControls({
 
   return (
     <div
-      className={`sticky bottom-0 z-20 border-t border-slate-200 bg-white/95 px-4 py-3 backdrop-blur ${className}`}
+      className={`sticky bottom-0 z-20 border-t border-slate-200 bg-white/95 px-3 pt-3 backdrop-blur pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-4 ${className}`}
     >
       <div className="mx-auto flex max-w-3xl items-center gap-2">
         <button

@@ -26,8 +26,16 @@
  *        onPrevPage={...} onNextPage={...} busy={...}
  *      />
  *
- * Add right padding to the main content so the fixed sidebar does not cover
- * it:  className="... lg:pr-[356px]"
+ * RESPONSIVE - fits any device screen size:
+ *   - <768px (phones, portrait or landscape): the sidebar is a slide-over
+ *     overlay with a dimmed backdrop; tapping the backdrop closes it. While
+ *     closed, a floating people button (bottom-right, clear of the app bar)
+ *     reopens it - with an amber raised-hands badge when hands are up.
+ *   - >=768px (tablet / desktop): the sidebar is docked on the right and
+ *     open by default. Give the main content matching right padding:
+ *         className="... md:pr-[356px]"
+ *   - Pass `open` + `onOpenChange` to control it from the parent. In
+ *     controlled mode the built-in floating reopen button is suppressed.
  * ---------------------------------------------------------------------------
  */
 
@@ -549,6 +557,9 @@ export default function LiveSidebar({
     () => (typeof window === "undefined" ? true : window.innerWidth >= 768)
   );
 
+  /* Controlled mode: the parent owns open/close and renders its own toggle,
+     so the built-in floating reopen button must stay out of the way. */
+  const isControlled = open !== undefined;
   const isOpen = open ?? openInternal;
   const setOpen = (v: boolean) => {
     setOpenInternal(v);
@@ -603,12 +614,18 @@ export default function LiveSidebar({
     }
   };
 
-  /* ---- collapsed: floating reopen button with hands badge ---- */
+  /* ---- collapsed ---- */
   if (!isOpen) {
+    /* Controlled: the parent shows its own toggle -> render nothing. */
+    if (isControlled) return null;
+
+    /* Uncontrolled: floating reopen button (bottom-right, clear of the app
+       bar) with a raised-hands badge. */
     return (
       <button
         onClick={() => setOpen(true)}
-        className={`fixed right-4 top-4 z-40 flex h-12 w-12 items-center justify-center rounded-full bg-[#5b5fc7] text-white shadow-lg transition hover:bg-[#464fab] ${className}`}
+        aria-label="Open live class panel"
+        className={`fixed right-4 bottom-[max(1rem,env(safe-area-inset-bottom))] z-40 flex h-12 w-12 items-center justify-center rounded-full bg-[#5b5fc7] text-white shadow-lg transition hover:bg-[#464fab] ${className}`}
         title="Open live class panel"
       >
         <IconPeople size={22} />
@@ -649,8 +666,9 @@ export default function LiveSidebar({
           </div>
           <button
             onClick={() => setOpen(false)}
-            className="rounded-lg p-2 text-slate-400 transition hover:bg-slate-100 hover:text-slate-600 md:hidden"
+            className="-mr-1 rounded-lg p-2.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-600 md:hidden"
             title="Close panel"
+            aria-label="Close panel"
           >
             <IconClose size={18} />
           </button>
@@ -717,8 +735,8 @@ export default function LiveSidebar({
           </div>
         </div>
 
-        {/* Content */}
-        <div className="flex-1 overflow-y-auto">
+        {/* Content (overscroll-contain: no scroll chaining on mobile) */}
+        <div className="flex-1 overflow-y-auto overscroll-contain">
           {tab === "people" ? (
             <>
               <div className="px-3 pt-3">
