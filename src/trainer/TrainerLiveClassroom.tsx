@@ -1,23 +1,35 @@
 /**
  * TrainerLiveClassroom.tsx  -  FULL REPLACEMENT (trainer live class page)
  * ---------------------------------------------------------------------------
- * Wires together the redesigned LiveSidebar (fixed, all controls) and the
- * material viewer for the TRAINER view.
+ * Wires together the redesigned LiveSidebar (docked/overlay, all controls) and
+ * the material viewer for the TRAINER view, against YOUR REAL SCHEMA.
  *
- * Error-free by construction:
- *   - no "./LiveIcons" import anywhere (all icons live inside LiveSidebar.tsx)
- *   - no "../lib/supabase" import (the client is created in the ADJUST-HERE
- *     block below - the ONLY section tied to your project specifics)
+ * Single Supabase client:
+ *   - the client is IMPORTED from "../../auth/supabase" - the same one your
+ *     ClassChat uses. The previous self-contained version created its own
+ *     client, which produced the "Multiple GoTrueClient instances detected"
+ *     warning and could clobber the shared session (the sms_logs 401).
  *
- * What it does:
- *   - loads the course, its materials and the live participants
- *   - streams roster changes live (Supabase realtime; harmless if realtime
- *     is not enabled on the table)
- *   - Prev / Next material writes to live_session exactly like your old
- *     LiveControls.changePage did (upsert with onConflict "course_id")
- *   - "Allow to speak" / "Mute" update the participant row + local state
- *   - built-in material viewer (PDF with page anchor, video, audio, image)
- *     - swap in your own <LiveClassView /> at the marked spot if you prefer
+ * Real tables (matching your original page's queries):
+ *   - Materials:   course_materials, ordered by presentation_order,
+ *                  scoped to the trainer's tenant (users.tenant_id)
+ *   - Roster:      active_attendances -> users (username, role)
+ *   - Hands:       raised_hands      (one row per raised hand)
+ *   - Speaking:    allowed_speakers  (can_audio / can_video / allowed)
+ *   - Position:    live_presentations (trainer's material + page; learners
+ *                  follow it), with live_session kept in sync best-effort
+ *
+ * Actions (same DB effect as your original page):
+ *   - "Allow to speak" = upsert allowed_speakers { can_audio: true,
+ *     allowed: true } + delete the raised_hands row (grantPermission).
+ *   - "Mute"           = can_audio:false / allowed:false; row deleted when
+ *     the speaker has neither audio nor video.
+ *   - Prev / Next      = update (or create) the course's live_presentations
+ *     row with material_id + current_page 1, like your original changePage().
+ *
+ * Roster freshness: Supabase realtime on raised_hands / active_attendances /
+ * allowed_speakers (harmless if realtime is off) PLUS a 10s polling fallback,
+ * so the panel stays current even in "Polling mode".
  *
  * RESPONSIVE - fits any device screen size:
  *   - app-shell layout: fills the viewport (100dvh with h-screen fallback);
@@ -38,8 +50,8 @@
  * ---------------------------------------------------------------------------
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { createClient } from "@supabase/supabase-js";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { supabase } from "../auth/supabase";
 import LiveSidebar, { IconPeople } from "../components/LiveSidebar";
 import type {
   PresentationInfo,
@@ -48,41 +60,23 @@ import type {
 } from "../components/LiveSidebar";
 
 /* ==========================================================================
- * ADJUST-HERE  -  the ONLY section tied to your project specifics.
- * Everything below this block works as-is.
- *
- * 1) SUPABASE CLIENT
- *    The client below is created from the standard Vite env names
- *    (VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY). If your .env uses other
- *    names, fix them here. Even better: if your project already has a
- *    supabase client file (e.g. src/supabaseClient.ts), delete the three
- *    const lines + the createClient import at the top and import yours:
- *        import { supabase } from "../supabaseClient";
- *
- *    NOTE: if VSCode ever says "Property 'env' does not exist on type
- *    'ImportMeta'", your project is missing src/vite-env.d.ts - add a file
- *    with one line:  /// <reference types="vite/client" />
- *
- * 2) TABLE / COLUMN NAMES - change any constant that differs in your DB.
+ * TABLE NAMES - taken from your live schema (the same tables your original
+ * page queried). If you ever rename a table, change the constant here only.
+ * The Supabase client itself is imported above from ../../auth/supabase so
+ * the whole app shares ONE GoTrueClient / session store.
  * ========================================================================== */
 
-const supabaseUrl =
-  (import.meta.env.VITE_SUPABASE_URL as string | undefined) ?? "";
-const supabaseKey =
-  (import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined) ??
-  (import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string | undefined) ??
-  "";
-const supabase = createClient(supabaseUrl, supabaseKey);
-
 const COURSES_TABLE = "courses"; // course title lookup
-const MATERIALS_TABLE = "materials"; // materials of the course
-const PARTICIPANTS_TABLE = "live_participants"; // live roster (hands/speaking)
+const USERS_TABLE = "users"; // id, username, email, role per attendee
+const MATERIALS_TABLE = "course_materials"; // ordered by presentation_order
+const PRESENTATIONS_TABLE = "live_presentations"; // trainer's live position
+const SESSION_TABLE = "live_session"; // start/stop + position (best-effort)
+const ATTENDANCE_TABLE = "active_attendances"; // who is in class right now
+const HANDS_TABLE = "raised_hands"; // raised-hand queue
+const SPEAKERS_TABLE = "allowed_speakers"; // can_audio / can_video / allowed
 
-const PARTICIPANT_KEY_COLUMN = "id"; // "user_id" if your rows key on it
-const COL_HAND_RAISED = "hand_raised";
-const COL_IS_SPEAKING = "is_speaking";
-
-/* ======================= end of ADJUST-HERE block ======================== */
+/* Roster polling fallback (ms) - realtime is used when available. */
+const ROSTER_POLL_MS = 10_000;
 
 /* ---------------------------------------------------------------- helpers */
 
@@ -274,6 +268,10 @@ export default function TrainerLiveClassroom({
   const [activeId, setActiveId] = useState<string | number | null>(null);
   const [page, setPage] = useState<number>(1);
   const [busy, setBusy] = useState<boolean>(false);
+  /* The course's live_presentations row id - Prev/Next update this row. */
+  const [presRowId, setPresRowId] = useState<string | null>(null);
+  /* Tenant scope (users.tenant_id of the signed-in trainer). */
+  const tenantRef = useRef<string | null>(null);
 
   const trainerId = trainerIdProp ?? authUserId;
 
@@ -295,7 +293,110 @@ export default function TrainerLiveClassroom({
     };
   }, [trainerIdProp]);
 
-  /* Load course + materials + participants (+ restore last live position). */
+  /* Rebuild the roster from the real tables: who is in class
+     (active_attendances) x users (names/roles) x raised_hands x
+     allowed_speakers (speaking state). Used on mount, by realtime events
+     and by the polling fallback. */
+  const reloadRoster = useCallback(async () => {
+    if (!courseId) return;
+    try {
+      const [attsRes, handsRes, speakersRes] = await Promise.all([
+        supabase
+          .from(ATTENDANCE_TABLE)
+          .select("user_id")
+          .eq("course_id", courseId),
+        supabase
+          .from(HANDS_TABLE)
+          .select("user_id")
+          .eq("course_id", courseId),
+        supabase
+          .from(SPEAKERS_TABLE)
+          .select("user_id, can_audio, can_video, allowed")
+          .eq("course_id", courseId),
+      ]);
+      if (attsRes.error || handsRes.error || speakersRes.error) return;
+
+      const ids = Array.from(
+        new Set(
+          ((attsRes.data ?? []) as Array<Record<string, unknown>>)
+            .map((r) => String(r.user_id ?? ""))
+            .filter(Boolean)
+        )
+      );
+
+      let userRows: Array<Record<string, unknown>> = [];
+      if (ids.length > 0) {
+        const { data } = await supabase
+          .from(USERS_TABLE)
+          .select("id, username, email, role")
+          .in("id", ids);
+        userRows = (data ?? []) as Array<Record<string, unknown>>;
+      }
+
+      const handSet = new Set(
+        ((handsRes.data ?? []) as Array<Record<string, unknown>>).map(
+          (r) => String(r.user_id ?? "")
+        )
+      );
+      const speakerOn = new Map<string, boolean>();
+      ((speakersRes.data ?? []) as Array<Record<string, unknown>>).forEach(
+        (s) => {
+          const uid = String(s.user_id ?? "");
+          if (!uid) return;
+          speakerOn.set(uid, Boolean(s.can_audio ?? s.allowed ?? false));
+        }
+      );
+
+      setParticipants(
+        userRows.map((u) => {
+          const id = String(u.id ?? "");
+          return {
+            id,
+            name: String(u.username ?? u.email ?? ""),
+            email: String(u.email ?? ""),
+            role: String(u.role ?? ""),
+            handRaised: handSet.has(id),
+            isSpeaking: speakerOn.get(id) ?? false,
+          };
+        })
+      );
+    } catch {
+      /* ignore */
+    }
+  }, [courseId]);
+
+  /* Resolve the signed-in trainer's tenant scope (users.tenant_id). */
+  const resolveTenant = useCallback(async (): Promise<string | null> => {
+    if (tenantRef.current) return tenantRef.current;
+    let uid = trainerId;
+    if (!uid) {
+      try {
+        const { data } = await supabase.auth.getUser();
+        uid = data.user?.id ?? null;
+        if (uid && !trainerIdProp) setAuthUserId(uid);
+      } catch {
+        /* ignore */
+      }
+    }
+    if (!uid) return null;
+    try {
+      const { data } = await supabase
+        .from(USERS_TABLE)
+        .select("tenant_id")
+        .eq("id", uid)
+        .maybeSingle();
+      const t = (data as Record<string, unknown> | null)?.tenant_id;
+      if (typeof t === "string" && t) {
+        tenantRef.current = t;
+        return t;
+      }
+    } catch {
+      /* ignore */
+    }
+    return null;
+  }, [trainerId, trainerIdProp]);
+
+  /* Load course + materials + presentation state (+ restore last position). */
   const loadAll = useCallback(async () => {
     if (!courseId) {
       setLoading(false);
@@ -303,36 +404,40 @@ export default function TrainerLiveClassroom({
     }
     setLoading(true);
     try {
-      const [courseRes, materialsRes, participantsRes, sessionRes] =
-        await Promise.all([
-          supabase
-            .from(COURSES_TABLE)
-            .select("id, title, name")
-            .eq("id", courseId)
-            .maybeSingle(),
-          // Tip: add .order("created_at", { ascending: true }) if you want
-          // materials sorted by upload time and your table has that column.
-          supabase.from(MATERIALS_TABLE).select("*").eq("course_id", courseId),
-          supabase
-            .from(PARTICIPANTS_TABLE)
-            .select("*")
-            .eq("course_id", courseId),
-          supabase
-            .from("live_session")
-            .select("material_id, current_page")
-            .eq("course_id", courseId)
-            .maybeSingle(),
-        ]);
+      const tenant = await resolveTenant();
+
+      let matsQuery = supabase
+        .from(MATERIALS_TABLE)
+        .select("*")
+        .eq("course_id", courseId);
+      if (tenant) matsQuery = matsQuery.eq("tenant_id", tenant);
+
+      const [courseRes, materialsRes, presRes, sessionRes] = await Promise.all([
+        supabase
+          .from(COURSES_TABLE)
+          .select("id, title, name")
+          .eq("id", courseId)
+          .maybeSingle(),
+        matsQuery.order("presentation_order", { ascending: true }),
+        supabase
+          .from(PRESENTATIONS_TABLE)
+          .select("id, material_id, current_page")
+          .eq("course_id", courseId)
+          .maybeSingle(),
+        supabase
+          .from(SESSION_TABLE)
+          .select("id, material_id, current_page")
+          .eq("course_id", courseId)
+          .maybeSingle(),
+      ]);
 
       const firstError =
         courseRes.error ??
         materialsRes.error ??
-        participantsRes.error ??
+        presRes.error ??
         sessionRes.error;
       if (firstError) {
-        setError(
-          `${firstError.message} - check the table names in the ADJUST-HERE block.`
-        );
+        setError(firstError.message);
       } else {
         setError(null);
       }
@@ -343,46 +448,36 @@ export default function TrainerLiveClassroom({
       const mats = (materialsRes.data ?? []) as unknown as SidebarMaterial[];
       setMaterials(mats);
 
-      setParticipants(
-        (participantsRes.data ?? []) as unknown as SidebarParticipant[]
-      );
+      const pres = presRes.data as Record<string, unknown> | null;
+      setPresRowId(pres?.id != null ? String(pres.id) : null);
 
       const session = sessionRes.data as Record<string, unknown> | null;
-      if (session?.material_id != null) {
-        setActiveId(session.material_id as string | number);
-        setPage(Number(session.current_page ?? 1) || 1);
+      const restoreId =
+        (pres?.material_id as string | number | undefined) ??
+        (session?.material_id as string | number | undefined);
+      if (restoreId != null) {
+        setActiveId(restoreId);
+        setPage(Number(pres?.current_page ?? session?.current_page ?? 1) || 1);
       } else if (mats.length > 0) {
         setActiveId(mats[0].id);
         setPage(1);
       }
+
+      await reloadRoster();
     } catch (e) {
       setError(errMessage(e));
     } finally {
       setLoading(false);
     }
-  }, [courseId]);
+  }, [courseId, resolveTenant, reloadRoster]);
 
   useEffect(() => {
     void loadAll();
   }, [loadAll]);
 
-  /* Refresh only the roster (used by the realtime listener below). */
-  const reloadRoster = useCallback(async () => {
-    if (!courseId) return;
-    try {
-      const { data, error } = await supabase
-        .from(PARTICIPANTS_TABLE)
-        .select("*")
-        .eq("course_id", courseId);
-      if (!error) {
-        setParticipants((data ?? []) as unknown as SidebarParticipant[]);
-      }
-    } catch {
-      /* ignore */
-    }
-  }, [courseId]);
-
-  /* Live roster updates (harmless if realtime is off for the table). */
+  /* Live roster updates: realtime on the three roster tables (harmless if
+     realtime is off) PLUS a polling fallback so the panel stays fresh even
+     when the socket is down ("Polling mode"). */
   useEffect(() => {
     if (!courseId) return;
     const channel = supabase
@@ -392,7 +487,31 @@ export default function TrainerLiveClassroom({
         {
           event: "*",
           schema: "public",
-          table: PARTICIPANTS_TABLE,
+          table: HANDS_TABLE,
+          filter: `course_id=eq.${courseId}`,
+        },
+        () => {
+          void reloadRoster();
+        }
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: ATTENDANCE_TABLE,
+          filter: `course_id=eq.${courseId}`,
+        },
+        () => {
+          void reloadRoster();
+        }
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: SPEAKERS_TABLE,
           filter: `course_id=eq.${courseId}`,
         },
         () => {
@@ -400,8 +519,11 @@ export default function TrainerLiveClassroom({
         }
       )
       .subscribe();
+
+    const timer = window.setInterval(() => void reloadRoster(), ROSTER_POLL_MS);
     return () => {
       void supabase.removeChannel(channel);
+      window.clearInterval(timer);
     };
   }, [courseId, reloadRoster]);
 
@@ -433,8 +555,9 @@ export default function TrainerLiveClassroom({
 
   /* ------------------------------------------------------------- actions -- */
 
-  /** Prev / Next material - same live_session write as your old
-   *  LiveControls.changePage (upsert, onConflict "course_id"). */
+  /** Prev / Next material - mirrors your original changePage(): update (or
+   *  create) the course's live_presentations row (what learners follow) and
+   *  keep live_session aligned best-effort. */
   const changePage = useCallback(
     async (dir: "next" | "prev") => {
       if (busy) return;
@@ -449,19 +572,78 @@ export default function TrainerLiveClassroom({
         const nextMaterial = materials[nextIdx];
         if (!nextMaterial) return;
 
-        const { error: upsertErr } = await supabase
-          .from("live_session")
-          .upsert(
-            {
-              course_id: courseId,
+        const stamp = new Date().toISOString();
+
+        /* live_presentations: the row learners follow. */
+        if (presRowId) {
+          const { error: updErr } = await supabase
+            .from(PRESENTATIONS_TABLE)
+            .update({
               material_id: nextMaterial.id,
-              trainer_id: trainerId,
               current_page: 1,
-              updated_at: new Date().toISOString(),
-            },
-            { onConflict: "course_id" }
-          );
-        if (upsertErr) throw upsertErr;
+              updated_at: stamp,
+            })
+            .eq("id", presRowId);
+          if (updErr) throw updErr;
+        } else {
+          const row: Record<string, unknown> = {
+            id: crypto.randomUUID(),
+            course_id: courseId,
+            started_by: trainerId,
+            material_id: nextMaterial.id,
+            current_page: 1,
+            is_blackboard: false,
+            updated_at: stamp,
+          };
+          if (tenantRef.current) row.tenant_id = tenantRef.current;
+          const { error: insErr } = await supabase
+            .from(PRESENTATIONS_TABLE)
+            .insert(row);
+          if (insErr) throw insErr;
+          const { data: fresh } = await supabase
+            .from(PRESENTATIONS_TABLE)
+            .select("id")
+            .eq("course_id", courseId)
+            .maybeSingle();
+          const freshId = (fresh as Record<string, unknown> | null)?.id;
+          setPresRowId(freshId != null ? String(freshId) : null);
+        }
+
+        /* live_session: keep aligned, best-effort - never blocks the class. */
+        try {
+          const { data: sess } = await supabase
+            .from(SESSION_TABLE)
+            .select("id")
+            .eq("course_id", courseId)
+            .maybeSingle();
+          const sessId = (sess as Record<string, unknown> | null)?.id;
+          if (sessId != null) {
+            await supabase
+              .from(SESSION_TABLE)
+              .update({
+                material_id: nextMaterial.id,
+                current_page: 1,
+                updated_at: stamp,
+              })
+              .eq("id", String(sessId));
+          } else {
+            const row: Record<string, unknown> = {
+              id: crypto.randomUUID(),
+              course_id: courseId,
+              trainer_id: trainerId,
+              material_id: nextMaterial.id,
+              current_page: 1,
+              active: true,
+              started_at: stamp,
+              updated_at: stamp,
+              created_at: stamp,
+            };
+            if (tenantRef.current) row.tenant_id = tenantRef.current;
+            await supabase.from(SESSION_TABLE).insert(row);
+          }
+        } catch {
+          /* session drift must not break the presentation change */
+        }
 
         setActiveId(nextMaterial.id);
         setPage(1);
@@ -471,36 +653,101 @@ export default function TrainerLiveClassroom({
         setBusy(false);
       }
     },
-    [busy, courseId, trainerId, currentMaterial, currentIdx, materials]
+    [
+      busy,
+      courseId,
+      trainerId,
+      currentMaterial,
+      currentIdx,
+      materials,
+      presRowId,
+    ]
   );
 
-  const allowAudio = useCallback(async (userId: string) => {
-    setParticipants((ps) =>
-      ps.map((p) =>
-        uidOf(p) === String(userId)
-          ? { ...p, isSpeaking: true, hand_raised: false }
-          : p
-      )
-    );
-    const { error: updErr } = await supabase
-      .from(PARTICIPANTS_TABLE)
-      .update({ [COL_IS_SPEAKING]: true, [COL_HAND_RAISED]: false })
-      .eq(PARTICIPANT_KEY_COLUMN, userId);
-    if (updErr) setError(`Allow to speak failed: ${updErr.message}`);
-  }, []);
+  /** "Allow to speak" - grant audio in allowed_speakers and clear the raised
+   *  hand, exactly like the original grantPermission(userId, "audio"). */
+  const allowAudio = useCallback(
+    async (userId: string) => {
+      setParticipants((ps) =>
+        ps.map((p) =>
+          uidOf(p) === String(userId)
+            ? { ...p, isSpeaking: true, handRaised: false, hand_raised: false }
+            : p
+        )
+      );
+      try {
+        const { data: existing } = await supabase
+          .from(SPEAKERS_TABLE)
+          .select("can_audio, can_video")
+          .eq("user_id", userId)
+          .eq("course_id", courseId)
+          .maybeSingle();
+        const canVideo = Boolean(
+          (existing as Record<string, unknown> | null)?.can_video ?? false
+        );
+        const row: Record<string, unknown> = {
+          user_id: userId,
+          course_id: courseId,
+          allowed: true,
+          can_audio: true,
+          can_video: canVideo,
+        };
+        if (tenantRef.current) row.tenant_id = tenantRef.current;
+        const { error: upErr } = await supabase
+          .from(SPEAKERS_TABLE)
+          .upsert(row, { onConflict: "user_id" });
+        if (upErr) throw upErr;
+        await supabase
+          .from(HANDS_TABLE)
+          .delete()
+          .eq("user_id", userId)
+          .eq("course_id", courseId);
+        void reloadRoster();
+      } catch (e) {
+        setError(`Allow to speak failed: ${errMessage(e)}`);
+      }
+    },
+    [courseId, reloadRoster]
+  );
 
-  const muteUser = useCallback(async (userId: string) => {
-    setParticipants((ps) =>
-      ps.map((p) =>
-        uidOf(p) === String(userId) ? { ...p, isSpeaking: false } : p
-      )
-    );
-    const { error: updErr } = await supabase
-      .from(PARTICIPANTS_TABLE)
-      .update({ [COL_IS_SPEAKING]: false })
-      .eq(PARTICIPANT_KEY_COLUMN, userId);
-    if (updErr) setError(`Mute failed: ${updErr.message}`);
-  }, []);
+  /** "Mute" - revoke audio; the allowed_speakers row is deleted when the
+   *  speaker has neither audio nor video (same rule as the original page). */
+  const muteUser = useCallback(
+    async (userId: string) => {
+      setParticipants((ps) =>
+        ps.map((p) =>
+          uidOf(p) === String(userId) ? { ...p, isSpeaking: false } : p
+        )
+      );
+      try {
+        const { data: existing } = await supabase
+          .from(SPEAKERS_TABLE)
+          .select("can_audio, can_video")
+          .eq("user_id", userId)
+          .eq("course_id", courseId)
+          .maybeSingle();
+        const prev = (existing ?? {}) as Record<string, unknown>;
+        const canVideo = Boolean(prev.can_video ?? false);
+        if (!canVideo) {
+          await supabase
+            .from(SPEAKERS_TABLE)
+            .delete()
+            .eq("user_id", userId)
+            .eq("course_id", courseId);
+        } else {
+          await supabase
+            .from(SPEAKERS_TABLE)
+            .update({ can_audio: false, can_video: true, allowed: false })
+            .eq("user_id", userId)
+            .eq("course_id", courseId);
+        }
+        void reloadRoster();
+      } catch (e) {
+        setError(`Mute failed: ${errMessage(e)}`);
+      }
+    },
+    [courseId, reloadRoster]
+  );
 
   /* -------------------------------------------------------------- render -- */
 
