@@ -1,148 +1,136 @@
+/* ============================================================================
+ * src/types.ts — shared types for the live classroom.
+ * Kept in lock-step with the columns of the Supabase tables created by
+ * supabase/live-classroom-schema.sql.
+ * ========================================================================== */
+
+export type UserRole = "trainer" | "trainee" | "admin";
 
 export interface User {
   id: string;
-  tenantId?: string;
   username: string;
-  email?: string;
-  phone?: string;
-  password: string;
-  role: "admin" | "trainer" | "trainee";
-  assignedCourses?: string[];
-  assignedDepartments?: string[];
+  email: string;
+  password?: string;
+  role: UserRole;
   profilePic?: string;
+  phone?: string;
+  assignedCourses?: string[];
+  tenantId: string;
   createdAt?: string;
-  synced?: boolean;
-  tuition?: {
-    expected: number;
-    paid: number;
-  };
-  remuneration?: {
-    netSalary?: number;
-    perDiem?: number;
-    net_salary?: number;
-    per_diem?: number;
-  };
 }
 
-export interface Tenant {
+/* A person currently connected to the live classroom (used by
+ * components/LiveSidebar.tsx and the realtime presence channel).
+ * `handRaised` / `lastHandRaiseTime` go together: the trainer screen sets
+ * both when a learner presses "raise hand", and LiveSidebar formats the
+ * timestamp with its timeAgo(number) helper — so lastHandRaiseTime is a
+ * required number even while the hand is down (use 0 = no raise yet). */
+export interface Participant {
   id: string;
-  phone: string;
-  businessName: string;
-  accountNumber?: string;
-  status?: string;
-  createdAt?: string;
+  username: string;
+  /** true while the learner's hand is raised */
+  handRaised: boolean;
+  /** epoch ms of the last "raise hand" press (0 if never) */
+  lastHandRaiseTime: number;
+  /** true while Daily reports active audio levels for this user */
+  speaking: boolean;
+  /* optional extras the room state may carry */
+  role?: UserRole;
+  micAllowed?: boolean;
+  cameraAllowed?: boolean;
+  avatarUrl?: string;
+  joinedAt?: string;
 }
 
-export interface Course {
-  id: string;
-  tenantId?: string;
-  name: string;
-  description?: string;
-  tuitionType?: "free" | "paid";
-  amount?: number;
-  startDate?: string;
-  period?: string;
-  logo?: string;
-  imageUrl?: string;
-  mediaUrl?: string;
-  mediaType?: string;
-  mediaName?: string;
-  trainerId?: string;
-  category?: string;
-  createdAt?: string;
-  synced?: boolean;
-}
-
+/* A lesson file uploaded for a course. `fileUrl` may be:
+ *   - a data: URL            ("data:application/pdf;base64,JVBERi…")
+ *   - a raw base64 payload   ("JVBERi…" — converted by LiveClassView)
+ *   - an http(s) URL         (Supabase Storage signed/public URL)
+ * depending on how the material was uploaded. LiveClassView accepts all of
+ * them (see LiveClassView.tsx). */
 export interface CourseMaterial {
   id: string;
   courseId: string;
-  tenantId?: string;
+  tenantId: string;
   title: string;
-  description?: string;
-  fileUrl?: string;
-  fileName?: string;
-  fileType?: string;
-  fileData?: string;
-  allowDownload?: boolean;
-  uploadedBy?: string;
-  uploadedAt?: string;
-  isPresentation?: boolean;
-  presentationOrder?: number;
-  synced?: boolean;
-  createdAt?: string;
+  description: string;
+  fileUrl: string;
+  fileName: string;
+  fileType: string; // MIME type, e.g. "application/pdf"
+  allowDownload: boolean;
+  uploadedBy: string;
+  uploadedAt: string;
+  isPresentation: boolean;
+  presentationOrder: number;
 }
 
-export interface Enrollment {
+/* Stroke points are stored in PIXELS of the blackboard's 1280×720 bitmap.
+ * The canvas blackboard (DrawingBlackboard.tsx) captures them through the
+ * letterboxed bitmap rect, so the same stored points render identically on
+ * the trainer's desktop and a learner's phone (the bitmap is scaled with
+ * object-fit: contain, aspect ratio always preserved). */
+export interface StrokePoint {
+  x: number; // 0–1280
+  y: number; // 0–720
+}
+
+export interface Stroke {
   id: string;
-  tenantId?: string;
-  courseId: string;
-  userId: string;
-  role?: "admin" | "trainer" | "trainee";
-  enrolledAt?: string;
-  status?: string;
-  createdAt?: string;
-  synced?: boolean;
+  points: StrokePoint[];
+  color: string;
+  width: number;
+  tool: "pen" | "eraser" | "text" | "line";
 }
 
+/* Named text labels for the canvas blackboard (DrawingBlackboard "text"
+ * tool — used to name parts of a drawing). Stored in
+ * live_presentations.blackboard_labels (jsonb). x/y are pixels of the
+ * 1280×720 bitmap; the label is placed/edited/dragged directly on the board
+ * and committed through TrainerLiveClassroom.handleTextUpsert (upsert by id). */
+export interface BlackboardLabel {
+  id: string;
+  x: number;
+  y: number;
+  text: string;
+  fontFamily: string;
+  fontSize: number;
+  fontColor: string;
+  fontWeight: string;
+  fontStyle: string;
+}
+
+/* One row of the `live_presentations` table — the shared "what is on
+ * screen right now" state that both the trainer and every learner poll /
+ * receive realtime updates for. */
+export interface LivePresentation {
+  id: string;
+  courseId: string;
+  materialId: string;
+  isBlackboard: boolean;
+  blackboardStrokes: Stroke[];
+  blackboardLines: string[];
+  blackboardLabels?: BlackboardLabel[];
+  currentPage: number; // PDF page pushed to LiveClassView (#page=N)
+  tenantId?: string;
+  startedBy?: string;
+  updatedAt?: string;
+}
+
+/* One row of the `live_session` table. */
 export interface LiveSession {
   id: string;
-  tenantId?: string;
   courseId: string;
   trainerId: string;
   active: boolean;
   startedAt?: string;
   updatedAt?: string;
   createdAt?: string;
-}
-
-export interface Stroke {
-  id: string;
-  points: { x: number; y: number }[];
-  color?: string;
-  width?: number;
-  tool?: "pen" | "eraser" | "text";
-}
-
-export interface LivePresentation {
-  id: string;
   tenantId?: string;
-  courseId: string;
-  materialId?: string;
-  isBlackboard?: boolean;
-  blackboardLines?: string[];
-  blackboardStrokes?: Stroke[];
-  blackboardLabels?: {
-    text: string;
-    x: number;
-    y: number;
-  }[];
-  startedBy?: string;
-  updatedAt?: string;
-  currentPage?: number;
-  zoom?: number;
-  fullscreen?: boolean;
-  sidebarWidth?: number;
-  chatWidth?: number;
-  presentationHeight?: number;
-  showSidebar?: boolean;
-  showChat?: boolean;
-}
-
-export interface ChatMessage {
-  id: string;
-  tenantId?: string;
-  courseId: string;
-  userId: string;
-  username: string;
-  message: string;
-  createdAt?: string;
-  imageUrl?: string | null;
 }
 
 export interface BusinessSettings {
   id?: string;
-  tenantId?: string;
-  businessName?: string;
+  businessName: string;
   address?: string;
   phone?: string;
   email?: string;
@@ -152,137 +140,19 @@ export interface BusinessSettings {
   adminProfile?: string;
   loginBackground?: string;
   themeColor?: string;
-  appBarItems?: string[];
+  appBarItems?: unknown[];
+  tenantId?: string;
   createdAt?: string;
-  [key: string]: any;
 }
 
-export type AssignmentFieldType =
-  | "text"
-  | "paragraph"
-  | "dropdown"
-  | "checkbox"
-  | "toggle"
-  | "file"
-  | "note"
-  | "header";
-
-export interface Assignment {
+/* One row of the `class_chat` table (used by components/ClassChat.tsx). */
+export interface ChatMessage {
   id: string;
-  tenantId?: string;
   courseId: string;
-  trainerId: string;
-  title: string;
-  description?: string;
-  dueDate?: string;
-  allowDownload?: boolean;
-  videoUrl?: string;
-  audioUrl?: string;
-  status?: "draft" | "published" | "closed";
-  passmark?: number;
-  createdAt?: string;
-  updatedAt?: string;
-  synced?: boolean;
-}
-
-export interface AssignmentField {
-  id: string;
   tenantId?: string;
-  assignmentId: string;
-  type: AssignmentFieldType | string;
-  label?: string;
-  required?: boolean;
-  options?: string[];
-  fileTypes?: string[];
-  x?: number;
-  y?: number;
-  blocksNext?: boolean;
-  blockMessage?: string;
-  sortOrder?: number;
-  maxChars?: number;
-  points?: number;
-  placeholder?: string;
-  correctAnswer?: string;
-  pageId?: string;
-  fileUrl?: string;
-  createdAt?: string;
-}
-
-export interface AssignmentSubmission {
-  id: string;
-  tenantId?: string;
-  assignmentId?: string;
-  userId?: string;
-  username?: string;
-  submittedAt?: string;
-  answers?: Record<string, any>;
-  marks?: Record<string, any>;
-  questionNotes?: Record<string, any>;
-  grade?: string;
-  feedback?: string;
-  gradedBy?: string;
-  gradedAt?: string;
-  createdAt?: string;
-  updatedAt?: string;
-  synced?: boolean;
-}
-
-export interface Schedule {
-  id: string;
-  tenantId?: string;
-  courseId: string;
-  trainerId: string;
-  trainerName?: string;
-  title?: string;
-  description?: string;
-  scheduledAt: string;
-  createdAt?: string;
-  synced?: boolean;
-}
-
-export interface Participant {
-  id: string;
-  tenantId?: string;
-  username: string;
-  role: "trainer" | "trainee";
-  speaking: boolean;
-  handRaised: boolean;
-  lastHandRaiseTime: number;
-  micEnabled: boolean;
-}
-
-export interface ProfileSettings {
-  id: string;
   userId: string;
-  tenantId: string;
   username: string;
-  email: string;
-  phone: string;
-  avatarUrl?: string;
-  password?: string;
   role?: string;
-  synced?: boolean;
-  createdAt?: string;
-  updatedAt?: string;
-}
-
-export interface SmsLog {
-  id: string;
-  tenantId?: string;
-  phone: string;
-  message: string;
-  status: string;
-  sentBy?: string;
-  sentAt: string;
-  synced?: boolean;
-}
-
-export interface FormCache {
-  id: string;
-  tenantId?: string;
-  name?: string;
-  description?: string;
-  fields?: any[];
-  synced?: boolean;
-  [key: string]: any;
+  text: string;
+  createdAt: string;
 }

@@ -1,5 +1,19 @@
-// src/components/DrawingToolbar.tsx
-import { FONT_FAMILIES, type ToolType, type FontOptions } from "./CanvasBlackboard";
+/* ============================================================================
+ * src/components/DrawingToolbar.tsx
+ * Trainer tool panel for the canvas blackboard (pen / eraser / text).
+ *
+ * FIX: imports now come from "./DrawingBlackboard" (the component that
+ * actually exports FONT_FAMILIES / ToolType / FontOptions) — the old path
+ * "./CanvasBlackboard" no longer exists, which broke the build.
+ *
+ * NEW: keyboard shortcuts while the classroom is focused — P = pen,
+ * E = eraser, T = text. Typing inside any input/textarea/select never
+ * triggers a tool change.
+ * ========================================================================== */
+import { useEffect } from "react";
+import type { FC, ReactNode, CSSProperties } from "react";
+import { FONT_FAMILIES } from "./DrawingBlackboard";
+import type { ToolType, FontOptions } from "./DrawingBlackboard";
 
 interface DrawingToolbarProps {
   activeTool: ToolType;
@@ -22,7 +36,7 @@ const FONT_SIZES = [12, 16, 20, 24, 32, 40, 48, 64];
 const FONT_WEIGHTS = [{ label: "Normal", value: "normal" }, { label: "Bold", value: "bold" }, { label: "Light", value: "300" }];
 const FONT_STYLES = [{ label: "Normal", value: "normal" }, { label: "Italic", value: "italic" }];
 
-const ToolButton: React.FC<{ active: boolean; onClick: () => void; title: string; children: React.ReactNode }> = ({ active, onClick, title, children }) => (
+const ToolButton: FC<{ active: boolean; onClick: () => void; title: string; children: ReactNode }> = ({ active, onClick, title, children }) => (
   <button onClick={onClick} title={title} style={{
     width: "40px", height: "40px", display: "flex", alignItems: "center", justifyContent: "center",
     background: active ? "#007AFF" : "#1A1A1A", color: "#fff", border: active ? "none" : "1px solid #444",
@@ -30,11 +44,11 @@ const ToolButton: React.FC<{ active: boolean; onClick: () => void; title: string
   }}>{children}</button>
 );
 
-const SectionLabel: React.FC<{ children: React.ReactNode }> = ({ children }) => (
+const SectionLabel: FC<{ children: ReactNode }> = ({ children }) => (
   <span style={{ color: "#888", fontSize: "11px", textTransform: "uppercase", letterSpacing: "1px" }}>{children}</span>
 );
 
-const ColorPicker: React.FC<{ colors: string[]; value: string; onChange: (c: string) => void }> = ({ colors, value, onChange }) => (
+const ColorPicker: FC<{ colors: string[]; value: string; onChange: (c: string) => void }> = ({ colors, value, onChange }) => (
   <div style={{ display: "flex", flexWrap: "wrap", gap: "4px" }}>
     {colors.map(c => (
       <button key={c} onClick={() => onChange(c)} style={{
@@ -51,16 +65,32 @@ const ColorPicker: React.FC<{ colors: string[]; value: string; onChange: (c: str
   </div>
 );
 
-const SelectInput: React.FC<{ value: string | number; onChange: (v: string) => void; children: React.ReactNode }> = ({ value, onChange, children }) => (
+const SelectInput: FC<{ value: string | number; onChange: (v: string) => void; children: ReactNode }> = ({ value, onChange, children }) => (
   <select value={value} onChange={e => onChange(e.target.value)} style={{
     background: "#1A1A1A", color: "#fff", border: "1px solid #444", borderRadius: "6px", padding: "6px 8px", fontSize: "13px", cursor: "pointer", width: "100%",
   }}>{children}</select>
 );
 
-export const DrawingToolbar: React.FC<DrawingToolbarProps> = ({
+export const DrawingToolbar: FC<DrawingToolbarProps> = ({
   activeTool, onToolChange, penColor, onPenColorChange, penWidth, onPenWidthChange,
   eraserSize, onEraserSizeChange, fontOptions, onFontOptionsChange, onClear, isTrainer, compact = false,
 }) => {
+  /* Keyboard shortcuts: P / E / T — ignored while typing in any field. */
+  useEffect(() => {
+    if (!isTrainer) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
+      const k = e.key.toLowerCase();
+      if (k === "p") onToolChange("pen");
+      else if (k === "e") onToolChange("eraser");
+      else if (k === "t") onToolChange("text");
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [isTrainer, onToolChange]);
+
   if (!isTrainer) return null;
 
   return (
@@ -73,17 +103,17 @@ export const DrawingToolbar: React.FC<DrawingToolbarProps> = ({
       <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
         <SectionLabel>Tools</SectionLabel>
         <div style={{ display: "flex", gap: "4px" }}>
-          <ToolButton active={activeTool === "pen"} onClick={() => onToolChange("pen")} title="Pen">
+          <ToolButton active={activeTool === "pen"} onClick={() => onToolChange("pen")} title="Pen (P)">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" /></svg>
           </ToolButton>
-          <ToolButton active={activeTool === "eraser"} onClick={() => onToolChange("eraser")} title="Eraser">
+          <ToolButton active={activeTool === "eraser"} onClick={() => onToolChange("eraser")} title="Eraser (E)">
             <svg width="20" height="20" viewBox="0 0 60 70" fill="none">
               <rect x="15" y="10" width="30" height="25" rx="2" fill="currentColor" />
               <rect x="12" y="35" width="36" height="12" rx="2" fill="currentColor" opacity="0.7" />
               <rect x="22" y="47" width="16" height="15" rx="3" fill="currentColor" opacity="0.5" />
             </svg>
           </ToolButton>
-          <ToolButton active={activeTool === "text"} onClick={() => onToolChange("text")} title="Text">
+          <ToolButton active={activeTool === "text"} onClick={() => onToolChange("text")} title="Text — name parts of the drawing (T)">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <polyline points="4 7 4 4 20 4 20 7" /><line x1="9" y1="20" x2="15" y2="20" /><line x1="12" y1="4" x2="12" y2="20" />
             </svg>
@@ -130,7 +160,7 @@ export const DrawingToolbar: React.FC<DrawingToolbarProps> = ({
             {FONT_WEIGHTS.map(w => (
               <button key={w.value} onClick={() => onFontOptionsChange({ fontWeight: w.value })} style={{
                 flex: 1, padding: "6px", background: fontOptions.fontWeight === w.value ? "#007AFF" : "#1A1A1A",
-                color: "#fff", border: "1px solid #444", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: w.value as React.CSSProperties["fontWeight"],
+                color: "#fff", border: "1px solid #444", borderRadius: "6px", cursor: "pointer", fontSize: "12px", fontWeight: w.value as CSSProperties["fontWeight"],
               }}>{w.label}</button>
             ))}
           </div>
@@ -151,10 +181,14 @@ export const DrawingToolbar: React.FC<DrawingToolbarProps> = ({
           <div style={{ padding: "12px", background: "#1A1A1A", borderRadius: "8px", border: "1px solid #444" }}>
             <span style={{
               fontFamily: fontOptions.fontFamily, fontSize: Math.min(fontOptions.fontSize, 24),
-              fontWeight: fontOptions.fontWeight as React.CSSProperties["fontWeight"],
+              fontWeight: fontOptions.fontWeight as CSSProperties["fontWeight"],
               fontStyle: fontOptions.fontStyle, color: fontOptions.fontColor,
             }}>Sample Text</span>
           </div>
+
+          <p style={{ margin: 0, color: "#888", fontSize: "11px", lineHeight: 1.5 }}>
+            Tap the board to place a label, type, then press Enter. Tap an existing label to edit it; drag it to move. Draw with mouse, finger or stylus.
+          </p>
         </div>
       )}
 

@@ -44,10 +44,39 @@ if (!supabaseUrl || !supabaseAnonKey) {
   );
 }
 
-export const supabase = createClient(
-  supabaseUrl,
-  supabaseAnonKey
-);
+// ==========================================
+// SESSIONLESS SUPABASE CLIENT (2026-11 update — fixes the 401 storm)
+// ------------------------------------------------------------
+// This app authenticates with its OWN backend JWT (localStorage
+// "authToken") — it NEVER signs in through supabase.auth. But the default
+// persistSession meant that any GoTrue session ever written under
+// sb-<ref>-auth-token (older builds, duplicate clients calling setSession)
+// is loaded on boot and sent as `Authorization: Bearer ...` on EVERY REST
+// call. Once that token is expired/invalid (it always is — it was never a
+// real Supabase JWT), PostgREST answers 401 to every read: sms_logs,
+// users, courses, live-class tables... even though the anon key alone
+// would have worked fine.
+//
+// Fix: run the client sessionless (pure anon reads, exactly what the RLS
+// policies allow) and purge stale session keys from localStorage once.
+// This also neutralizes the "Multiple GoTrueClient instances" warning —
+// sessionless instances have no session to clobber.
+// ============================================================
+export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+  auth: {
+    persistSession: false,
+    autoRefreshToken: false,
+    detectSessionInUrl: false,
+  },
+});
+
+try {
+  Object.keys(localStorage)
+    .filter((k) => k.startsWith("sb-") && k.endsWith("-auth-token"))
+    .forEach((k) => localStorage.removeItem(k));
+} catch {
+  /* storage unavailable — nothing to purge */
+}
 
 export const OFFLINE_TOKEN = "offline-mode-pending-sync";
 
@@ -779,7 +808,7 @@ export async function syncUp() {
 
     const localUsers = await db.users.toArray();
 
-    const usersToSync = localUsers.filter((user) => {
+    const usersToSync = localUsers.filter((user: any) => {
       const userTenantId = user.tenantId;
 
       return (

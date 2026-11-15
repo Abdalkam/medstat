@@ -1,199 +1,267 @@
-// src/auth/syncService.ts — v2: tombstone-aware realtime + pull
-// (v1 put Supabase rows straight into Dexie with no tombstone check — a failed
-//  cloud delete meant every realtime event / manual syncDown resurrected the
-//  deleted user)
+// src/auth/syncService.ts — v3: session-aware realtime + unified pull/push
+//
+// v1 put Supabase rows straight into Dexie with no tombstone check — a failed
+// cloud delete meant every realtime event / manual syncDown resurrected the
+// deleted user.
+// v2 added tombstones + tenant-scoped PULL, but realtime still subscribed
+// UNSCOPED when no tenant was known, mappers clobbered rich local rows
+// (tuition/remuneration vanished), and pull/push ran with dead sessions.
+//
+// v3 changes:
+//   1. Self-heal gate — every pull/push first checks hasValidAuth() and
+//      silently re-logs-in (tryReauthenticate) instead of hammering Supabase
+//      with an offline/fabricated session.
+//   2. Pull/push DELEGATE to the battle-tested functions in supabase.ts
+//      (pullAllTenantData / syncUp) — one code path, no divergent copies.
+//      This module adds what supabase.ts doesn't do: course push, SMS-log
+//      pull, realtime.
+//   3. Realtime is ALWAYS tenant-scoped — when no tenant is known we simply
+//      don't subscribe (v2 fell back to `{}` and received every institution's
+//      rows). Channels are rebuilt automatically when the signed-in account
+//      changes, and double enableRealtimeSync() can't duplicate them.
+//   4. Realtime/pull never overwrite locally-unsynced edits (synced === false
+//      wins until pushed), and a remote soft-delete now removes the stale
+//      local row instead of keeping it forever.
+//   5. Mappers match supabase.ts — tuition, remuneration, payment history and
+//      assignedDepartments survive every realtime update.
 
-import { supabase } from "./supabase";
+import {
+  supabase,
+  hasValidAuth,
+  tryReauthenticate,
+  pullAllTenantData,
+  pullRemoteSmsLogs,
+  syncUp as pushUsersToCloud,
+} from "./supabase";
 import { db } from "../database/db";
 import { isDeleted, getDeletedIds } from "../database/deletedIdsTracker";
 import type { RealtimeChannel } from "@supabase/supabase-js";
 
 let activeChannels: RealtimeChannel[] = [];
+let realtimeEnabled = false;
+let realtimeTenantId = "";
+let tenantListener: (() => void) | null = null;
 
 function getTenantId(): string {
   try {
     const user: any = JSON.parse(localStorage.getItem("currentUser") || "{}");
-    return user?.tenantId || "";
+    const t = user?.tenantId || user?.tenant_id;
+    return typeof t === "string" ? t.trim() : "";
   } catch {
     return "";
   }
 }
 
+/** Gate shared by syncDown/syncUp: heal the session or admit defeat. */
+async function ensureAuthenticated(): Promise<boolean> {
+  if (hasValidAuth()) return true;
+  const healed = await tryReauthenticate();
+  return Boolean(healed && hasValidAuth());
+}
+
 // ==========================================
 // 1. INSTANT REALTIME SYNC
 // ==========================================
+
 export function enableRealtimeSync() {
+  if (realtimeEnabled) {
+    // Already on — just re-check the tenant (cheap no-op when unchanged).
+    maybeReconfigureRealtime();
+    return;
+  }
   console.log("📡 Enabling Realtime Sync...");
-  setupUserRealtime();
-  setupCourseRealtime();
-  setupEnrollmentRealtime();
-}
+  realtimeEnabled = true;
+  maybeReconfigureRealtime();
 
-function realtimeFilter(tenantId: string): { filter: string } | {} {
-  // Scope the channel to the current tenant when we know it — otherwise this
-  // client receives (and stores) rows from every institution on the server.
-  return tenantId ? { filter: `tenant_id=eq.${tenantId}` } : {};
-}
-
-function setupUserRealtime() {
-  const tenantId = getTenantId();
-  const channel = supabase
-    .channel("users-realtime")
-    .on(
-      "postgres_changes",
-      { event: "*", schema: "public", table: "users", ...realtimeFilter(tenantId) },
-      async (payload: any) => {
-        // DELETE — hard delete on the cloud: drop the local row too
-        if (payload.eventType === "DELETE") {
-          const id = payload.old?.id;
-          if (id) await db.users.delete(id);
-          window.dispatchEvent(new Event("userChanged"));
-          return;
-        }
-
-        const row = mapUser(payload.new);
-        if (!row.id) return;
-        if ((payload.new as any)?.deleted_at) return; // soft-deleted remotely
-
-        // ✅ TOMBSTONE CHECK — never re-insert a locally-deleted user.
-        // This is the path that resurrected deleted users in v1.
-        if (await isDeleted("user", row.id)) {
-          console.warn(`[realtime] Skipped tombstoned user ${row.id}`);
-          return;
-        }
-
-        console.log("📥 Realtime User received:", row.id);
-        await db.users.put(row);
-        // Trigger UI refresh if needed
-        window.dispatchEvent(new Event("userChanged"));
-      }
-    )
-    .subscribe();
-  activeChannels.push(channel);
-}
-
-function setupCourseRealtime() {
-  const tenantId = getTenantId();
-  const channel = supabase
-    .channel("courses-realtime")
-    .on(
-      "postgres_changes",
-      { event: "*", schema: "public", table: "courses", ...realtimeFilter(tenantId) },
-      async (payload: any) => {
-        console.log("📥 Realtime Course event:", payload.eventType);
-
-        if (payload.eventType === "DELETE") {
-          await db.courses.delete(payload.old?.id);
-        } else {
-          const localData = mapCourse(payload.new);
-          // ✅ TOMBSTONE CHECK — same protection as users
-          if (!localData.id || (payload.new as any)?.deleted_at || (await isDeleted("course", localData.id))) {
-            console.warn(`[realtime] Skipped tombstoned course ${localData.id || "?"}`);
-          } else {
-            await db.courses.put(localData);
-          }
-        }
-
-        // Trigger UI refresh for course components
-        window.dispatchEvent(new Event("coursesChanged"));
-      }
-    )
-    .subscribe();
-  activeChannels.push(channel);
-}
-
-function setupEnrollmentRealtime() {
-  const tenantId = getTenantId();
-  const channel = supabase
-    .channel("enrollments-realtime")
-    .on(
-      "postgres_changes",
-      { event: "*", schema: "public", table: "enrollments", ...realtimeFilter(tenantId) },
-      async (payload: any) => {
-        console.log("📥 Realtime Enrollment event:", payload.eventType);
-
-        if (payload.eventType === "DELETE") {
-          await db.enrollments.delete(payload.old?.id);
-        } else {
-          const localData = mapEnrollment(payload.new);
-          // ✅ TOMBSTONE CHECK
-          if (!localData.id || (payload.new as any)?.deleted_at || (await isDeleted("enrollment", localData.id))) {
-            console.warn(`[realtime] Skipped tombstoned enrollment ${localData.id || "?"}`);
-          } else {
-            await db.enrollments.put(localData);
-          }
-        }
-
-        window.dispatchEvent(new Event("enrollmentsChanged"));
-      }
-    )
-    .subscribe();
-  activeChannels.push(channel);
+  // Re-scope the channels whenever the signed-in account/tenant changes
+  // (Login dispatches "userChanged", supabase.ts dispatches
+  // "authStateChanged" after a silent re-login).
+  tenantListener = () => maybeReconfigureRealtime();
+  window.addEventListener("userChanged", tenantListener);
+  window.addEventListener("authStateChanged", tenantListener);
 }
 
 export function disableRealtimeSync() {
-  activeChannels.forEach((channel) => supabase.removeChannel(channel));
+  teardownChannels();
+  realtimeEnabled = false;
+  realtimeTenantId = "";
+  if (tenantListener) {
+    window.removeEventListener("userChanged", tenantListener);
+    window.removeEventListener("authStateChanged", tenantListener);
+    tenantListener = null;
+  }
+}
+
+function teardownChannels() {
+  for (const channel of activeChannels) {
+    try {
+      void supabase.removeChannel(channel);
+    } catch {
+      /* channel already gone */
+    }
+  }
   activeChannels = [];
+}
+
+/** Rebuild the channels when (and only when) the tenant changed. */
+function maybeReconfigureRealtime() {
+  if (!realtimeEnabled) return;
+  const tenantId = getTenantId();
+  if (tenantId === realtimeTenantId) return;
+
+  teardownChannels();
+  realtimeTenantId = tenantId;
+
+  if (!tenantId) {
+    console.warn("[realtime] No tenant yet — channels start after sign-in.");
+    return;
+  }
+  setupUserRealtime(tenantId);
+  setupCourseRealtime(tenantId);
+  setupEnrollmentRealtime(tenantId);
+}
+
+function subscribeChannel(
+  name: string,
+  tenantId: string,
+  table: string,
+  handler: (payload: any) => void | Promise<void>,
+) {
+  // ALWAYS scoped to the tenant — v2 fell back to `{}` (every tenant's rows)
+  // when the tenant wasn't known yet; now we simply don't subscribe.
+  const channel = supabase
+    .channel(`${name}:${tenantId}`)
+    .on(
+      "postgres_changes",
+      { event: "*", schema: "public", table, filter: `tenant_id=eq.${tenantId}` },
+      handler,
+    )
+    .subscribe((status) => {
+      if (status === "SUBSCRIBED") console.log(`📡 ${table} realtime live`);
+      else if (status === "CHANNEL_ERROR")
+        console.warn(`📡 ${table} realtime error — supabase-js keeps retrying`);
+    });
+  activeChannels.push(channel);
+}
+
+function setupUserRealtime(tenantId: string) {
+  subscribeChannel("users-realtime", tenantId, "users", async (payload: any) => {
+    // DELETE — hard delete on the cloud: drop the local row too
+    if (payload.eventType === "DELETE") {
+      const id = payload.old?.id;
+      if (id) {
+        await db.users.delete(id);
+        window.dispatchEvent(new Event("userChanged"));
+      }
+      return;
+    }
+
+    const local: any = payload.new?.id ? await db.users.get(payload.new.id) : null;
+    const row = mapUser(payload.new, local);
+    if (!row.id) return;
+
+    // Soft-deleted remotely — remove the stale local copy too (only when the
+    // row is fully synced; an unsynced local edit always wins until pushed).
+    if ((payload.new as any)?.deleted_at) {
+      if (local && local.synced !== false) {
+        await db.users.delete(row.id);
+        window.dispatchEvent(new Event("userChanged"));
+      }
+      return;
+    }
+
+    // ✅ TOMBSTONE CHECK — never re-insert a locally-deleted user.
+    // This is the path that resurrected deleted users in v1.
+    if (await isDeleted("user", row.id)) {
+      console.warn(`[realtime] Skipped tombstoned user ${row.id}`);
+      return;
+    }
+
+    // ✅ LOCAL-EDIT CHECK — a row with pending local changes is not clobbered
+    // by the cloud copy (same rule as pullAllTenantData).
+    if (local && local.synced === false) return;
+
+    console.log("📥 Realtime User received:", row.id);
+    await db.users.put(row);
+    // Trigger UI refresh if needed
+    window.dispatchEvent(new Event("userChanged"));
+  });
+}
+
+function setupCourseRealtime(tenantId: string) {
+  subscribeChannel("courses-realtime", tenantId, "courses", async (payload: any) => {
+    if (payload.eventType === "DELETE") {
+      await db.courses.delete(payload.old?.id);
+    } else {
+      const local: any = payload.new?.id ? await db.courses.get(payload.new.id) : null;
+      const localData = mapCourse(payload.new, local);
+
+      if ((payload.new as any)?.deleted_at) {
+        // Soft-deleted remotely — drop the stale local copy (unsynced wins).
+        if (local && local.synced !== false) await db.courses.delete(localData.id);
+      } else if (!localData.id || (await isDeleted("course", localData.id))) {
+        console.warn(`[realtime] Skipped tombstoned course ${localData.id || "?"}`);
+      } else if (local && local.synced === false) {
+        // Local edit pending push — the cloud copy must not clobber it.
+      } else {
+        await db.courses.put(localData);
+      }
+    }
+    // Trigger UI refresh for course components
+    window.dispatchEvent(new Event("coursesChanged"));
+  });
+}
+
+function setupEnrollmentRealtime(tenantId: string) {
+  subscribeChannel("enrollments-realtime", tenantId, "enrollments", async (payload: any) => {
+    if (payload.eventType === "DELETE") {
+      await db.enrollments.delete(payload.old?.id);
+    } else {
+      const localData = mapEnrollment(payload.new);
+      const local: any = localData.id ? await db.enrollments.get(localData.id) : null;
+
+      if ((payload.new as any)?.deleted_at) {
+        // Soft-deleted remotely — drop the stale local copy (unsynced wins).
+        if (local && local.synced !== false) await db.enrollments.delete(localData.id);
+      } else if (!localData.id || (await isDeleted("enrollment", localData.id))) {
+        console.warn(`[realtime] Skipped tombstoned enrollment ${localData.id || "?"}`);
+      } else if (!(local && local.synced === false)) {
+        await db.enrollments.put(localData);
+      }
+    }
+    window.dispatchEvent(new Event("enrollmentsChanged"));
+  });
 }
 
 // ==========================================
 // 2. MANUAL PULL
 // ==========================================
+
 export async function syncDown() {
   console.log("🔄 Starting Manual Sync Down...");
   try {
+    // Self-heal first — v2 pulled with a dead session and silently got 401s.
+    if (!(await ensureAuthenticated())) {
+      console.log("Skipping sync down - not authenticated.");
+      return;
+    }
+
     const tenantId = getTenantId();
-
-    // ✅ Load tombstoned IDs once — the pull must never resurrect them
-    const deletedUserIds = new Set(await getDeletedIds("user"));
-    const deletedCourseIds = new Set(await getDeletedIds("course"));
-    const deletedEnrollmentIds = new Set(await getDeletedIds("enrollment"));
-
-    // Users — tombstone + soft-delete filtered, tenant-scoped when known
-    // (v1 pulled every user from every tenant and put them all into Dexie)
-    let usersQuery = supabase.from("users").select("*");
-    if (tenantId) usersQuery = usersQuery.eq("tenant_id", tenantId);
-    const { data: onlineUsers } = await usersQuery;
-    if (onlineUsers) {
-      let pulled = 0;
-      for (const u of onlineUsers as any[]) {
-        if (deletedUserIds.has(u.id)) continue;
-        if (u.deleted_at) continue;
-        await db.users.put(mapUser(u));
-        pulled++;
-      }
-      console.log(`✅ Pulled ${pulled}/${onlineUsers.length} users (tombstoned/deleted skipped).`);
+    if (!tenantId) {
+      console.warn("Sync Down stopped - no tenant ID.");
+      return;
     }
 
-    // Courses
-    let coursesQuery = supabase.from("courses").select("*");
-    if (tenantId) coursesQuery = coursesQuery.eq("tenant_id", tenantId);
-    const { data: onlineCourses } = await coursesQuery;
-    if (onlineCourses) {
-      let pulled = 0;
-      for (const c of onlineCourses as any[]) {
-        if (deletedCourseIds.has(c.id)) continue;
-        if (c.deleted_at) continue;
-        await db.courses.put(mapCourse(c));
-        pulled++;
-      }
-      console.log(`✅ Pulled ${pulled}/${onlineCourses.length} courses (tombstoned/deleted skipped).`);
-    }
+    // ✅ One unified pull (users + courses + enrollments): tenant-scoped,
+    // soft-delete filtered, tombstone-aware, and never overwrites local
+    // unsynced edits. Same code the periodic pull uses — no divergent copy.
+    await pullAllTenantData(tenantId);
 
-    // Enrollments
-    let enrollmentsQuery = supabase.from("enrollments").select("*");
-    if (tenantId) enrollmentsQuery = enrollmentsQuery.eq("tenant_id", tenantId);
-    const { data: onlineEnrollments } = await enrollmentsQuery;
-    if (onlineEnrollments) {
-      let pulled = 0;
-      for (const e of onlineEnrollments as any[]) {
-        if (deletedEnrollmentIds.has(e.id)) continue;
-        if (e.deleted_at) continue;
-        await db.enrollments.put(mapEnrollment(e));
-        pulled++;
-      }
-      console.log(`✅ Pulled ${pulled}/${onlineEnrollments.length} enrollments (tombstoned/deleted skipped).`);
-    }
+    // Sent-message history too, so every device sees the same Sent History.
+    await pullRemoteSmsLogs(tenantId);
+
+    // The tenant may have just become known (fresh login) — start channels.
+    maybeReconfigureRealtime();
 
     window.dispatchEvent(new Event("dataSynced"));
     console.log("✅ Manual Sync Down complete.");
@@ -205,62 +273,60 @@ export async function syncDown() {
 // ==========================================
 // 3. PUSH LOCAL DATA TO CLOUD
 // ==========================================
+
 export async function syncUp() {
   console.log("☁️ Starting Sync Up...");
   try {
-    // ✅ Never push a tombstoned row back to the cloud
-    const deletedUserIds = new Set(await getDeletedIds("user"));
-    const deletedCourseIds = new Set(await getDeletedIds("course"));
-
-    const localUsers = await db.users.toArray();
-    const usersToSync = localUsers.filter((u) => !(u as any).synced && !deletedUserIds.has(u.id));
-
-    for (const user of usersToSync) {
-      const userRecord = user as any;
-      const payload = {
-        id: user.id,
-        username: user.username,
-        email: userRecord.email || "",
-        phone: userRecord.phone || "",
-        password: userRecord.password, // Ensure your backend strips this if you don't actually store plain passwords in Supabase
-        role: user.role,
-        assigned_courses: userRecord.assignedCourses || [],
-      };
-      const { error } = await supabase.from("users").upsert(payload, { onConflict: "id" });
-      if (!error) {
-        await db.users.update(user.id, { synced: true } as any);
-        console.log(`✅ Pushed user: ${user.username}`);
-      } else {
-        console.error(`Failed to push user ${user.username}:`, error.message);
-      }
+    if (!(await ensureAuthenticated())) {
+      console.log("Skipping sync up - not authenticated.");
+      return;
     }
 
-    const localCourses = await db.courses.toArray();
-    for (const course of localCourses) {
-      const courseRecord = course as any;
-      if (!courseRecord.synced && !deletedCourseIds.has(course.id)) {
-        const { error } = await supabase
-          .from("courses")
-          .upsert(
-            {
-              id: course.id,
-              name: course.name,
-              description: courseRecord.description || "",
-              logo: courseRecord.logo || null,
-              tuition_type: courseRecord.tuitionType || "free",
-              amount: parseFloat(String(courseRecord.amount || 0)) || 0,
-              start_date: courseRecord.startDate || null,
-              period: courseRecord.period || null,
-            },
-            { onConflict: "id" }
-          );
+    const tenantId = getTenantId();
+    if (!tenantId) {
+      console.warn("Sync Up stopped - no tenant ID.");
+      return;
+    }
 
-        if (!error) {
-          await db.courses.update(course.id, { synced: true } as any);
-          console.log(`✅ Pushed course: ${course.name}`);
-        } else {
-           console.error(`Failed to push course ${course.name}:`, error.message);
-        }
+    // ✅ Users + their enrollments — delegated to supabase.ts's pusher:
+    // full row mapping (tenant_id, assignedDepartments, tuition,
+    // remuneration, profile_pic), admin rows excluded, dedupe guard.
+    await pushUsersToCloud();
+
+    // ✅ Courses — this module owns the course push (supabase.ts doesn't).
+    // v2's payload was missing tenant_id, so offline-created courses failed
+    // the NOT NULL constraint; fixed here, plus tombstone + tenant guards.
+    const deletedCourseIds = new Set(await getDeletedIds("course"));
+    const localCourses = await db.courses.toArray();
+
+    for (const course of localCourses) {
+      const rec = course as any;
+      if (rec.synced || deletedCourseIds.has(course.id)) continue;
+      if (rec.tenantId && rec.tenantId !== tenantId) continue; // never cross-tenant
+
+      const { error } = await supabase
+        .from("courses")
+        .upsert(
+          {
+            id: course.id,
+            tenant_id: tenantId,
+            name: course.name || "",
+            description: rec.description || "",
+            logo: rec.logo || null,
+            tuition_type: rec.tuitionType || "free",
+            amount: parseFloat(String(rec.amount ?? 0)) || 0,
+            start_date: rec.startDate || null,
+            period: rec.period || null,
+            trainer_id: rec.trainerId || null,
+          },
+          { onConflict: "id" }
+        );
+
+      if (!error) {
+        await db.courses.update(course.id, { synced: true } as any);
+        console.log(`✅ Pushed course: ${course.name}`);
+      } else {
+        console.error(`Failed to push course ${course.name}:`, error.message);
       }
     }
 
@@ -274,52 +340,108 @@ export async function syncUp() {
 // ==========================================
 // HELPER FUNCTIONS
 // ==========================================
-function mapUser(u: Record<string, unknown>) {
+
+function normalizeRole(role: any): "admin" | "trainer" | "trainee" {
+  return role === "admin" || role === "trainer" || role === "trainee" ? role : "trainee";
+}
+
+function normalizeStringArray(value: any): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item: any) => typeof item === "string" && item.trim().length > 0)
+    .map((item: string) => item.trim());
+}
+
+/** Rich user mapper — mirrors supabase.ts's mapUser so a realtime update can
+ *  no longer wipe tuition / remuneration / payment history locally. */
+function mapUser(u: any, localUser?: any) {
+  const tuition = u.tuition || {};
+  const remuneration = u.remuneration || {};
+
   return {
-    id: u.id as string,
-    username: u.username as string,
-    email: (u.email as string) || "",
-    phone: (u.phone as string) || "",
-    password: (u.password as string) || "",
-    role: (u.role as "admin" | "trainer" | "trainee") || "trainee",
-    profilePic: (u.profile_pic as string) || "",
-    assignedCourses: (u.assigned_courses as string[]) || [],
-    tenantId: (u.tenant_id as string) || "", // preserve tenant on mirrored rows
-    createdAt: (u.created_at as string) || new Date().toISOString(),
+    ...localUser,
+    ...u,
+
+    id: u.id,
+    username: u.username || "",
+    email: u.email || "",
+    phone: u.phone || "",
+
+    // Keep the LOCAL password for offline login (cloud rows may hold bcrypt
+    // hashes — copying a hash into Dexie breaks plaintext offline login).
+    password: localUser?.password || u.password || "",
+
+    role: normalizeRole(u.role),
+
+    profilePic: u.profile_pic || u.profilePic || localUser?.profilePic || "",
+
+    assignedCourses: normalizeStringArray(u.assigned_courses ?? u.assignedCourses),
+
+    assignedDepartments: normalizeStringArray(
+      u.assignedDepartments ?? u.assigned_departments ?? localUser?.assignedDepartments
+    ),
+
+    tenantId: u.tenant_id || u.tenantId || localUser?.tenantId || "",
+
+    createdAt: u.created_at || u.createdAt || localUser?.createdAt || new Date().toISOString(),
+
+    tuition: {
+      expected: tuition.expected ?? 0,
+      paid: tuition.paid ?? 0,
+    },
+
+    remuneration: {
+      netSalary: remuneration.net_salary ?? remuneration.netSalary ?? 0,
+      perDiem: remuneration.per_diem ?? remuneration.perDiem ?? 0,
+    },
+
+    // History fields are not Supabase columns — keep whatever local had.
+    paymentHistory: localUser?.paymentHistory ?? [],
+    remunerationHistory: localUser?.remunerationHistory ?? [],
+
     synced: true,
   };
 }
 
-// FIXED: Added missing fields to match CourseManagement expectations
-function mapCourse(c: Record<string, unknown>) {
+function mapCourse(c: any, localCourse?: any) {
   return {
-    id: c.id as string,
-    name: (c.name as string) || "",
-    description: (c.description as string) || "",
-    tuitionType: (c.tuition_type as "free" | "paid") || "free",
-    amount: (c.amount as number) || 0,
-    startDate: (c.start_date as string) || "",
-    period: (c.period as string) || "",
-    logo: (c.logo as string) || "",
-    mediaUrl: (c.logo as string) || "", // Mirror logo to mediaUrl for UI consistency
-    mediaType: "image" as const,
-    mediaName: "course-logo",
-    trainerId: (c.trainer_id as string) || "",
-    tenantId: (c.tenant_id as string) || "",
-    createdAt: (c.created_at as string) || new Date().toISOString(),
+    ...localCourse,
+    ...c,
+
+    id: c.id,
+    name: c.name || "",
+    description: c.description || "",
+
+    tuitionType: c.tuition_type || c.tuitionType || "free",
+    amount: c.amount ?? 0,
+    startDate: c.start_date || c.startDate || "",
+    period: c.period || "",
+
+    logo: c.logo || localCourse?.logo || "",
+    mediaUrl: c.logo || c.mediaUrl || "", // Mirror logo for UI consistency
+    trainerId: c.trainer_id || c.trainerId || localCourse?.trainerId || "",
+
+    tenantId: c.tenant_id || c.tenantId || localCourse?.tenantId || "",
+    createdAt: c.created_at || c.createdAt || localCourse?.createdAt || new Date().toISOString(),
+
     synced: true,
   };
 }
 
-function mapEnrollment(e: Record<string, unknown>) {
+function mapEnrollment(e: any) {
   return {
-    id: e.id as string,
-    userId: (e.user_id as string) || "",
-    courseId: (e.course_id as string) || "",
-    role: (e.role as "trainer" | "trainee") || "trainee",
-    tenantId: (e.tenant_id as string) || "",
-    enrolledAt: (e.enrolled_at as string) || (e.created_at as string) || new Date().toISOString(),
-    createdAt: (e.enrolled_at as string) || (e.created_at as string) || new Date().toISOString(),
+    ...e,
+
+    id: e.id,
+    userId: e.user_id || e.userId || "",
+    courseId: e.course_id || e.courseId || "",
+    tenantId: e.tenant_id || e.tenantId || "",
+    status: e.status || "active",
+    role: e.role || "trainee",
+
+    enrolledAt: e.enrolled_at || e.enrolledAt || e.created_at || new Date().toISOString(),
+    createdAt: e.created_at || e.createdAt || e.enrolled_at || new Date().toISOString(),
+
     synced: true,
   };
 }

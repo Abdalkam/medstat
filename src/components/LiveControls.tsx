@@ -1,97 +1,78 @@
-/**
- * LiveControls.tsx  -  OPTIONAL bottom control bar (trainer only)
- * ---------------------------------------------------------------------------
- * The fixed LiveSidebar now contains ALL live-class controls, so this bar is
- * OPTIONAL and the classroom page does NOT render it by default. The file is
- * kept clean and compiling in case you prefer a bottom bar as well - just
- * render <LiveControls ... /> and pass it the same callbacks the sidebar
- * gets (onPrevPage / onNextPage / busy / presentation).
- *
- * Zero supabase imports and zero "./LiveIcons" imports: icons come from
- * ./LiveSidebar (same folder, exported there), actions arrive as callbacks.
- *
- * Responsive: comfortable touch spacing on phones, bottom padding respects
- * the iPhone/Android home-indicator safe area (env(safe-area-inset-bottom)).
- * If you render it together with the docked LiveSidebar, pass right padding
- * so the bar clears the panel:  className="md:pr-[356px]"  while it is open.
- * ---------------------------------------------------------------------------
- */
+// src/components/LiveControls.tsx
+import { useState } from "react";
+import type { CourseMaterial } from "../types";
 
-import {
-  IconChevronLeft,
-  IconChevronRight,
-  IconDoc,
-  IconRaiseHand,
-} from "./LiveSidebar";
-import type { LiveRole, PresentationInfo } from "./LiveSidebar";
+// Initialize Supabase client
+import { supabase } from "../auth/supabase";
 
-type Props = {
-  /** Only trainers see the bar; trainees get null. */
-  role?: LiveRole;
-  /** Current material info (title + "position of total"). */
-  presentation?: PresentationInfo | null;
-  /** True while the parent persists a page change. */
-  busy?: boolean;
-  onPrevPage?: () => void;
-  onNextPage?: () => void;
-  /** Raised-hands count badge. */
-  handsCount?: number;
-  className?: string;
-};
+interface Props {
+  courseId: string;
+  trainerId: string;
+  currentPage: number;
+  materials: CourseMaterial[];
+  onUpdate: () => void;
+}
 
-export default function LiveControls({
-  role,
-  presentation,
-  busy = false,
-  onPrevPage,
-  onNextPage,
-  handsCount = 0,
-  className = "",
-}: Props) {
-  if (role !== "trainer") return null;
+export default function LiveControls({ courseId, trainerId, materials, onUpdate }: Props) {
+  const [loading, setLoading] = useState(false);
+
+  async function changePage(direction: "next" | "prev") {
+    setLoading(true);
+    try {
+      // Fetch current live session from Supabase
+      const { data: live, error: fetchError } = await supabase
+        .from("live_session")
+        .select("*")
+        .eq("course_id", courseId)
+        .maybeSingle();
+
+      if (fetchError) throw fetchError;
+      if (!live || materials.length === 0) return;
+
+      const currentIndex = materials.findIndex(m => m.id === live.material_id);
+      if (currentIndex === -1) return;
+
+      const newIndex = direction === "next" ? currentIndex + 1 : currentIndex - 1;
+
+      if (newIndex >= 0 && newIndex < materials.length) {
+        const newMaterialId = materials[newIndex].id;
+        
+        // Upsert the live session in Supabase
+        const { error: updateError } = await supabase
+          .from("live_session")
+          .upsert({
+            course_id: courseId,
+            material_id: newMaterialId,
+            trainer_id: trainerId,
+            current_page: 1,
+            updated_at: new Date().toISOString()
+          }, { onConflict: 'course_id' }); // Assumes course_id is the unique constraint for a live session
+
+        if (updateError) throw updateError;
+        onUpdate();
+      }
+    } catch (error) {
+      console.error("Failed to change page:", error);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const btnStyle: React.CSSProperties = {
+    display: "flex", alignItems: "center", justifyContent: "center", padding: "8px", 
+    border: "none", borderRadius: "8px", flex: 1, cursor: "pointer",
+    transition: "background 0.2s ease, color 0.2s ease, transform 0.1s ease",
+    WebkitTapHighlightColor: "transparent"
+  };
 
   return (
-    <div
-      className={`sticky bottom-0 z-20 border-t border-slate-200 bg-white/95 px-3 pt-3 backdrop-blur pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-4 ${className}`}
-    >
-      <div className="mx-auto flex max-w-3xl items-center gap-2">
-        <button
-          onClick={() => onPrevPage?.()}
-          disabled={busy || !onPrevPage}
-          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 transition hover:bg-slate-50 hover:text-[#5b5fc7] disabled:cursor-not-allowed disabled:opacity-50"
-          title="Previous material"
-        >
-          <IconChevronLeft size={18} />
-        </button>
-
-        <div className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2">
-          <IconDoc size={16} className="shrink-0 text-[#5b5fc7]" />
-          <span className="truncate text-sm font-medium text-slate-700">
-            {presentation?.title ?? "No material selected"}
-          </span>
-          {presentation && presentation.total > 0 && (
-            <span className="ml-auto shrink-0 text-xs text-slate-400">
-              {presentation.position} of {presentation.total}
-            </span>
-          )}
-        </div>
-
-        <button
-          onClick={() => onNextPage?.()}
-          disabled={busy || !onNextPage}
-          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 transition hover:bg-slate-50 hover:text-[#5b5fc7] disabled:cursor-not-allowed disabled:opacity-50"
-          title="Next material"
-        >
-          <IconChevronRight size={18} />
-        </button>
-
-        {handsCount > 0 && (
-          <span className="flex shrink-0 items-center gap-1 rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-700">
-            <IconRaiseHand size={14} />
-            {handsCount}
-          </span>
-        )}
-      </div>
+    <div style={{ display: "flex", gap: "8px" }}>
+      <button onClick={() => changePage("prev")} disabled={loading} className="page-nav-btn" style={{ ...btnStyle, opacity: loading ? 0.5 : 1, cursor: loading ? "not-allowed" : "pointer" }}>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+      </button>
+      <button onClick={() => changePage("next")} disabled={loading} className="page-nav-btn" style={{ ...btnStyle, opacity: loading ? 0.5 : 1, cursor: loading ? "not-allowed" : "pointer" }}>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+      </button>
     </div>
   );
 }

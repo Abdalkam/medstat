@@ -139,14 +139,18 @@ export default function Classroom() {
 
     const handleBeforeUnload = () => {
       localStorage.removeItem("activeAttendanceCourseId");
-      db.activeAttendances.delete(localUser.id);
+      // FIX: rows are keyed by a random UUID, so delete by the userId index —
+      // delete(localUser.id) silently removed nothing.
+      db.activeAttendances.where("userId").equals(localUser.id).delete();
       supabase.from("active_attendances").delete().eq("user_id", localUser.id).eq("course_id", courseId || "").then(() => {});
       supabase.from("raised_hands").delete().eq("user_id", localUser.id).eq("course_id", courseId || "").then(() => {});
     };
     window.addEventListener("beforeunload", handleBeforeUnload);
     return () => {
       window.removeEventListener("beforeunload", handleBeforeUnload);
-      db.activeAttendances.delete(localUser.id);
+      // FIX: rows are keyed by a random UUID, so delete by the userId index —
+      // delete(localUser.id) silently removed nothing.
+      db.activeAttendances.where("userId").equals(localUser.id).delete();
       supabase.from("active_attendances").delete().eq("user_id", localUser.id).eq("course_id", courseId || "").then(() => {});
       supabase.from("raised_hands").delete().eq("user_id", localUser.id).eq("course_id", courseId || "").then(() => {});
     };
@@ -365,7 +369,7 @@ export default function Classroom() {
   async function exitClassroom() {
     if (daily && isVoiceJoined) { try { await daily.leave(); } catch (e) {} }
     localStorage.removeItem("activeAttendanceCourseId");
-    if (dbUser?.id && courseId) { db.activeAttendances.delete(dbUser.id).catch(() => {}); supabase.from("active_attendances").delete().eq("user_id", dbUser.id).eq("course_id", courseId).then(() => {}, () => {}); supabase.from("raised_hands").delete().eq("user_id", dbUser.id).eq("course_id", courseId).then(() => {}, () => {}); }
+    if (dbUser?.id && courseId) { db.activeAttendances.where("userId").equals(dbUser.id).delete().catch(() => {}); supabase.from("active_attendances").delete().eq("user_id", dbUser.id).eq("course_id", courseId).then(() => {}, () => {}); supabase.from("raised_hands").delete().eq("user_id", dbUser.id).eq("course_id", courseId).then(() => {}, () => {}); } // FIX: Dexie delete by userId index, not the random row id
     navigate("/user");
   }
 
@@ -393,6 +397,10 @@ export default function Classroom() {
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+          {/* NEW: entry point for the DownloadCenter (previously unreachable). */}
+          <button onClick={() => setDownloadOpen(true)} title="Course files / downloads" style={{ width: "32px", height: "32px", borderRadius: "9px", background: C.medBlueBg, border: "none", cursor: "pointer", color: C.medBlue, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          </button>
           <div style={{ display: "flex", alignItems: "center", gap: "8px", background: C.purpleBg, padding: "4px 12px 4px 4px", borderRadius: "20px" }}>
             {dbUserAvatar ? (
               <img src={dbUserAvatar} alt="Profile" style={{ width: "28px", height: "28px", borderRadius: "50%", objectFit: "cover" }} onError={() => { const cached = dbUser?.id ? localStorage.getItem(`cachedAvatar_${dbUser.id}`) : null; if (cached && dbUserAvatar !== cached) { setDbUserAvatar(cached); } else { setDbUserAvatar(null); } }} />
@@ -420,7 +428,11 @@ export default function Classroom() {
             )}
           </div>
           <div style={{ position: "absolute", top: 0, bottom: 0, left: 0, right: 0, transition: "transform 0.2s ease", transform: isBlackboardMode ? "translateX(0%)" : "translateX(100%)", display: "flex", background: "#1A1A1A" }}>
-            <DrawingBlackboard isTrainer={false} strokes={liveState?.blackboardStrokes || []} courseId={`${courseId}-learner`} />
+            {/* Canvas blackboard (read-only for learners). texts = named
+                labels from blackboard_labels; courseId stays IDENTICAL to
+                the trainer's so both join the same whiteboard-<courseId>
+                realtime channel and ink appears instantly. */}
+            <DrawingBlackboard isTrainer={false} strokes={liveState?.blackboardStrokes || []} lines={liveState?.blackboardLines || []} texts={liveState?.blackboardLabels || []} courseId={courseId!} />
           </div>
           {hasRaisedHand && !hasMicPermission && !hasCamPermission && (
             <div style={{ position: "absolute", bottom: "96px", left: "50%", transform: "translateX(-50%)", background: C.orangeBg, color: "#B96A00", padding: "6px 14px", borderRadius: 20, fontSize: 12, fontWeight: 600, zIndex: 11, whiteSpace: "nowrap", boxShadow: "0 4px 12px rgba(0,0,0,0.1)" }}>🖐️ Hand raised — waiting for trainer activation…</div>
