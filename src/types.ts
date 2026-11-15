@@ -17,6 +17,14 @@ export interface User {
   assignedCourses?: string[];
   tenantId: string;
   createdAt?: string;
+  /* offline-sync bookkeeping (Dexie createHook sets it to false on create,
+   * sync jobs flip it to true after a successful Supabase push) */
+  synced?: boolean;
+  /* tuition ledger for learners — amounts may arrive as strings from forms,
+   * consumers run parseFloat(String(x || "0")) so both types are allowed */
+  tuition?: { expected?: number | string; paid?: number | string };
+  /* trainer pay ledger (UserManagement.tsx sync/export view) */
+  remuneration?: { netSalary?: number | string; perDiem?: number | string };
 }
 
 /* A person currently connected to the live classroom (used by
@@ -42,6 +50,103 @@ export interface Participant {
   joinedAt?: string;
 }
 
+/* ============================================================================
+ * App-domain types shared by the admin/trainer screens and the offline-first
+ * Dexie layer (courseDB, enrollmentDB, assignmentDB, scheduleDB,
+ * supabaseCourseSync). They are intentionally permissive:
+ *   - every field is optional, because sync code builds partial rows from
+ *     Supabase responses before hydrating them;
+ *   - an index signature keeps the many screens that read/write these rows
+ *     compiling while the shapes are being tightened field by field.
+ * `id` is the Dexie primary key for each of these tables.
+ * ========================================================================== */
+
+export interface Course {
+  [key: string]: any;
+  id?: string;
+  title?: string;
+  name?: string;
+  description?: string;
+  tenantId?: string;
+  status?: string;
+  coverImage?: string;
+  assignedTrainers?: string[];
+  createdBy?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface Enrollment {
+  [key: string]: any;
+  id?: string;
+  courseId?: string;
+  userId?: string;
+  username?: string;
+  tenantId?: string;
+  status?: string;
+  progress?: number;
+  enrolledAt?: string;
+  completedAt?: string;
+}
+
+export interface AssignmentField {
+  [key: string]: any;
+  id?: string;
+  assignmentId?: string;
+  label?: string;
+  name?: string;
+  type?: string; // "text" | "number" | "date" | "select" | ...
+  required?: boolean;
+  options?: string[];
+  order?: number;
+  placeholder?: string;
+}
+
+export interface Assignment {
+  [key: string]: any;
+  id?: string;
+  courseId?: string;
+  title?: string;
+  description?: string;
+  dueDate?: string;
+  maxScore?: number;
+  fields?: AssignmentField[];
+  createdBy?: string;
+  tenantId?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface AssignmentSubmission {
+  [key: string]: any;
+  id?: string;
+  assignmentId?: string;
+  userId?: string;
+  username?: string;
+  values?: Record<string, unknown>; // answers keyed by AssignmentField id
+  submittedAt?: string;
+  status?: string;
+  score?: number;
+  feedback?: string;
+  tenantId?: string;
+}
+
+export interface Schedule {
+  [key: string]: any;
+  id?: string;
+  courseId?: string;
+  trainerId?: string;
+  title?: string;
+  day?: string;
+  startTime?: string;
+  endTime?: string;
+  startDate?: string;
+  endDate?: string;
+  recurring?: boolean;
+  tenantId?: string;
+  createdAt?: string;
+}
+
 /* A lesson file uploaded for a course. `fileUrl` may be:
  *   - a data: URL            ("data:application/pdf;base64,JVBERi…")
  *   - a raw base64 payload   ("JVBERi…" — converted by LiveClassView)
@@ -51,7 +156,10 @@ export interface Participant {
 export interface CourseMaterial {
   id: string;
   courseId: string;
-  tenantId: string;
+  /* optional: supabaseCourseSync and UploadMaterials build materials from
+   * forms/remote rows where tenant scoping and presentation flags are set
+   * later by the trainer screen */
+  tenantId?: string;
   title: string;
   description: string;
   fileUrl: string;
@@ -60,7 +168,7 @@ export interface CourseMaterial {
   allowDownload: boolean;
   uploadedBy: string;
   uploadedAt: string;
-  isPresentation: boolean;
+  isPresentation?: boolean;
   presentationOrder: number;
 }
 
@@ -114,6 +222,15 @@ export interface LivePresentation {
   tenantId?: string;
   startedBy?: string;
   updatedAt?: string;
+  /* per-device UI state persisted by livePresentationDB so the trainer can
+   * reload mid-lesson without losing the layout */
+  zoom?: number;
+  fullscreen?: boolean;
+  sidebarWidth?: number;
+  chatWidth?: number;
+  presentationHeight?: number;
+  showSidebar?: boolean;
+  showChat?: boolean;
 }
 
 /* One row of the `live_session` table. */

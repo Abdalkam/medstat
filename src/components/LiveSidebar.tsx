@@ -51,9 +51,9 @@ export default function LiveSidebar({
                                             🕒 {" "} {timeAgo(user.lastHandRaiseTime)}
                                         </small>
                                     </div>
-                                    <button 
-                                        className="mic-button" 
-                                        onClick={() => allowAudio(user.id)} 
+                                    <button
+                                        className="mic-button"
+                                        onClick={() => allowAudio(user.id)}
                                         title="Allow microphone"
                                     >
                                         🎤
@@ -68,9 +68,9 @@ export default function LiveSidebar({
                         {speakers.map(user => (
                             <div key={user.id} className="sidebar-user">
                                 <span>🟢 {user.username}</span>
-                                <button 
-                                    className="mute-button" 
-                                    onClick={() => muteUser(user.id)} 
+                                <button
+                                    className="mute-button"
+                                    onClick={() => muteUser(user.id)}
                                     title="Mute learner"
                                 >
                                     🔇
