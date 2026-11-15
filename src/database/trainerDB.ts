@@ -1,5 +1,4 @@
 // src/database/trainerDB.ts — v3: cloud-synced, tombstone-aware trainer CRUD
-
 import { db } from "./db";
 import type { User } from "../types";
 import { deleteUserFromSupabase, pushUserToSupabase } from "./supabaseCourseSync";

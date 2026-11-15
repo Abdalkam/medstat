@@ -1,6 +1,38 @@
+// src/components/ProfileSettings.tsx
+// Profile settings — MD3 layout preserved. Auth-related changes for
+// "login from any device any time":
+//   1. The current-password check is now bcrypt-aware (verifyPassword below):
+//      it accepts rows whose stored credential is a bcrypt hash (written by
+//      the backend) OR legacy plaintext, instead of a strict !== comparison
+//      that broke as soon as the users table held a hash.
+//   2. New passwords are hashed (bcrypt, cost 10) before being written to
+//      profile_settings and users, so the credential stored in Supabase is
+//      portable — bcrypt verify works on every device and in the direct
+//      Supabase login path (userDB.verifyPassword).
+//   3. localStorage keeps the PLAINTEXT password (existing startup.tsx /
+//      tryReauthenticate pattern) so silent re-login against the backend
+//      keeps working. Only Supabase rows receive the hash.
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "../auth/supabase";
+import { compareSync, hashSync } from "bcryptjs";
+
+/* bcrypt-aware credential check — mirrors userDB.verifyPassword. */
+function verifyPassword(typed: string, stored: unknown): boolean {
+  const t = String(typed ?? "");
+  const s = String(stored ?? "");
+  if (!t || !s) return false;
+  if (s === t) return true; // legacy plaintext rows
+  if (/^\$2[aby]\$/.test(s)) {
+    try { return compareSync(t, s); } catch { return false; }
+  }
+  return false;
+}
+
+/* Hashes a plaintext password once; leaves existing hashes untouched. */
+function ensureHashed(password: string): string {
+  return /^\$2[aby]\$/.test(password) ? password : hashSync(password, 10);
+}
 
 const C = {
   primary: "#1A73E8",
@@ -235,11 +267,14 @@ export default function ProfileSettings({ role, onBack }: { role: "trainee" | "t
 
     let passwordToUpdate = actualPassword;
     let passwordChanged = false;
+    let passwordToStore = actualPassword;
 
     if (newPassword || currentPassword || confirmPassword) {
       if (!currentPassword) return setMessage("Enter your current password to make changes.");
 
-      if (currentPassword.trim() !== actualPassword) {
+      // bcrypt-aware check: works whether the stored credential is a hash
+      // (backend-created rows) or legacy plaintext.
+      if (!verifyPassword(currentPassword.trim(), actualPassword)) {
         return setMessage("Current password is incorrect.");
       }
 
@@ -248,6 +283,9 @@ export default function ProfileSettings({ role, onBack }: { role: "trainee" | "t
 
       passwordToUpdate = newPassword.trim();
       passwordChanged = true;
+      // Store a bcrypt hash in Supabase so the credential is portable and
+      // verifiable on every device (and by the direct Supabase login).
+      passwordToStore = ensureHashed(passwordToUpdate);
     }
 
     setSaving(true);
@@ -259,7 +297,7 @@ export default function ProfileSettings({ role, onBack }: { role: "trainee" | "t
         username: username.trim(),
         email: email.trim(),
         phone: phone.trim(),
-        password: passwordToUpdate,
+        password: passwordToStore,
         avatar_url: profilePic,
         updated_at: new Date().toISOString(),
         role: role,
@@ -279,10 +317,12 @@ export default function ProfileSettings({ role, onBack }: { role: "trainee" | "t
           phone: phone.trim(),
           email: email.trim(),
           profile_pic: profilePic,
-          ...(passwordChanged ? { password: passwordToUpdate } : {})
+          ...(passwordChanged ? { password: passwordToStore } : {})
         })
         .eq("id", userId);
 
+      // localStorage keeps the PLAINTEXT (passwordToUpdate) — tryReauthenticate
+      // and backend login expect plaintext; Supabase rows keep the hash.
       const updatedUser = {
         ...JSON.parse(localStorage.getItem("currentUser") || "{}"),
         id: userId,
@@ -307,7 +347,9 @@ export default function ProfileSettings({ role, onBack }: { role: "trainee" | "t
       window.dispatchEvent(new Event("userChanged"));
       window.dispatchEvent(new Event("authStateChanged"));
 
-      setActualPassword(passwordToUpdate);
+      // Keep the in-memory credential in sync with what the DB now holds so
+      // the next "current password" check works without a refetch.
+      setActualPassword(passwordToStore);
       setCurrentPassword("");
       setNewPassword("");
       setConfirmPassword("");

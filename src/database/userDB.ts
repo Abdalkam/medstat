@@ -1,9 +1,25 @@
 // src/database/userDB.ts
 // MedStat user accounts, authentication and offline-first user storage.
-// REVISED (direct-to-Supabase): login, deleteUser() and getUser() no longer
-// call the localhost:3001 / Render backend — they talk to Supabase directly.
-// The backend is now used only for first-run tenant registration
-// (register-tenant), plus settings via supabase.ts pullSettings.
+// REVISED (direct-to-Supabase + multi-device): login, deleteUser() and
+// getUser() no longer call the localhost:3001 / Render backend — they talk
+// to Supabase directly. The backend is now used only for first-run tenant
+// registration (register-tenant), plus settings via supabase.ts pullSettings.
+//
+// "LOGIN FROM ANY DEVICE, ANY TIME" — how this file achieves it:
+//   1. Supabase is the primary identity provider. Unlike the Render backend
+//      it never cold-starts, so sign-in works from any device at any hour.
+//   2. Business identifier resolution (UUID | phone | business name) is done
+//      HERE against the `tenants` table, matching the DB's
+//      UNIQUE (tenant_id, username) constraint — the same username may exist
+//      in two institutions, so tenant scoping decides which row is yours.
+//      When no business is given and the username matches several tenants,
+//      login refuses with a clear message instead of guessing.
+//   3. Passwords are verified bcrypt-aware: rows created by the backend
+//      (bcrypt hash) and legacy plaintext rows both authenticate.
+//   4. Every successful login caches the full row (incl. password hash) in
+//      Dexie, so the NEXT login on this device works even offline.
+//   5. A cached-session fallback signs the user in when Supabase is
+//      unreachable but this device has seen the credentials before.
 
 import { db } from "./db";
 import type { User } from "../types";
@@ -53,6 +69,13 @@ export interface LoginInput {
   tenantId?: string;
   business_name?: string;
   businessName?: string;
+}
+
+/** Extended login input used by the login screen: `business` is whatever the
+ *  user typed in the "Business (name or phone)" field — resolved here. */
+export interface LoginWithIdentifierInput extends LoginInput {
+  /** Raw business identifier: tenant UUID, institution phone, or name. */
+  business?: string;
 }
 
 export interface NewUserInput {
@@ -105,7 +128,10 @@ export function setSession(
 
   try {
     localStorage.setItem("authToken", authToken);
+    localStorage.setItem("token", authToken);
     localStorage.setItem("currentUser", JSON.stringify(sessionUser));
+    const tenantId = user.tenantId || user.tenant_id || "";
+    if (tenantId) localStorage.setItem("activeTenantId", tenantId);
   } catch {
     // Session persistence may be unavailable in private browsing.
   }
@@ -124,7 +150,7 @@ export function clearSession(): void {
 }
 
 /* -------------------------------------------------------------------------- */
-/* HTTP helper (backend — login + tenant registration only)                    */
+/* HTTP helper (backend — tenant registration only)                           */
 /* -------------------------------------------------------------------------- */
 
 class BackendOfflineError extends Error {
@@ -226,6 +252,14 @@ function sameText(a: unknown, b: unknown): boolean {
   );
 }
 
+/** "0722 123 456" / "+254-722-123-456" → phone-like digits; else null. */
+function asPhone(identifier: string): string | null {
+  const compact = String(identifier || "").replace(/[\s\-().]/g, "");
+  return /^\+?\d{7,15}$/.test(compact) ? compact : null;
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 function normalizeUser(row: any): MedStatUser {
   const courses = Array.isArray(row?.assigned_courses)
     ? row.assigned_courses
@@ -235,6 +269,7 @@ function normalizeUser(row: any): MedStatUser {
 
   const profilePic = row?.profile_pic ?? row?.profilePic ?? null;
   const createdAt = row?.created_at ?? row?.createdAt ?? undefined;
+  const tenantId = String(row?.tenant_id ?? row?.tenantId ?? "");
 
   const user: MedStatUser = {
     id: String(row?.id ?? row?.user_id ?? makeId()),
@@ -242,8 +277,8 @@ function normalizeUser(row: any): MedStatUser {
     phone: row?.phone ?? null,
     email: row?.email ?? null,
     role: String(row?.role ?? "admin"),
-    tenant_id: String(row?.tenant_id ?? row?.tenantId ?? ""),
-    tenantId: row?.tenantId ?? row?.tenant_id ?? undefined,
+    tenant_id: tenantId,
+    tenantId: tenantId || undefined,
     assigned_courses: courses,
     assignedCourses: courses,
     profile_pic: profilePic,
@@ -259,6 +294,76 @@ function normalizeUser(row: any): MedStatUser {
 
   return user;
 }
+
+/** A row matches a tenant when we either don't care or the row carries the
+ *  same tenant in camelCase (local writes) or snake_case (Supabase mirror). */
+function tenantMatches(row: any, tenantId?: string): boolean {
+  if (!tenantId) return true;
+  return row?.tenant_id === tenantId || row?.tenantId === tenantId;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Tenant resolution (business identifier → tenant_id)                        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Resolves whatever the user typed into the "Business" field to a tenant id.
+ * Accepts a tenant UUID directly, an institution phone number, or a business
+ * name (case-insensitive; exact match preferred, contains-match accepted).
+ * Returns "" when nothing matches — the caller then tries an unscoped login.
+ */
+export async function resolveTenantIdentifier(
+  identifier: string,
+): Promise<string> {
+  const raw = String(identifier || "").trim();
+  if (!raw) return "";
+
+  const supabase = await getSupabase();
+  if (!supabase) return "";
+
+  // 1. A UUID IS the tenant id.
+  if (UUID_RE.test(raw)) return raw;
+
+  // 2. Phone number → tenants.phone (unique per institution).
+  const phone = asPhone(raw);
+  if (phone) {
+    try {
+      const { data } = await supabase
+        .from("tenants")
+        .select("id")
+        .eq("phone", phone)
+        .limit(1);
+      if (data?.[0]?.id) return String(data[0].id);
+    } catch {
+      // Fall through to the name lookup.
+    }
+  }
+
+  // 3. Business name — exact (case-insensitive) first, then contains.
+  try {
+    const exact = await supabase
+      .from("tenants")
+      .select("id")
+      .ilike("business_name", raw.replace(/[%_]/g, (m) => `\\${m}`))
+      .limit(1);
+    if (exact?.data?.[0]?.id) return String(exact.data[0].id);
+
+    const contains = await supabase
+      .from("tenants")
+      .select("id")
+      .ilike("business_name", `%${raw.replace(/[%_]/g, (m) => `\\${m}`)}%`)
+      .limit(1);
+    if (contains?.data?.[0]?.id) return String(contains.data[0].id);
+  } catch {
+    // Offline or table blocked — return "" and let login proceed unscoped.
+  }
+
+  return "";
+}
+
+/* -------------------------------------------------------------------------- */
+/* Password verification (bcrypt-aware)                                       */
+/* -------------------------------------------------------------------------- */
 
 /**
  * Supports legacy plaintext records and bcrypt hashes.
@@ -295,12 +400,20 @@ async function verifyPassword(
 interface SupabaseLookup {
   row: any | null;
   reachable: boolean;
+  /** true when the username matched rows in SEVERAL tenants and no business
+   *  identifier was supplied — login must ask for the institution. */
+  ambiguous?: boolean;
 }
 
 /**
  * Looks a user up directly in Supabase (public.users). `reachable` is false
  * only when the network call itself failed or the client is unavailable — a
  * clean "no row" result is reachable:true with row:null.
+ *
+ * With tenantId  → strictly scoped: UNIQUE (tenant_id, username) guarantees
+ *                  at most one match for username+tenant.
+ * Without        → cross-tenant search; ambiguous:true when several tenants
+ *                  hold that username (caller shows "enter your business").
  */
 async function findSupabaseUser(
   username: string,
@@ -323,12 +436,24 @@ async function findSupabaseUser(
 
     if (tenantId) query = query.eq("tenant_id", tenantId);
 
-    const { data, error } = await query.or(filters.join(",")).limit(1);
+    // limit 2 (not 1) so the unscoped path can detect ambiguity.
+    const { data, error } = await query.or(filters.join(",")).limit(2);
 
-    return {
-      row: !error && Array.isArray(data) ? (data[0] ?? null) : null,
-      reachable: true,
-    };
+    if (error || !Array.isArray(data) || data.length === 0) {
+      return { row: null, reachable: true };
+    }
+
+    if (!tenantId && data.length > 1) {
+      // Several tenants share this username/phone. Prefer an EXACT
+      // case-insensitive username match if exactly one row has it.
+      const exact = data.filter((r: any) =>
+        sameText(r?.username, username),
+      );
+      if (exact.length === 1) return { row: exact[0], reachable: true };
+      return { row: null, reachable: true, ambiguous: true };
+    }
+
+    return { row: data[0] ?? null, reachable: true };
   } catch {
     return { row: null, reachable: false };
   }
@@ -337,18 +462,21 @@ async function findSupabaseUser(
 /**
  * Locally saved accounts: Dexie first, then the cached session user.
  * Covers accounts created offline (synced:false) and previously signed-in
- * users, so login still works with no network at all.
+ * users, so login still works with no network at all. When tenantId is
+ * known, only rows of that tenant qualify (camel/snake tolerant).
  */
 async function findLocalUser(
   username: string,
   phone: string,
+  tenantId?: string,
 ): Promise<any | null> {
   // 1. Dexie local users.
   const users = await dexieUsers();
   const localUser = users.find(
     (user) =>
-      sameText(user?.username, username) ||
-      (phone && sameText(user?.phone, phone)),
+      tenantMatches(user, tenantId) &&
+      (sameText(user?.username, username) ||
+        (phone && sameText(user?.phone, phone))),
   );
 
   if (localUser) return localUser;
@@ -366,6 +494,7 @@ async function findLocalUser(
 
   if (
     cachedUser &&
+    tenantMatches(cachedUser, tenantId) &&
     (sameText(cachedUser.username, username) ||
       (phone && sameText(cachedUser.phone, phone)))
   ) {
@@ -399,15 +528,23 @@ export async function loginUser(
 
   const username = String(credentials.username || "").trim();
   const phone = String(credentials.phone || "").trim();
+  const tenantId = credentials.tenantId || "";
 
   // 1. Primary path — authenticate straight against Supabase. No backend call:
   //    the localhost:3001 / Render hop (and its "backend unreachable" error)
   //    is gone from the login flow entirely.
-  const { row: supabaseUser, reachable } = await findSupabaseUser(
+  const { row: supabaseUser, reachable, ambiguous } = await findSupabaseUser(
     username,
     phone,
-    credentials.tenantId,
+    tenantId || undefined,
   );
+
+  if (ambiguous) {
+    throw new Error(
+      "This username exists in more than one institution. " +
+        "Enter your business name or phone to choose the right one.",
+    );
+  }
 
   if (supabaseUser) {
     if (!(await verifyPassword(credentials.password, supabaseUser.password))) {
@@ -415,6 +552,8 @@ export async function loginUser(
     }
 
     try {
+      // Cache the full row (incl. password hash) so the NEXT login on this
+      // device can succeed even with no network at all.
       await (db as any).users.put({
         ...supabaseUser,
         synced: true,
@@ -424,13 +563,13 @@ export async function loginUser(
     }
 
     return setSession(
-      getToken() || `offline-${supabaseUser.id || makeId()}`,
+      getToken() || `session-${supabaseUser.id || makeId()}`,
       normalizeUser(supabaseUser),
     );
   }
 
   // 2. Fallback — locally saved account (created offline or previously cached).
-  const localUser = await findLocalUser(username, phone);
+  const localUser = await findLocalUser(username, phone, tenantId || undefined);
 
   if (localUser) {
     if (!(await verifyPassword(credentials.password, localUser.password))) {
@@ -456,6 +595,40 @@ export async function loginUser(
   }
 
   throw new Error("Invalid username or password.");
+}
+
+/**
+ * One-call login for the login screen: resolves the business identifier
+ * (tenant UUID | institution phone | business name) to a tenant, then
+ * authenticates against Supabase with tenant scoping. Falls back to locally
+ * cached credentials when the network is down.
+ */
+export async function loginWithIdentifier(
+  input: LoginWithIdentifierInput,
+): Promise<MedStatUser> {
+  if (!input?.username?.trim() || !input?.password) {
+    throw new Error("Username and password are required.");
+  }
+
+  const businessIdentifier =
+    input.business ||
+    input.business_name ||
+    input.businessName ||
+    "";
+
+  // A tenant UUID passed by the caller (deep link) wins; otherwise resolve
+  // whatever identifier we were given. "" means "unknown tenant" and the
+  // unscoped lookup below decides — including refusing on ambiguity.
+  const tenantId =
+    (input.tenantId || "").trim() ||
+    (await resolveTenantIdentifier(businessIdentifier));
+
+  return loginUser({
+    username: input.username,
+    password: input.password,
+    phone: input.phone,
+    tenantId: tenantId || undefined,
+  });
 }
 
 /* -------------------------------------------------------------------------- */
@@ -520,6 +693,7 @@ export async function addUser(
     localRow.tenant_id ||
     (input as any).tenant_id ||
     (input as any).tenantId ||
+    localStorage.getItem("activeTenantId") ||
     "";
   localRow.phone = localRow.phone ?? null;
   localRow.email = localRow.email ?? null;
@@ -530,7 +704,7 @@ export async function addUser(
     // The caller may still perform the cloud operation.
   }
 
-  // First-run tenant registration.
+  // First-run tenant registration (the ONLY remaining backend call).
   if (!token && input.tempToken) {
     const businessName = input.businessName ?? input.business_name;
 
@@ -572,7 +746,7 @@ export async function addUser(
 }
 
 /* -------------------------------------------------------------------------- */
-/* Get user — Supabase first, Dexie fallback (no backend)                      */
+/* Get user — Supabase first, Dexie fallback (no backend)                     */
 /* -------------------------------------------------------------------------- */
 
 export async function getUser(
@@ -624,11 +798,156 @@ export async function getUser(
 }
 
 /* -------------------------------------------------------------------------- */
-/* Get all users                                                              */
+/* Get all users — Supabase first (any device sees the same list), local      */
+/* fallback (any time: works with no network), tombstone-aware                */
 /* -------------------------------------------------------------------------- */
 
-export async function getUsers(): Promise<User[]> {
-  return (await dexieUsers()) as User[];
+/** Best-effort access to the deletedIdsTracker module (multi-name tolerant,
+ *  same policy as deleteUser above). Returns null when unavailable — the
+ *  list then simply skips tombstone filtering. */
+async function loadUserTracker(): Promise<{
+  isDeleted: (kind: string, id: string) => Promise<boolean>;
+} | null> {
+  try {
+    const tracker: any = await import("./deletedIdsTracker");
+    const check =
+      tracker.isDeleted ??
+      tracker.isDeletedId ??
+      tracker.hasDeletedId ??
+      tracker.containsDeletedId;
+    if (typeof check === "function") {
+      return { isDeleted: check };
+    }
+  } catch {
+    // Tracker module unavailable — tombstone filtering is skipped.
+  }
+  return null;
+}
+
+export interface UserListResult {
+  users: MedStatUser[];
+  /** true when Supabase was unreachable and the list came from this device. */
+  offline: boolean;
+  source: "supabase" | "local";
+}
+
+/**
+ * Cloud-first user list for admin screens.
+ *
+ * 1. Supabase (authoritative): every active row, tenant-scoped when a
+ *    tenantId is given — so a fresh device sees the full institution
+ *    immediately after sign-in.
+ * 2. Local pending rows are MERGED in: users created/edited offline on this
+ *    device (synced:false) stay visible even before the cloud push lands.
+ * 3. Tombstoned ids are filtered out on both paths, so a row that was
+ *    deleted here can never reappear from the cloud list.
+ * 4. Supabase down → the Dexie cache answers instead (offline:true), which
+ *    keeps the screen usable at any time.
+ */
+export async function getUsersDetailed(
+  tenantId?: string,
+): Promise<UserListResult> {
+  const tracker = await loadUserTracker();
+  const tombstoned = async (id: string): Promise<boolean> => {
+    if (!tracker) return false;
+    try {
+      return Boolean(await tracker.isDeleted("user", id));
+    } catch {
+      return false;
+    }
+  };
+
+  const mergeLocals = async (
+    cloudIds: Set<string>,
+    base: MedStatUser[],
+  ): Promise<MedStatUser[]> => {
+    const locals = await dexieUsers();
+
+    for (const raw of locals) {
+      const id = String(raw?.id ?? "");
+      if (!id || cloudIds.has(id)) continue;
+      if (tenantId && !tenantMatches(raw, tenantId)) continue;
+      if (await tombstoned(id)) continue;
+      base.push(normalizeUser({ ...raw, synced: raw?.synced ?? false }));
+    }
+
+    return base;
+  };
+
+  const supabase = await getSupabase();
+
+  if (supabase) {
+    try {
+      let query = supabase.from("users").select("*").is("deleted_at", null);
+
+      if (tenantId) query = query.eq("tenant_id", tenantId);
+
+      const { data, error } = await query
+        .order("created_at", { ascending: false })
+        .limit(2000);
+
+      if (!error && Array.isArray(data)) {
+        const users: MedStatUser[] = [];
+        const cloudIds = new Set<string>();
+
+        for (const row of data) {
+          const id = String(row?.id ?? "");
+          if (!id || cloudIds.has(id)) continue;
+          if (await tombstoned(id)) continue;
+          cloudIds.add(id);
+          // A row that exists in Supabase is by definition in sync — even
+          // when the synced flag itself is null on the server.
+          users.push(normalizeUser({ ...row, synced: row?.synced ?? true }));
+        }
+
+        const merged = await mergeLocals(cloudIds, users);
+        merged.sort((a, b) =>
+          String(a?.username ?? "").localeCompare(String(b?.username ?? "")),
+        );
+
+        // Refresh the offline cache with the authoritative rows.
+        try {
+          await (db as any).users.bulkPut(
+            data.map((row: any) => ({ ...row, synced: true })),
+          );
+        } catch {
+          // Cache refresh is non-fatal.
+        }
+
+        return { users: merged, offline: false, source: "supabase" };
+      }
+      // A Supabase error (RLS / network) falls through to the local path.
+    } catch {
+      // Fall through to the local path.
+    }
+  }
+
+  // Offline path — Dexie only, tenant-scoped and tombstone-aware.
+  const locals = await dexieUsers();
+  const users: MedStatUser[] = [];
+  const seen = new Set<string>();
+
+  for (const raw of locals) {
+    const id = String(raw?.id ?? "");
+    if (!id || seen.has(id)) continue;
+    if (tenantId && !tenantMatches(raw, tenantId)) continue;
+    if (raw?.deleted_at) continue;
+    if (await tombstoned(id)) continue;
+    seen.add(id);
+    users.push(normalizeUser(raw));
+  }
+
+  users.sort((a, b) =>
+    String(a?.username ?? "").localeCompare(String(b?.username ?? "")),
+  );
+
+  return { users, offline: true, source: "local" };
+}
+
+/** Back-compatible list. Pass tenantId to scope to one institution. */
+export async function getUsers(tenantId?: string): Promise<User[]> {
+  const { users } = await getUsersDetailed(tenantId);
+  return users as unknown as User[];
 }
 
 /* -------------------------------------------------------------------------- */
@@ -654,7 +973,7 @@ export async function updateUser(
 }
 
 /* -------------------------------------------------------------------------- */
-/* Delete user — Supabase soft-delete first, then local                        */
+/* Delete user — Supabase soft-delete first, then local                       */
 /* -------------------------------------------------------------------------- */
 
 export async function deleteUser(id: string): Promise<void> {
@@ -693,7 +1012,8 @@ export async function deleteUser(id: string): Promise<void> {
       tracker.markDeletedId ??
       tracker.recordDeletedId ??
       tracker.addDeletedId ??
-      tracker.noteDeletedId;
+      tracker.noteDeletedId ??
+      tracker.markDeleted;
     if (typeof mark === "function") {
       await mark("user", id);
     }
