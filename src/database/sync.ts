@@ -1,25 +1,31 @@
-// src/database/sync.ts — v6: PERMANENT tombstone-based delete tracking + enrollment-aware pulls
+// src/database/sync.ts — v7: enrollment-aware pulls + COMPLETE user mapping
 //
-// Changes vs v5 (course-assignment fix):
-//  1. Pull Enrollments no longer blind-puts mapped cloud rows. It now:
-//     • skips pair-level tombstones and enrollmentDB's pending-removal log —
-//       a failed cloud unassignment can no longer resurrect on the 60s pull;
-//     • never creates a duplicate row when the cloud id differs from the local
-//       row for the same (userId, courseId) pair;
-//     • never overwrites a locally-healed role — legacy cloud rows without
-//       `role` used to be mapped to "trainee" and clobber a local "trainer"
-//       role, which is what kept getTrainerCourses() empty. Missing roles are
-//       backfilled from the user's own record instead.
-//  2. Pull Users/Courses skip rows with pending local edits (synced:false) so
-//     the pull can't overwrite un-pushed changes (incl. the assignedCourses
-//     mirror) and wrongly flag them as synced.
-//  3. pullAllTenantData also runs syncPendingEnrollments() — retries unsynced
-//     enrollment pushes and unconfirmed cloud removals every tick.
+// Changes vs v6 (course-assignment fix — all preserved):
+//  1. Pull Enrollments: pair-level tombstones + pending-removal log respected,
+//     no duplicate rows for the same (userId, courseId) pair, cloud roles only
+//     trusted when explicitly present, missing roles backfilled from the user.
+//  2. Pull Users/Courses skip rows with pending local edits (synced:false).
+//  3. pullAllTenantData also runs syncPendingEnrollments() every tick.
 //  4. syncUp flags successfully pushed users as synced:true (push-then-flag).
+//
+// Changes vs v6 in THIS version (cross-device data completeness fix):
+//  5. mapUser no longer drops tuition, remuneration or assignedDepartments —
+//     the v6 mapper stripped them, so a user created on device A showed
+//     "Pay: 0/0" and lost department assignments when an admin logged in on
+//     device B. The mapping now matches the public.users DDL exactly:
+//     • tuition jsonb is camelCase on both sides ({expected, paid}) —
+//       the column default is '{"paid": 0, "expected": 0}';
+//     • remuneration jsonb is snake_case in the cloud
+//       ('{"per_diem": 0, "net_salary": 0}') and camelCase locally —
+//       normalized here via supabaseUserSync.shapeRemunerationLocal();
+//     • departments are carried under their literal cloud column name
+//       "assignedDepartments" (camelCase — unlike assigned_courses);
+//     • assigned_courses/assignedCourses stay mirrored (existing readers).
 
 import { db } from "./db";
 import { sbFetch } from "../auth/supabase";
 import { purgeDeletedFromDexie, retryFailedCloudDeletes } from "./deletedIdsTracker";
+import { shapeRemunerationLocal, shapeTuition } from "./supabaseUserSync";
 
 let periodicPullInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -365,7 +371,26 @@ export async function syncUp() {
 // ==========================================
 // MAPPER HELPERS
 // ==========================================
+
+/** tuition jsonb — camelCase keys on BOTH sides ({expected, paid}); the
+ *  Supabase column default is '{"paid": 0, "expected": 0}'. */
+function mapTuitionLocal(tuition: any) {
+  return shapeTuition(tuition);
+}
+
+/** remuneration jsonb — the cloud column is snake_case
+ *  ('{"per_diem": 0, "net_salary": 0}'), local rows use camelCase; accepts
+ *  either spelling and always emits the local shape. */
+function mapRemunerationLocal(remuneration: any) {
+  return shapeRemunerationLocal(remuneration);
+}
+
 function mapUser(u: any) {
+  const courses = u.assigned_courses || u.assignedCourses || [];
+  // The departments column is literally "assignedDepartments" in the DDL —
+  // carry it under the camelCase key local readers already tolerate.
+  const departments = u.assignedDepartments || u.assigned_departments || [];
+
   return {
     id: u.id,
     username: u.username,
@@ -374,7 +399,11 @@ function mapUser(u: any) {
     password: u.password || "",
     role: u.role || "trainee",
     profilePic: u.profile_pic || u.profilePic || "",
-    assignedCourses: u.assigned_courses || u.assignedCourses || [],
+    assigned_courses: courses,
+    assignedCourses: courses,
+    assignedDepartments: departments,
+    tuition: mapTuitionLocal(u.tuition),
+    remuneration: mapRemunerationLocal(u.remuneration),
     tenantId: u.tenant_id || u.tenantId,
     createdAt: u.created_at || u.createdAt || new Date().toISOString(),
     synced: true,

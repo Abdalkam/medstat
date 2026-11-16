@@ -1,1108 +1,374 @@
-import { useState, useEffect, useCallback } from "react";
-import type { CSSProperties, FormEvent } from "react";
-import { useNavigate } from "react-router-dom";
-import { supabase } from "../auth/supabase";
-import { loginTenant } from "../api/authApi";
-import * as supabaseModule from "../auth/supabase";
+// src/screens/LoginScreen.tsx — v1: Material sign-in for MedStat
+//
+// "Log in from any device, anywhere" — this screen is a thin Material shell
+// over the machinery that already lives in src/database/userDB.ts:
+//   • loginWithIdentifier() resolves the business identifier (tenant UUID |
+//     institution phone | business name) against the tenants table, then
+//     authenticates straight against Supabase public.users — no localhost /
+//     Render hop, no cold starts.
+//   • Offline: Supabase-unreachable logins fall back to credentials cached in
+//     Dexie from a previous sign-in on THIS device (the app-side contract).
+//   • The user record (incl. bcrypt hash) is cached after every success, so
+//     the NEXT sign-in on the same device works with no network at all.
+//
+// Wiring: render <LoginScreen onSignedIn={(user) => ...} /> from your app
+// shell (router or App.tsx auth gate). On success the component also fires
+// the same "authStateChanged" event hardRedirectToLogin() uses, so existing
+// listeners re-evaluate the session. After the shell switches to the app,
+// make sure startPeriodicPull() is running (see CHANGES.md).
 
-/* ================= VERSION-PROOF AUTH BINDING =================
-   Compiles against BOTH supabase.ts versions:
-   - current:  tryReauthenticate()              (no parameters)
-   - upgraded: tryReauthenticate(force = false) + getReauthReason()
-   On the upgraded version `true` really skips the 30 s cooldown;
-   on the current version the argument is safely ignored. */
-const tryReauthenticate = supabaseModule.tryReauthenticate as unknown as (
-  force?: boolean
-) => Promise<string | null>;
+import { useEffect, useState } from "react";
+import type { CSSProperties } from "react";
+import {
+  loginWithIdentifier,
+  resolveTenantIdentifier,
+  type MedStatUser,
+} from "../database/userDB";
 
-/* ================= LOGO SOURCE NORMALIZER (self-contained) =================
-   Works with ANY version of authApi.ts — no import needed for this part. */
-function normalizeImageSrc(value?: string | null): string {
-  const raw = (value ?? "").trim();
-  if (!raw) return "";
-  if (raw.startsWith("data:")) {
-    // Strip whitespace/line-wraps inside the base64 payload (DB dumps wrap it
-    // across lines, which silently kills CSS/HTML images)
-    const m = raw.match(/^(data:image\/[a-z.+-]+;base64,)([\s\S]*)$/i);
-    return m ? m[1] + m[2].replace(/\s+/g, "") : raw;
-  }
-  if (/^https?:\/\//i.test(raw)) return raw;
-  if (raw.startsWith("<svg") || raw.startsWith("<?xml")) {
-    return `data:image/svg+xml;utf8,${encodeURIComponent(raw)}`;
-  }
-  const compact = raw.replace(/\s+/g, "");
-  if (compact.length > 100 && /^[A-Za-z0-9+/]+={0,2}$/.test(compact)) {
-    let mime = "image/png";
-    if (compact.startsWith("/9j/")) mime = "image/jpeg";
-    else if (compact.startsWith("R0lGOD")) mime = "image/gif";
-    else if (compact.startsWith("UklGR")) mime = "image/webp";
-    else if (compact.startsWith("PHN2Zy") || compact.startsWith("PD94bW")) mime = "image/svg+xml";
-    return `data:${mime};base64,${compact}`;
-  }
-  return raw;
-}
+/* -------------------------------------------------------------------------- */
+/* Injected stylesheet — focus rings, press states, entrance animation        */
+/* -------------------------------------------------------------------------- */
 
-/** Safe for embedding inside a CSS url("...") — strips line breaks and quotes. */
-function cssUrl(src: string): string {
-  return src.replace(/[\r\n]+/g, "").replace(/"/g, "%22");
-}
+const LGS_CSS = `
+.lgs-root{font-family:Roboto,'Segoe UI',system-ui,-apple-system,sans-serif;
+  min-height:100vh;background:linear-gradient(180deg,#eff6ff 0%,#f8fafc 45%,#f1f5f9 100%);
+  display:flex;align-items:center;justify-content:center;padding:24px;color:#0f172a;}
+.lgs-root *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+.lgs-card{width:100%;max-width:400px;background:#ffffff;border:1px solid #e2e8f0;
+  border-radius:28px;padding:28px 24px;box-shadow:0 10px 30px rgba(15,23,42,.08);
+  animation:lgs-in .25s ease-out;}
+@keyframes lgs-in{from{transform:translateY(16px);opacity:0;}to{transform:none;opacity:1;}}
+.lgs-field:focus-within{border-color:#2563eb !important;box-shadow:inset 0 0 0 1px #2563eb;}
+.lgs-field input:focus{outline:none;}
+.lgs-btn{transition:transform .06s ease;}
+.lgs-btn:active:not(:disabled){transform:scale(.98);}
+.lgs-btn:disabled{opacity:.55;cursor:default;}
+.lgs-iconbtn{border:none;background:transparent;border-radius:999px;width:40px;height:40px;
+  display:inline-flex;align-items:center;justify-content:center;cursor:pointer;color:#64748b;flex-shrink:0;}
+.lgs-iconbtn:hover{background:#e2e8f0;}
+`;
 
-/* ================= MD3 COLOR TOKENS ================= */
-const C = {
-  primary: "#1A73E8",
-  onPrimary: "#FFFFFF",
-  primaryContainer: "#D3E3FD",
-  onPrimaryContainer: "#041E49",
-  surface: "#FFFFFF",
-  onSurface: "#202124",
-  onSurfaceVariant: "#5F6368",
-  background: "#F8F9FA",
-  outline: "#DADCE0",
-  error: "#D93025",
-  errorBg: "#FCE8E6",
-  errorBorder: "#F6CFCB",
-  errorText: "#C5221F",
+/* -------------------------------------------------------------------------- */
+/* Icons                                                                      */
+/* -------------------------------------------------------------------------- */
+
+const LGS_ICONS: Record<string, string> = {
+  visibility:
+    "M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-8a3 3 0 1 0 0 6 3 3 0 0 0 0-6z",
+  visibilityOff:
+    "M12 7c2.76 0 5 2.24 5 5 0 .65-.13 1.26-.36 1.83l2.92 2.92c1.51-1.26 2.7-2.89 3.43-4.75-1.73-4.39-6-7.5-11-7.5-1.4 0-2.74.25-3.98.7l2.16 2.16C10.74 7.13 11.35 7 12 7zM2 4.27l2.28 2.28.46.46C3.08 8.3 1.78 10.02 1 12c1.73 4.39 6 7.5 11 7.5 1.55 0 3.03-.3 4.38-.84l.42.42L19.73 22 21 20.73 3.27 3 2 4.27zM7.53 9.8l1.55 1.55c-.05.21-.08.43-.08.65 0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.55 1.55c-.67.33-1.41.53-2.2.53-2.76 0-5-2.24-5-5 0-.79.2-1.53.53-2.2zm4.31-.78 3.15 3.15.02-.16c0-1.66-1.34-3-3-3l-.17.01z",
+  domain:
+    "M12 7V3H2v18h20V7H12zM6 19H4v-2h2v2zm0-4H4v-2h2v2zm0-4H4V9h2v2zm0-4H4V5h2v2zm4 12H8v-2h2v2zm0-4H8v-2h2v2zm0-4H8V9h2v2zm0-4H8V5h2v2zm10 12h-8v-2h2v-2h-2v-2h2v-2h-2V9h8v10zm-2-8h-2v2h2v-2zm0 4h-2v2h2v-2z",
+  person:
+    "M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z",
+  lock:
+    "M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3-9H9V6c0-1.66 1.34-3 3-3s3 1.34 3 3v2z",
 };
 
-const font =
-  "'Roboto', 'Google Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif";
-
-/* ================= SMALL HELPERS ================= */
-function safeParse<T>(json: string | null, fallback: T): T {
-  try {
-    return json ? (JSON.parse(json) as T) : fallback;
-  } catch {
-    return fallback;
-  }
+function LgsIcon({ path, size = 22 }: { path: string; size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d={path} />
+    </svg>
+  );
 }
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/* -------------------------------------------------------------------------- */
+/* Styles                                                                     */
+/* -------------------------------------------------------------------------- */
 
-/** "0722 123 456" / "+254-722-123-456" → phone-like; else business name. */
-function asPhone(identifier: string): string | null {
-  const compact = identifier.replace(/[\s\-().]/g, "");
-  return /^\+?\d{7,15}$/.test(compact) ? compact : null;
-}
-
-const P = {
-  eye: "M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-8a3 3 0 1 0 0 6 3 3 0 0 0 0-6z",
-  eyeOff:
-    "M12 7c2.76 0 5 2.24 5 5 0 .65-.13 1.26-.36 1.83l2.92 2.92c1.51-1.26 2.7-2.89 3.43-4.75-1.73-4.39-6-7.5-11-7.5-1.4 0-2.74.25-3.98.7l2.16 2.16C10.74 7.13 11.35 7 12 7zM2 4.27l2.28 2.28.46.46C3.08 8.3 1.78 10.02 1 12c1.73 4.39 6 7.5 11 7.5 1.55 0 3.03-.3 4.38-.84l.42.42L19.73 22 21 20.73 3.27 3 2 4.27zM7.53 9.8l1.55 1.55c-.05.21-.08.43-.08.65 0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.55 1.55c-.67.33-1.41.53-2.2.53-2.76 0-5-2.24-5-5 0-.79.2-1.53.53-2.2zm4.31-.78l3.15 3.15.02-.16c0-1.66-1.34-3-3-3l-.17.01z",
-  check: "M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z",
-  phone:
-    "M6.62 10.79c1.44 2.83 3.76 5.14 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1-9.39 0-17-7.61-17-17 0-.55.45-1 1-1h3.5c.55 0 1 .45 1 1 0 1.25.2 2.45.57 3.57.11.35.03.74-.25 1.02l-2.2 2.2z",
-  email:
-    "M20 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z",
-  place:
-    "M12 2C8.13 2 5 5.13 5 8.95c0 5.25 7 13.05 7 13.05s7-7.8 7-13.05C19 5.13 15.87 2 12 2zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z",
-  briefcase:
-    "M20 6h-4V4c0-1.11-.89-2-2-2h-4c-1.11 0-2 .89-2 2v2H4c-1.11 0-1.99.89-1.99 2L2 19c0 1.11.89 2 2 2h16c1.11 0 2-.89 2-2V8c0-1.11-.89-2-2-2zm-6 0h-4V4h4v2z",
+const S: Record<string, CSSProperties> = {
+  brand: { textAlign: "center", marginBottom: 22 },
+  logo: {
+    width: 56,
+    height: 56,
+    borderRadius: 999,
+    background: "#2563eb",
+    color: "#ffffff",
+    fontSize: 24,
+    fontWeight: 700,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    margin: "0 auto 12px",
+    boxShadow: "0 6px 16px rgba(37, 99, 235, 0.35)",
+  },
+  title: { fontSize: 20, fontWeight: 700, margin: 0 },
+  subtitle: { fontSize: 13, color: "#64748b", marginTop: 4 },
+  offlineChip: {
+    display: "block",
+    background: "#fef3c7",
+    border: "1px solid #fde68a",
+    color: "#92400e",
+    borderRadius: 12,
+    padding: "9px 12px",
+    fontSize: 12,
+    lineHeight: 1.5,
+    marginBottom: 14,
+  },
+  errorCard: {
+    background: "#fef2f2",
+    border: "1px solid #fecaca",
+    color: "#b91c1c",
+    borderRadius: 12,
+    padding: "10px 12px",
+    fontSize: 13,
+    lineHeight: 1.5,
+    marginBottom: 12,
+  },
+  fieldWrap: { display: "flex", flexDirection: "column", gap: 6, marginBottom: 12 },
+  label: { fontSize: 12, fontWeight: 600, color: "#334155" },
+  field: {
+    border: "1px solid #cbd5e1",
+    borderRadius: 14,
+    background: "#ffffff",
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    padding: "0 6px 0 12px",
+  },
+  input: {
+    border: "none",
+    outline: "none",
+    background: "transparent",
+    fontSize: 14,
+    padding: "13px 0",
+    width: "100%",
+    minWidth: 0,
+    color: "#0f172a",
+  },
+  hint: { fontSize: 11, color: "#64748b", lineHeight: 1.5, padding: "0 2px" },
+  hintFound: { color: "#166534" },
+  button: {
+    width: "100%",
+    border: "none",
+    background: "#2563eb",
+    color: "#ffffff",
+    borderRadius: 999,
+    padding: "13px 20px",
+    fontSize: 15,
+    fontWeight: 700,
+    cursor: "pointer",
+    marginTop: 6,
+    boxShadow: "0 4px 12px rgba(37, 99, 235, 0.35)",
+  },
+  footer: { fontSize: 11, color: "#94a3b8", textAlign: "center", marginTop: 18, lineHeight: 1.6 },
 };
 
-/* ================= BRANDING (business_settings) ================= */
-interface Branding {
-  tenantId?: string;
-  businessName: string;
-  phone: string;
-  email: string;
-  address: string;
-  website: string;
-  logo: string;            // normalized, kept in the cache for other screens
-  loginBackground: string; // ready-to-render source (normalized)
+/* -------------------------------------------------------------------------- */
+/* Screen                                                                     */
+/* -------------------------------------------------------------------------- */
+
+interface LoginScreenProps {
+  /** Called after a successful sign-in (session already persisted). */
+  onSignedIn?: (user: MedStatUser) => void;
 }
 
-function mapBrandingRow(row: Record<string, any>): Branding {
-  return {
-    tenantId: row.tenant_id || undefined,
-    businessName: row.business_name || "",
-    phone: row.phone || "",
-    email: row.email || "",
-    address: row.address || "",
-    website: row.website || "",
-    logo: normalizeImageSrc(row.logo),
-    loginBackground: normalizeImageSrc(row.login_background),
-  };
-}
+type TenantHint = "empty" | "checking" | "found" | "unknown";
 
-/** Best-known branding from EITHER cache:
- *  • institutionBranding — written by the Startup lookup flow + Settings (most
- *    reliable source before login, survives offline)
- *  • localBusinessSettings — written by the admin Settings page (richer)
- *  Fields are merged per-key (first non-empty wins) and normalized. */
-function readCachedBranding(): Branding | null {
-  const inst = safeParse<Partial<Branding> | null>(localStorage.getItem("institutionBranding"), null);
-  const local = safeParse<Partial<Branding> | null>(localStorage.getItem("localBusinessSettings"), null);
-  const pick = (...vals: Array<string | undefined>) =>
-    vals.find((v) => typeof v === "string" && v.trim() !== "") || "";
-  const merged: Branding = {
-    tenantId: local?.tenantId || inst?.tenantId || undefined,
-    businessName: pick(local?.businessName, inst?.businessName),
-    phone: pick(local?.phone, inst?.phone),
-    email: pick(local?.email, inst?.email),
-    address: pick(local?.address, inst?.address),
-    website: pick(local?.website, inst?.website),
-    logo: normalizeImageSrc(pick(local?.logo, inst?.logo)),
-    loginBackground: normalizeImageSrc(pick(local?.loginBackground, inst?.loginBackground)),
-  };
-  return merged.businessName || merged.logo || merged.phone || merged.loginBackground ? merged : null;
-}
+const LAST_BUSINESS_KEY = "medstat.lastBusiness";
 
-/* ================= LOGO TILE (seamless) =================
-   • object-fit: contain — never stretched, never cropped
-   • Rendered FLAT: no plate, no border, no shadow — the artwork is
-     continuous with the app bar background (WhatsApp-style)
-   • graceful monogram / icon fallback if the source fails to load */
-function SafeLogo({
-  src,
-  name,
-  size = 44,
-  radius = 12,
-}: {
-  src: string;
-  name?: string;
-  size?: number;
-  radius?: number;
-}) {
-  const [failed, setFailed] = useState(false);
+export default function LoginScreen({ onSignedIn }: LoginScreenProps) {
+  const [business, setBusiness] = useState<string>("");
+  const [username, setUsername] = useState<string>("");
+  const [password, setPassword] = useState<string>("");
+  const [showPassword, setShowPassword] = useState<boolean>(false);
+  const [busy, setBusy] = useState<boolean>(false);
+  const [error, setError] = useState<string>("");
+  const [tenantHint, setTenantHint] = useState<TenantHint>("empty");
+  const [online, setOnline] = useState<boolean>(
+    typeof navigator !== "undefined" ? navigator.onLine : true,
+  );
 
+  // Prefill the institution from the last successful sign-in on this device.
   useEffect(() => {
-    setFailed(false);
-  }, [src]);
-
-  const showImg = !!src && !failed;
-  return (
-    <div
-      style={{
-        width: size,
-        height: size,
-        flexShrink: 0,
-        borderRadius: radius,
-        background: "transparent",
-        border: "none",
-        boxShadow: "none",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        overflow: "hidden",
-        boxSizing: "border-box",
-      }}
-    >
-      {showImg ? (
-        <img
-          src={src}
-          alt={name ? `${name} logo` : "Business logo"}
-          onError={() => setFailed(true)}
-          style={{
-            width: "100%",
-            height: "100%",
-            objectFit: "contain",
-            objectPosition: "center",
-            display: "block",
-          }}
-        />
-      ) : name ? (
-        <span
-          aria-hidden="true"
-          style={{
-            fontSize: Math.round(size * 0.42),
-            fontWeight: 500,
-            color: C.primary,
-            fontFamily: font,
-            lineHeight: 1,
-          }}
-        >
-          {name.trim().charAt(0).toUpperCase()}
-        </span>
-      ) : (
-        <svg
-          aria-hidden="true"
-          width={Math.round(size * 0.5)}
-          height={Math.round(size * 0.5)}
-          viewBox="0 0 24 24"
-          fill={C.primary}
-        >
-          <path d={P.briefcase} />
-        </svg>
-      )}
-    </div>
-  );
-}
-
-/* ================= COLOUR-CYCLING PROGRESS BAR =================
-   Indeterminate bar that slides while its rainbow gradient FLOWS through it
-   (background-position animation — reliable in every webview, unlike
-   filter: hue-rotate which some Tauri webviews never animate). */
-function TopLoader({ show, flush = false }: { show: boolean; flush?: boolean }) {
-  if (!show) return null;
-  const trackStyle: CSSProperties = flush
-    ? {
-        position: "absolute",
-        top: 0,
-        left: 0,
-        right: 0,
-        height: 4,
-        overflow: "hidden",
-        pointerEvents: "none",
-      }
-    : {
-        width: "100%",
-        height: 6,
-        borderRadius: 999,
-        overflow: "hidden",
-        position: "relative",
-        background: "rgba(26,115,232,0.12)",
-        marginBottom: 14,
-      };
-  return (
-    <div aria-hidden="true" style={trackStyle}>
-      <div
-        style={{
-          position: "absolute",
-          top: 0,
-          bottom: 0,
-          width: "40%",
-          borderRadius: 999,
-          backgroundImage:
-            "linear-gradient(90deg, #1A73E8 0%, #9334E6 25%, #E8710A 50%, #00897B 75%, #1A73E8 100%)",
-          backgroundSize: "300% 100%",
-          animation:
-            "md3Slide 1.3s cubic-bezier(0.45, 0.05, 0.55, 0.95) infinite, md3Flow 2.4s linear infinite",
-        }}
-      />
-    </div>
-  );
-}
-
-/* ================= LOGIN APP BAR =================
-   Balanced MD3 top bar — LEFT: logo tile + business name + phone;
-   RIGHT: email + address stack.
-   No avatar, no account icon, no menu — this is the login screen.
-   The right stack hides on very narrow screens (stylesheet class
-   .appbar-contact). */
-function LoginAppBar({
-  logo,
-  businessName,
-  phone,
-  email,
-  address,
-}: {
-  logo: string;
-  businessName: string;
-  phone: string;
-  email: string;
-  address: string;
-}) {
-  const contactRow = (icon: string, text: string, key: string) =>
-    text ? (
-      <div
-        key={key}
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "flex-end",
-          gap: 6,
-          minWidth: 0,
-          maxWidth: "100%",
-        }}
-      >
-        <svg
-          width="12"
-          height="12"
-          viewBox="0 0 24 24"
-          fill={C.onSurfaceVariant}
-          style={{ flexShrink: 0 }}
-        >
-          <path d={icon} />
-        </svg>
-        <span
-          style={{
-            fontSize: 12,
-            lineHeight: 1.2,
-            color: C.onSurfaceVariant,
-            letterSpacing: "0.01em",
-            whiteSpace: "nowrap",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            textAlign: "right",
-          }}
-        >
-          {text}
-        </span>
-      </div>
-    ) : null;
-
-  return (
-    <header
-      style={{
-        position: "relative",
-        zIndex: 2,
-        background: C.surface,
-        borderBottom: `1px solid ${C.outline}`,
-        boxShadow: "0 1px 2px rgba(60,64,67,0.12), 0 2px 6px 2px rgba(60,64,67,0.06)",
-      }}
-    >
-      <div
-        style={{
-          width: "100%",
-          minHeight: 64,
-          display: "flex",
-          alignItems: "center",
-          gap: 14,
-          padding: "8px 8px",
-          boxSizing: "border-box",
-        }}
-      >
-        {/* LEFT — identity: logo tile + business name + phone */}
-        <SafeLogo src={logo} name={businessName || undefined} size={48} />
-        <div style={{ flex: "1 1 0", minWidth: 0 }}>
-          <div
-            style={{
-              fontSize: "clamp(16px, 4.2vw, 19px)",
-              fontWeight: 500,
-              color: C.onSurface,
-              lineHeight: 1.25,
-              letterSpacing: "-0.01em",
-              whiteSpace: "nowrap",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              textAlign: "left",
-            }}
-          >
-            {businessName || "Welcome"}
-          </div>
-          {phone && (
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 5,
-                marginTop: 2,
-                minWidth: 0,
-              }}
-            >
-              <svg
-                width="12"
-                height="12"
-                viewBox="0 0 24 24"
-                fill={C.onSurfaceVariant}
-                style={{ flexShrink: 0 }}
-              >
-                <path d={P.phone} />
-              </svg>
-              <span
-                style={{
-                  fontSize: 12,
-                  lineHeight: 1.2,
-                  color: C.onSurfaceVariant,
-                  letterSpacing: "0.01em",
-                  whiteSpace: "nowrap",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  textAlign: "left",
-                }}
-              >
-                {phone}
-              </span>
-            </div>
-          )}
-        </div>
-
-        {/* RIGHT — email + address stack (visibility handled by the stylesheet) */}
-        {(email || address) && (
-          <div className="appbar-contact">
-            {contactRow(P.email, email, "bar-email")}
-            {contactRow(P.place, address, "bar-address")}
-          </div>
-        )}
-      </div>
-    </header>
-  );
-}
-
-export default function Login() {
-  const navigate = useNavigate();
-
-  /* ---------- form state ---------- */
-  const [business, setBusiness] = useState(
-    () => localStorage.getItem("rememberedBusiness") || ""
-  );
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
-  const [showPassword, setShowPassword] = useState(false);
-  const [rememberBusiness, setRememberBusiness] = useState(
-    () => !!localStorage.getItem("rememberedBusiness")
-  );
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const [focusedField, setFocusedField] = useState<"" | "business" | "username" | "password">("");
-
-  // Offline fallback login: set when loginTenant() could not reach the
-  // backend and returned a placeholder session instead of a real JWT.
-  const [offlineResult, setOfflineResult] = useState<{ authToken: string } | null>(null);
-  const [checkingOnline, setCheckingOnline] = useState(false);
-
-  /* ---------- branding state ----------
-     Seeded synchronously from EITHER branding cache (institutionBranding /
-     localBusinessSettings) so the app bar already carries the logo, business
-     name and phone on the VERY FIRST paint — no flash, works offline.
-     The effect below then refreshes it live from Supabase. */
-  const [settings, setSettings] = useState<Branding | null>(() => readCachedBranding());
-
-  // Optional deep-link: /login?tenant=<tenantId> pins the business instantly
-  const [urlTenantId] = useState(
-    () => new URLSearchParams(window.location.search).get("tenant") || ""
-  );
-
-  // App-bar name: branding first, then whatever business identifier the user
-  // typed or remembered — so the bar shows meaningful content immediately,
-  // even before (or without) a network fetch.
-  const businessName = settings?.businessName || business.trim() || "";
-
-  /* ---------- branding loaders ---------- */
-  const applyBrandingRow = useCallback((row: Record<string, any>) => {
-    const fresh = mapBrandingRow(row);
-    setSettings((prev) => {
-      // Field-wise merge: a non-empty DB value wins, but an EMPTY field never
-      // wipes a good cached value — e.g. Settings.tsx saved offline or its
-      // Supabase write failed, so the DB still has the old/empty background.
-      const merged: Branding = {
-        tenantId: fresh.tenantId || prev?.tenantId || undefined,
-        businessName: fresh.businessName || prev?.businessName || "",
-        phone: fresh.phone || prev?.phone || "",
-        email: fresh.email || prev?.email || "",
-        address: fresh.address || prev?.address || "",
-        website: fresh.website || prev?.website || "",
-        logo: fresh.logo || prev?.logo || "",
-        loginBackground: fresh.loginBackground || prev?.loginBackground || "",
-      };
-      try {
-        // Mirror Settings.tsx: write BOTH caches so Startup's login screen
-        // picks up the same background on its next mount.
-        localStorage.setItem("localBusinessSettings", JSON.stringify(merged));
-        localStorage.setItem(
-          "institutionBranding",
-          JSON.stringify({
-            businessName: merged.businessName,
-            logo: merged.logo,
-            phone: merged.phone,
-            email: merged.email,
-            address: merged.address,
-            loginBackground: merged.loginBackground,
-          })
-        );
-      } catch { /* quota exceeded — branding stays in memory only */ }
-      return merged;
-    });
-    // Screens listening for "settingsChanged" refresh live, no reload needed.
-    window.dispatchEvent(new Event("settingsChanged"));
-  }, []);
-
-  /** business identifier → tenant id (UUID | phone | business name), mirroring
-   *  the exact lookup order loginTenant() uses internally. */
-  const resolveTenantId = useCallback(async (identifier: string): Promise<string> => {
-    const b = identifier.trim();
-    if (!b) return "";
-    if (UUID_RE.test(b)) return b;
-    const phone = asPhone(b);
-    if (phone) {
-      const { data } = await supabase.from("tenants").select("id").eq("phone", phone).maybeSingle();
-      if (data?.id) return data.id as string;
-    }
-    const { data: byName } = await supabase
-      .from("tenants")
-      .select("id")
-      .ilike("business_name", `%${b}%`)
-      .maybeSingle();
-    return (byName?.id as string) || "";
-  }, []);
-
-  /** Fetch business_settings for the best-known tenant and paint the branding.
-   *  Falls back to direct phone/name lookups on business_settings when the
-   *  tenant can't be resolved (e.g. RLS blocks guest reads on `tenants`). */
-  const prefetchBranding = useCallback(async () => {
     try {
-      const cached = readCachedBranding();
-      let tenantId = urlTenantId || cached?.tenantId || "";
-      if (!tenantId) tenantId = await resolveTenantId(business);
-      if (tenantId) {
-        const { data: row } = await supabase
-          .from("business_settings")
-          .select("*")
-          .eq("tenant_id", tenantId)
-          .maybeSingle();
-        if (row) {
-          applyBrandingRow(row);
-          return;
-        }
-      }
-      // Fallbacks: some setups disallow anonymous reads on `tenants` but
-      // allow business_settings — try phone, then business name, directly.
-      const b = business.trim();
-      if (!b) return;
-      const phone = asPhone(b);
-      if (phone) {
-        const { data: byPhone } = await supabase
-          .from("business_settings")
-          .select("*")
-          .eq("phone", phone)
-          .maybeSingle();
-        if (byPhone) {
-          applyBrandingRow(byPhone);
-          return;
-        }
-      }
-      const { data: byName } = await supabase
-        .from("business_settings")
-        .select("*")
-        .ilike("business_name", `%${b}%`)
-        .maybeSingle();
-      if (byName) applyBrandingRow(byName);
+      const last = localStorage.getItem(LAST_BUSINESS_KEY) || "";
+      if (last) setBusiness(last);
     } catch {
-      /* offline / table missing — cached branding (if any) keeps showing */
+      // Storage unavailable — start blank.
     }
-  }, [urlTenantId, business, resolveTenantId, applyBrandingRow]);
-
-  // First paint: instant cached branding (either cache), then refresh
-  useEffect(() => {
-    const cached = readCachedBranding();
-    if (cached) setSettings(cached);
-    if (urlTenantId || cached?.tenantId || business.trim()) void prefetchBranding();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Live refresh: Settings.tsx dispatches "settingsChanged" right after saving
-  // a new logo/background — re-read the cache so the login page updates
-  // instantly, even while it is already open ("storage" covers other tabs).
+  // Track connectivity for the offline notice.
   useEffect(() => {
-    const refresh = () => {
-      const cached = readCachedBranding();
-      if (cached) setSettings(cached);
-    };
-    window.addEventListener("settingsChanged", refresh);
-    window.addEventListener("storage", refresh);
+    const goOnline = (): void => setOnline(true);
+    const goOffline = (): void => setOnline(false);
+    window.addEventListener("online", goOnline);
+    window.addEventListener("offline", goOffline);
     return () => {
-      window.removeEventListener("settingsChanged", refresh);
-      window.removeEventListener("storage", refresh);
+      window.removeEventListener("online", goOnline);
+      window.removeEventListener("offline", goOffline);
     };
   }, []);
 
-  /* ---------- submit ---------- */
-  const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
+  // Debounced business-identifier resolution — instant feedback that the
+  // institution was recognized (UUID, phone, or name all resolve).
+  useEffect(() => {
+    const raw = business.trim();
+    if (!raw) {
+      setTenantHint("empty");
+      return;
+    }
+    setTenantHint("checking");
+    const timer = setTimeout(() => {
+      void (async (): Promise<void> => {
+        try {
+          const tenantId = await resolveTenantIdentifier(raw);
+          setTenantHint(tenantId ? "found" : "unknown");
+        } catch {
+          setTenantHint("unknown");
+        }
+      })();
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [business]);
+
+  const submit = async (): Promise<void> => {
     if (busy) return;
     setError("");
-
-    const u = username.trim();
-    const b = business.trim();
-    if (!b && !urlTenantId) { setError("Please enter your business name or phone number."); return; }
-    if (!u || !password) { setError("Please enter your username and password."); return; }
-
-    // Load branding in the background as soon as we know the business —
-    // the app bar's logo + name appear even before credentials are verified.
-    void prefetchBranding();
-
-    // Let loginTenant() resolve the tenant itself: pass through whichever
-    // identifier we have (tenantId beats phone beats business_name).
-    const payload: {
-      username: string; password: string;
-      tenantId?: string; phone?: string; business_name?: string;
-    } = { username: u, password };
-
-    if (urlTenantId) payload.tenantId = urlTenantId;
-    else if (UUID_RE.test(b)) payload.tenantId = b;
-    else {
-      const phone = asPhone(b);
-      if (phone) payload.phone = phone;
-      else payload.business_name = b;
+    const trimmedUsername = username.trim();
+    if (!trimmedUsername || !password) {
+      setError("Enter your username and password.");
+      return;
     }
-
+    setBusy(true);
     try {
-      setBusy(true);
-      const result = await loginTenant(payload);
-      const { authToken, user } = result;
-
-      // Keys match what AppLayout.tsx reads after login. The password is
-      // cached alongside the profile (same pattern startup.tsx already
-      // uses) so tryReauthenticate() can silently re-login this device
-      // whenever the backend was unreachable at sign-in time.
-      localStorage.setItem(
-        "currentUser",
-        JSON.stringify({ ...user, password })
-      );
-      localStorage.setItem("authToken", authToken);
-      const tenantId = user.tenantId || (user as any).tenant_id || "";
-      if (tenantId) localStorage.setItem("activeTenantId", tenantId);
-
-      if (rememberBusiness && b) localStorage.setItem("rememberedBusiness", b);
-      else localStorage.removeItem("rememberedBusiness");
-
-      window.dispatchEvent(new Event("userChanged"));
-
-      // Offline fallback session (backend unreachable): show the notice
-      // instead of entering the app as if everything were online.
-      if (result.offline) {
-        setOfflineResult({ authToken });
-        return;
+      const user = await loginWithIdentifier({
+        business: business.trim() || undefined,
+        username: trimmedUsername,
+        password,
+      });
+      try {
+        localStorage.setItem(LAST_BUSINESS_KEY, business.trim());
+      } catch {
+        // Storage unavailable — prefill is best-effort.
       }
-
-      // NOTE: if your app routes by role instead, replace with:
-      //   navigate(user.role === "admin" ? "/admin" : user.role === "trainer" ? "/trainer" : "/user", { replace: true });
-      navigate("/", { replace: true });
-    } catch (err: any) {
-      setError(err?.message || "Login failed. Please try again.");
+      try {
+        window.dispatchEvent(new Event("authStateChanged"));
+      } catch {
+        // Listeners may not exist.
+      }
+      onSignedIn?.(user);
+    } catch (e: any) {
+      setError(String(e?.message ?? e) || "Sign-in failed. Try again.");
     } finally {
       setBusy(false);
     }
   };
 
-  /* ---------- offline fallback actions ---------- */
-
-  const continueOffline = () => {
-    navigate("/", { replace: true });
-  };
-
-  /** Wakes the backend, then re-logs-in silently with the credentials
-   *  cached a moment ago; on success the app continues with a real JWT
-   *  and the session never was "offline" from the user's perspective. */
-  const tryOnlineNow = async () => {
-    if (checkingOnline) return;
-    setCheckingOnline(true);
-    setError("");
-    try {
-      // `true` skips the 30 s cooldown so this click always really retries.
-      const token = await tryReauthenticate(true);
-
-      if (token) {
-        setOfflineResult(null);
-        window.dispatchEvent(new Event("userChanged"));
-        navigate("/", { replace: true });
-      } else {
-        setError(
-          "Server is still waking up. You can continue offline — everything will sync automatically."
-        );
-      }
-    } catch {
-      setError(
-        "Could not reach the server. You can continue offline and try again later."
-      );
-    } finally {
-      setCheckingOnline(false);
+  const hintText = (): string => {
+    if (tenantHint === "found") {
+      return "Institution recognized — sign-in will be scoped to it.";
     }
+    if (tenantHint === "unknown") {
+      return "No exact match yet — we'll search every institution for your username when you sign in.";
+    }
+    return "Institution name, phone, or ID — leave blank if your username is unique.";
   };
-
-  /* ---------- styles ---------- */
-  const fieldBox = (focused: boolean): CSSProperties => ({
-    display: "flex",
-    alignItems: "center",
-    gap: 8,
-    height: 52,
-    padding: "0 14px",
-    boxSizing: "border-box",
-    background: "#FFFFFF",
-    borderRadius: 12,
-    border: `1px solid ${focused ? C.primary : C.outline}`,
-    boxShadow: focused ? "0 0 0 3px rgba(26,115,232,0.14)" : "none",
-    transition: "border-color 0.15s ease, box-shadow 0.15s ease",
-  });
-
-  const inputStyle: CSSProperties = {
-    flex: 1,
-    minWidth: 0,
-    border: "none",
-    outline: "none",
-    background: "transparent",
-    fontSize: 15,
-    color: C.onSurface,
-    fontFamily: font,
-    padding: 0,
-  };
-
-  const labelStyle: CSSProperties = {
-    display: "block",
-    fontSize: 13,
-    fontWeight: 500,
-    color: C.onSurfaceVariant,
-    margin: "0 0 6px 2px",
-    textAlign: "left",
-  };
-
-  const bgSrc = settings?.loginBackground || "";
 
   return (
-    <div
-      style={{
-        position: "relative",
-        minHeight: "100vh",
-        boxSizing: "border-box",
-        fontFamily: font,
-        background: C.background,
-      }}
-    >
-      <style>{`
-        @keyframes loginIn { from { opacity: 0; transform: translateY(10px) scale(0.99); } to { opacity: 1; transform: none; } }
-        @keyframes loginSpin { to { transform: rotate(360deg); } }
-        @keyframes md3Slide { from { left: -40%; } to { left: 100%; } }
-        @keyframes md3Flow { from { background-position: 0% 50%; } to { background-position: 150% 50%; } }
-        input:-webkit-autofill { -webkit-box-shadow: 0 0 0 1000px #FFFFFF inset; -webkit-text-fill-color: #202124; }
-        /* App bar balance: logo + business name + phone on the LEFT, email +
-           address stack on the RIGHT (stack hides on very narrow screens) */
-        .appbar-contact { display: none; flex-direction: column; align-items: flex-end; gap: 2px; max-width: 42%; min-width: 0; }
-        @media (min-width: 481px) {
-          .appbar-contact { display: flex; }
-        }
-      `}</style>
+    <div className="lgs-root">
+      <style>{LGS_CSS}</style>
+      <div className="lgs-card">
+        <div style={S.brand}>
+          <div style={S.logo}>M</div>
+          <h1 style={S.title}>MedStat</h1>
+          <div style={S.subtitle}>Sign in to your institution</div>
+        </div>
 
-      {/* Full-bleed background image (cover is intentional for a backdrop —
-          this is a decorative layer, not the logo) */}
-      {bgSrc && (
-        <div
-          aria-hidden="true"
-          style={{
-            position: "absolute",
-            inset: 0,
-            backgroundImage: `url("${cssUrl(bgSrc)}")`,
-            backgroundSize: "cover",
-            backgroundPosition: "center",
-            backgroundRepeat: "no-repeat",
-          }}
-        />
-      )}
-      {/* Light wash so the card always stays readable over any background */}
-      <div
-        aria-hidden="true"
-        style={{
-          position: "absolute",
-          inset: 0,
-          background: bgSrc
-            ? "linear-gradient(180deg, rgba(248,249,250,0.40) 0%, rgba(227,238,252,0.58) 100%)"
-            : "linear-gradient(180deg, #F8F9FA 0%, #E3EEFC 100%)",
-        }}
-      />
+        {!online && (
+          <div style={S.offlineChip}>
+            You're offline. Previously signed-in accounts on this device can still sign in —
+            everything syncs once the connection returns.
+          </div>
+        )}
+        {error && <div style={S.errorCard}>{error}</div>}
 
-      {/* Content column: branding app bar pinned on top, sign-in card centered below */}
-      <div
-        style={{
-          position: "relative",
-          zIndex: 1,
-          minHeight: "100vh",
-          display: "flex",
-          flexDirection: "column",
-        }}
-      >
-        {/* Login app bar: logo + business name + contact stack. No avatar/menu. */}
-        <LoginAppBar
-          logo={settings?.logo || ""}
-          businessName={settings?.businessName || business.trim() || ""}
-          phone={settings?.phone || ""}
-          email={settings?.email || ""}
-          address={settings?.address || ""}
-        />
-
-        <main
-          style={{
-            flex: 1,
-            width: "100%",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: "24px 16px",
-            boxSizing: "border-box",
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            void submit();
           }}
         >
-          <section
-            style={{
-              width: "min(420px, 100%)",
-              background: C.surface,
-              borderRadius: 28,
-              boxShadow: "0 1px 2px 0 rgba(60,64,67,0.3), 0 2px 6px 2px rgba(60,64,67,0.15)",
-              padding: "32px 28px 28px",
-              boxSizing: "border-box",
-              textAlign: "center",
-              position: "relative",
-              overflow: "hidden",
-              animation: "loginIn 0.25s cubic-bezier(0.2, 0, 0, 1) both",
-            }}
-          >
-            {/* Colour-cycling progress bar — slides across the card's top edge while signing in */}
-            <TopLoader show={busy} flush />
-
-            <h1
-              style={{
-                margin: "0 0 4px",
-                fontSize: 24,
-                fontWeight: 500,
-                color: C.onSurface,
-                letterSpacing: "-0.01em",
-              }}
+          <div style={S.fieldWrap}>
+            <label style={S.label} htmlFor="lgs-business">
+              Business (name or phone)
+            </label>
+            <div className="lgs-field" style={S.field}>
+              <LgsIcon path={LGS_ICONS.domain} size={20} />
+              <input
+                id="lgs-business"
+                style={S.input}
+                value={business}
+                onChange={(event) => setBusiness(event.target.value)}
+                placeholder="e.g. Nairobi Medical Trainers"
+                autoComplete="organization"
+              />
+            </div>
+            <span
+              className="lgs-hint"
+              style={{ ...S.hint, ...(tenantHint === "found" ? S.hintFound : {}) }}
             >
-              Sign in
-            </h1>
-            <p
-              style={{
-                margin: "0 0 22px",
-                fontSize: 14,
-                color: C.onSurfaceVariant,
-                overflowWrap: "anywhere",
-              }}
-            >
-              {businessName ? `to continue to ${businessName}` : "Use your business account to continue"}
-            </p>
+              {hintText()}
+            </span>
+          </div>
 
-            {offlineResult && (
-              <div
-                role="status"
-                style={{
-                  background: "#FEF7E0",
-                  border: "1px solid #F0E3B3",
-                  borderRadius: 12,
-                  padding: "14px 16px",
-                  fontSize: 13,
-                  lineHeight: 1.5,
-                  textAlign: "left",
-                  color: "#6B5A14",
-                }}
-              >
-                <div style={{ fontWeight: 600, marginBottom: 4 }}>
-                  Signed in offline
-                </div>
-                Your data is saved on this device and will sync automatically
-                once the server is reachable. SMS sending stays disabled until
-                then.
-                <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
-                  <button
-                    type="button"
-                    onClick={tryOnlineNow}
-                    disabled={checkingOnline}
-                    style={{
-                      flex: 1,
-                      height: 42,
-                      border: "none",
-                      borderRadius: 999,
-                      background: C.primary,
-                      color: C.onPrimary,
-                      fontSize: 14,
-                      fontWeight: 500,
-                      fontFamily: font,
-                      cursor: checkingOnline ? "default" : "pointer",
-                    }}
-                  >
-                    {checkingOnline ? "Connecting…" : "Try online now"}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={continueOffline}
-                    style={{
-                      flex: 1,
-                      height: 42,
-                      border: `1px solid ${C.outline}`,
-                      borderRadius: 999,
-                      background: "#FFFFFF",
-                      color: C.onSurface,
-                      fontSize: 14,
-                      fontWeight: 500,
-                      fontFamily: font,
-                      cursor: "pointer",
-                    }}
-                  >
-                    Continue offline
-                  </button>
-                </div>
-                {error && (
-                  <div
-                    style={{
-                      marginTop: 10,
-                      fontSize: 12,
-                      lineHeight: 1.45,
-                      color: C.errorText,
-                    }}
-                  >
-                    {error}
-                  </div>
-                )}
-              </div>
-            )}
+          <div style={S.fieldWrap}>
+            <label style={S.label} htmlFor="lgs-username">
+              Username
+            </label>
+            <div className="lgs-field" style={S.field}>
+              <LgsIcon path={LGS_ICONS.person} size={20} />
+              <input
+                id="lgs-username"
+                style={S.input}
+                value={username}
+                onChange={(event) => setUsername(event.target.value)}
+                placeholder="Your username"
+                autoComplete="username"
+                autoCapitalize="none"
+              />
+            </div>
+          </div>
 
-            {offlineResult === null && (
-            <form onSubmit={handleSubmit} noValidate style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-              {/* Business identifier */}
-              <div>
-                <label htmlFor="login-business" style={labelStyle}>Business (name or phone)</label>
-                <div style={fieldBox(focusedField === "business")}>
-                  <input
-                    id="login-business"
-                    type="text"
-                    value={business}
-                    onChange={(e) => setBusiness(e.target.value)}
-                    onFocus={() => setFocusedField("business")}
-                    onBlur={() => { setFocusedField(""); if (business.trim()) void prefetchBranding(); }}
-                    placeholder="e.g. Medstat Initiative or 07…"
-                    autoComplete="organization"
-                    spellCheck={false}
-                    style={inputStyle}
-                  />
-                </div>
-              </div>
-
-              {/* Username */}
-              <div>
-                <label htmlFor="login-username" style={labelStyle}>Username</label>
-                <div style={fieldBox(focusedField === "username")}>
-                  <input
-                    id="login-username"
-                    type="text"
-                    value={username}
-                    onChange={(e) => setUsername(e.target.value)}
-                    onFocus={() => setFocusedField("username")}
-                    onBlur={() => setFocusedField("")}
-                    placeholder="Your username"
-                    autoComplete="username"
-                    autoCapitalize="none"
-                    spellCheck={false}
-                    style={inputStyle}
-                  />
-                </div>
-              </div>
-
-              {/* Password */}
-              <div>
-                <label htmlFor="login-password" style={labelStyle}>Password</label>
-                <div style={fieldBox(focusedField === "password")}>
-                  <input
-                    id="login-password"
-                    type={showPassword ? "text" : "password"}
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    onFocus={() => setFocusedField("password")}
-                    onBlur={() => setFocusedField("")}
-                    placeholder="Your password"
-                    autoComplete="current-password"
-                    style={inputStyle}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword((v) => !v)}
-                    aria-label={showPassword ? "Hide password" : "Show password"}
-                    style={{
-                      border: "none",
-                      background: "transparent",
-                      color: C.onSurfaceVariant,
-                      cursor: "pointer",
-                      display: "flex",
-                      alignItems: "center",
-                      padding: 4,
-                      flexShrink: 0,
-                    }}
-                  >
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
-                      <path d={showPassword ? P.eyeOff : P.eye} />
-                    </svg>
-                  </button>
-                </div>
-              </div>
-
-              {/* Remember this business */}
-              <label
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 10,
-                  cursor: "pointer",
-                  alignSelf: "flex-start",
-                  userSelect: "none",
-                }}
-              >
-                <input
-                  type="checkbox"
-                  checked={rememberBusiness}
-                  onChange={(e) => setRememberBusiness(e.target.checked)}
-                  style={{ display: "none" }}
-                />
-                <span
-                  aria-hidden="true"
-                  style={{
-                    width: 18,
-                    height: 18,
-                    borderRadius: 6,
-                    flexShrink: 0,
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    border: `2px solid ${rememberBusiness ? C.primary : C.outline}`,
-                    background: rememberBusiness ? C.primary : "#FFFFFF",
-                    transition: "all 0.15s ease",
-                    boxSizing: "border-box",
-                  }}
-                >
-                  {rememberBusiness && (
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="#FFFFFF">
-                      <path d={P.check} />
-                    </svg>
-                  )}
-                </span>
-                <span style={{ fontSize: 13, color: C.onSurfaceVariant }}>Remember this business</span>
-              </label>
-
-              {error && (
-                <div
-                  role="alert"
-                  style={{
-                    background: C.errorBg,
-                    border: `1px solid ${C.errorBorder}`,
-                    color: C.errorText,
-                    borderRadius: 12,
-                    padding: "10px 14px",
-                    fontSize: 13,
-                    lineHeight: 1.45,
-                    textAlign: "left",
-                  }}
-                >
-                  {error}
-                </div>
-              )}
-
+          <div style={S.fieldWrap}>
+            <label style={S.label} htmlFor="lgs-password">
+              Password
+            </label>
+            <div className="lgs-field" style={S.field}>
+              <LgsIcon path={LGS_ICONS.lock} size={20} />
+              <input
+                id="lgs-password"
+                style={S.input}
+                type={showPassword ? "text" : "password"}
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                placeholder="Your password"
+                autoComplete="current-password"
+              />
               <button
-                type="submit"
-                disabled={busy}
-                style={{
-                  width: "100%",
-                  height: 50,
-                  border: "none",
-                  borderRadius: 999,
-                  background: busy ? "rgba(32,33,36,0.12)" : C.primary,
-                  color: busy ? "rgba(32,33,36,0.38)" : C.onPrimary,
-                  fontSize: 15,
-                  fontWeight: 500,
-                  letterSpacing: "0.2px",
-                  fontFamily: font,
-                  cursor: busy ? "default" : "pointer",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: 10,
-                  marginTop: 4,
-                  boxShadow: busy ? "none" : "0 1px 2px rgba(60,64,67,0.3), 0 1px 3px 1px rgba(60,64,67,0.15)",
-                  transition: "background 0.15s ease, box-shadow 0.15s ease",
-                }}
+                type="button"
+                className="lgs-iconbtn"
+                onClick={() => setShowPassword((prev) => !prev)}
+                title={showPassword ? "Hide password" : "Show password"}
+                aria-label={showPassword ? "Hide password" : "Show password"}
               >
-                {busy && (
-                  <span
-                    aria-hidden="true"
-                    style={{
-                      width: 16,
-                      height: 16,
-                      borderRadius: "50%",
-                      border: "2px solid rgba(26,115,232,0.25)",
-                      borderTopColor: C.primary,
-                      animation: "loginSpin 0.8s linear infinite",
-                    }}
-                  />
-                )}
-                {busy ? "Signing in…" : "Sign in"}
+                <LgsIcon path={showPassword ? LGS_ICONS.visibilityOff : LGS_ICONS.visibility} size={20} />
               </button>
-            </form>
-            )}
-          </section>
-        </main>
+            </div>
+            <span style={S.hint}>Passwords are case-sensitive.</span>
+          </div>
+
+          <button className="lgs-btn" style={S.button} type="submit" disabled={busy}>
+            {busy ? "Signing in…" : "Sign in"}
+          </button>
+        </form>
+
+        <div style={S.footer}>
+          Works from any device, anywhere — sign-in goes straight to the cloud, and this device
+          keeps a secure copy so you can always get back in, even offline.
+        </div>
       </div>
     </div>
   );

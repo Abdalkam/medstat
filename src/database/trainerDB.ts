@@ -1,7 +1,22 @@
-// src/database/trainerDB.ts — v3: cloud-synced, tombstone-aware trainer CRUD
+// src/database/trainerDB.ts — v4: cloud-synced, tombstone-aware trainer CRUD
+//
+// Changes vs v3:
+//  • Cloud pushes and soft-deletes now go through supabaseUserSync — the
+//    schema-exact helper for public.users (explicit column whitelist,
+//    camelCase "assignedDepartments" column, snake_case remuneration jsonb,
+//    CHECK-safe role). The old pushUserToSupabase from supabaseCourseSync
+//    is no longer used here; its behavior is otherwise identical.
+//  • Successful pushes also stamp syncedAt (local-only metadata, never
+//    uploaded — the users table has no such column).
+//  Everything else (tombstone-first delete, guarded cascade, username
+//  uniqueness, idempotent put) is unchanged from v3.
+
 import { db } from "./db";
 import type { User } from "../types";
-import { deleteUserFromSupabase, pushUserToSupabase } from "./supabaseCourseSync";
+import {
+  deleteUserRowFromSupabase,
+  pushUserRowToSupabase,
+} from "./supabaseUserSync";
 import { markDeleted, unmarkDeleted, isDeleted } from "./deletedIdsTracker";
 import { noteUserPushed } from "./userDB";
 
@@ -83,8 +98,14 @@ export async function addTrainer(trainer: User): Promise<void> {
   const tenantId = tenantOf(trainer);
   if (tenantId) {
     try {
-      await pushUserToSupabase(trainer, tenantId);
-      await db.users.update(trainer.id, { synced: true });
+      // Schema-exact push: whitelists columns to the public.users DDL
+      // (incl. the camelCase "assignedDepartments" column and snake_case
+      // remuneration jsonb) and throws with the PostgREST message on error.
+      await pushUserRowToSupabase(trainer, tenantId);
+      await db.users.update(trainer.id, {
+        synced: true,
+        syncedAt: new Date().toISOString(),
+      } as any);
       noteUserPushed(trainer.id);
     } catch (e: any) {
       console.warn("Supabase trainer push failed (kept as pending, will retry):", e?.message || e);
@@ -124,8 +145,12 @@ export async function updateTrainer(trainer: User): Promise<void> {
   const tenantId = tenantOf(trainer);
   if (tenantId) {
     try {
-      await pushUserToSupabase(trainer, tenantId);
-      await db.users.update(trainer.id, { synced: true });
+      // Schema-exact push — same helper as addTrainer (see above).
+      await pushUserRowToSupabase(trainer, tenantId);
+      await db.users.update(trainer.id, {
+        synced: true,
+        syncedAt: new Date().toISOString(),
+      } as any);
       noteUserPushed(trainer.id);
     } catch (e: any) {
       console.warn("Supabase trainer push failed (kept as pending, will retry):", e?.message || e);
@@ -155,9 +180,10 @@ export async function deleteTrainer(id: string): Promise<void> {
 
   if (tenantId) {
     try {
-      // deleteUserFromSupabase must verify the row actually went away
-      // (see supabaseCourseSync) — a 0-rows RLS no-op must throw.
-      await deleteUserFromSupabase(id, tenantId);
+      // deleteUserRowFromSupabase verifies the row actually went away
+      // (0-rows RLS no-op throws — see supabaseUserSync) — an RLS-swallowed
+      // update can no longer masquerade as success.
+      await deleteUserRowFromSupabase(id, tenantId);
       await unmarkDeleted("user", id);
       console.log(`Trainer ${id} fully deleted (local + cloud)`);
     } catch (e) {

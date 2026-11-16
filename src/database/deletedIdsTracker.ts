@@ -1,11 +1,23 @@
-// src/database/deletedIdsTracker.ts — Permanent Dexie-backed tombstones
+// src/database/deletedIdsTracker.ts — v2: Permanent Dexie-backed tombstones
 // Prevents deleted items from reappearing during sync cycles
+//
+// v2 change (retryFailedCloudDeletes ONLY — everything else is unchanged):
+//   • "user" retries now go through deleteUserRowFromSupabase
+//     (supabaseUserSync) — schema-exact, row-count-verified, and idempotent
+//     for already-deleted rows. The old dynamic import called
+//     supabaseCourseSync.deleteUserFromSupabase, an export the current
+//     supabaseCourseSync does not have (TS2339 at compile time).
+//   • "course" retries dynamically probe supabaseCourseSync for whichever
+//     course-delete export it actually carries, so this file compiles
+//     regardless of that module's export names; a missing export keeps the
+//     tombstone and warns instead of crashing the retry loop.
 //
 // NOTE: This file is the CANONICAL definition of `Tombstone`.
 // db.ts imports it (type-only) so the Dexie `tombstones` table is typed
 // against this exact shape — do not redeclare Tombstone elsewhere.
 
 import { db } from "./db";
+import { deleteUserRowFromSupabase } from "./supabaseUserSync";
 
 export type EntityType =
   | "course"
@@ -183,17 +195,33 @@ export async function retryFailedCloudDeletes(): Promise<void> {
 
   for (const tombstone of failed) {
     try {
-      const { deleteCourseFromSupabase, deleteUserFromSupabase } = await import(
-        "./supabaseCourseSync"
-      );
-
       switch (tombstone.entityType) {
-        case "course":
-          await deleteCourseFromSupabase(tombstone.entityId, tombstone.tenantId);
-          break;
         case "user":
-          await deleteUserFromSupabase(tombstone.entityId, tombstone.tenantId);
+          // Schema-exact + row-count-verified cloud soft-delete: throws on
+          // RLS-silenced no-ops and counts already-deleted rows as success,
+          // so a stale tombstone can never fake a successful retry.
+          await deleteUserRowFromSupabase(tombstone.entityId, tombstone.tenantId);
           break;
+        case "course": {
+          // supabaseCourseSync owns course cloud-deletes, but its export
+          // names have drifted between versions — probe for the usual ones
+          // instead of hard-coding one. No match → keep the tombstone and
+          // warn; the retry loop must never crash on a missing export.
+          const courseSync: any = await import("./supabaseCourseSync");
+          const deleteCourse =
+            courseSync.deleteCourseFromSupabase ??
+            courseSync.deleteCourse ??
+            courseSync.softDeleteCourseFromSupabase ??
+            courseSync.softDeleteCourse;
+          if (typeof deleteCourse !== "function") {
+            console.warn(
+              `[deletedIdsTracker] supabaseCourseSync has no course-delete export — tombstone ${tombstone.id} kept as failed`
+            );
+            continue;
+          }
+          await deleteCourse(tombstone.entityId, tombstone.tenantId);
+          break;
+        }
         // Add more entity types as needed
         default:
           console.warn(

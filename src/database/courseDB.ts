@@ -1,15 +1,15 @@
-// src/database/courseDB.ts — v2: tombstone-first deletes, guarded cascades
+// src/database/courseDB.ts — v3: tombstone-first deletes, guarded cascades, typed callbacks
 //
-// Changes vs v1:
-//  1. deleteCourse(): the tombstone is written BEFORE any local delete.
-//     v1 deleted all local rows and only then called markDeleted() — the
-//     same ordering bug userDB v4 had — leaving a window where a pull or
-//     realtime event could re-insert the course mid-delete.
-//  2. Every child-table delete is guarded: an optional/missing table can no
-//     longer abort the flow and leave a half-deleted, un-deletable course.
-//  3. addCourse() lifts a course tombstone on re-creation, mirroring the
-//     user/trainer flows.
-//  4. getTenantId() guarded against corrupt localStorage.
+// Changes vs v2 (tsc fixes only — behavior and flow unchanged):
+//   1. pushCourseToSupabase / deleteCourseFromSupabase now exist in
+//      supabaseCourseSync — see supabaseCourseSync_additions.ts (append it to
+//      supabaseCourseSync.ts). Fixes TS2724 at line 16 (the compiler's
+//      "Did you mean pushUserRowToSupabase" hint proves those course functions
+//      never existed — the file only had user-row sync).
+//   2. The three .catch((e) => …) callbacks are now typed (e: unknown) —
+//      fixes TS7006 "Parameter 'e' implicitly has an 'any' type" at 47/52/60.
+//   3. deleteCourse() cascade skips Assignment rows without an id
+//      (Assignment.id is optional — fixes TS2345 at 75/76).
 
 import { db } from "./db";
 import type { Course } from "../types";
@@ -44,12 +44,12 @@ export async function addCourse(course: Course): Promise<string> {
   if (existing) {
     const merged = { ...existing, ...course, id: course.id };
     await db.courses.put(merged);
-    if (tenantId) await pushCourseToSupabase(merged, tenantId).catch((e) => console.warn("Supabase push failed:", e));
+    if (tenantId) await pushCourseToSupabase(merged, tenantId).catch((e: unknown) => console.warn("Supabase push failed:", e));
     return course.id;
   }
   if (!course.createdAt) course.createdAt = new Date().toISOString();
   await db.courses.add(course);
-  if (tenantId) await pushCourseToSupabase(course, tenantId).catch((e) => console.warn("Supabase push failed:", e));
+  if (tenantId) await pushCourseToSupabase(course, tenantId).catch((e: unknown) => console.warn("Supabase push failed:", e));
   return course.id;
 }
 
@@ -57,7 +57,7 @@ export async function updateCourse(course: Course): Promise<void> {
   if (!course.createdAt) course.createdAt = new Date().toISOString();
   await db.courses.put(course);
   const tenantId = getTenantId();
-  if (tenantId) await pushCourseToSupabase(course, tenantId).catch((e) => console.warn("Supabase push failed:", e));
+  if (tenantId) await pushCourseToSupabase(course, tenantId).catch((e: unknown) => console.warn("Supabase push failed:", e));
 }
 
 export async function deleteCourse(id: string): Promise<void> {
@@ -72,6 +72,7 @@ export async function deleteCourse(id: string): Promise<void> {
   try {
     const assignments = await db.assignments.where("courseId").equals(id).toArray();
     for (const a of assignments) {
+      if (!a.id) continue; // Assignment.id is optional — skip instead of feeding undefined to Dexie
       await db.assignmentFields.where("assignmentId").equals(a.id).delete();
       await db.assignmentSubmissions.where("assignmentId").equals(a.id).delete();
     }

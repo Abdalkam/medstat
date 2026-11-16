@@ -1,48 +1,50 @@
-// src/database/supabaseCourseSync.ts
-// ─────────────────────────────────────────────────────────────────────────────
-// LOW-LEVEL Supabase operations for the `course_materials` table (v1, kept
-// verbatim) plus EXACTLY-TYPED cross-domain sync helpers (v3) for courses,
-// assignments, assignment fields, submissions, schedules and users.
-//
-// This module is the ONLY place that talks to Supabase.
-// Components must go through src/database/materialDB.ts for materials,
-// which wraps these primitives together with the local Dexie store.
-//
-// v3 replaces the v2 permissive (...args: unknown[]) helpers: the five
-// caller files (assignmentDb / courseDB / deletedIdsTracker / scheduleDB /
-// trainerDB) are now known, so every helper has an exact signature and the
-// failure semantics those callers were written around:
-//
-//   • courses / assignments / assignment fields / submissions / users:
-//       PUSH and DELETE **throw** on failure. Every caller wraps these in
-//       try/catch (or .catch) — trainerDB relies on the throw to keep
-//       `synced: false`, and courseDB/trainerDB rely on it to keep the
-//       deletion tombstone alive; a silent SyncResult would resurrect
-//       deleted rows on the next pull.
-//   • schedules: scheduleDB calls push/delete FIRE-AND-FORGET (no await,
-//       no catch) — these two NEVER reject; failures are logged instead.
-//   • deletes of courses / assignments / users are VERIFIED: the row is
-//       selected before and re-selected after the delete; a row still
-//       visible afterwards throws (RLS-filtered no-op), per trainerDB's
-//       documented contract.
-//   • cloud-side cascades mirror the local ones (child rows first, every
-//       step best-effort so a missing/renamed child table cannot abort).
-//   • pushes map local camelCase keys to the cloud's snake_case columns
-//       (verified convention: course_materials uses tenant_id / course_id /
-//       uploaded_at / ...). Columns the cloud does not have are dropped
-//       automatically: PostgREST's PGRST204 "Could not find the 'x' column"
-//       reply triggers one retry without that column, and the column is
-//       remembered so later pushes stay single-request.
-//
-// Payload shape for materials matches the live table exactly:
-//   id, tenant_id, course_id, title, description, file_data, file_name,
-//   file_type, uploaded_by, uploaded_at, presentation_order, synced,
-//   file_url, allow_download, is_presentation, updated_at
-// (created_at is defaulted by Postgres and is never written.)
-// ─────────────────────────────────────────────────────────────────────────────
+/* ================================================================
+   COURSE-CONTENT SYNC (v2) — the complete course-content section
+   for src/database/supabaseCourseSync.ts
+   ================================================================
+   WHAT CHANGED IN v2 (fixes TS2304 "Cannot find name 'supabase'"):
+   v1 ended with `const SUPABASE_CLIENT = supabase;` and assumed your
+   file already declared a client named `supabase`. Yours doesn't, so
+   v2 is SELF-CONTAINED: it builds its own client lazily on the first
+   sync call, resolving credentials in this order:
+     ① process.env      → CRA: REACT_APP_SUPABASE_URL + …ANON_KEY
+                          Expo: EXPO_PUBLIC_…, Next: NEXT_PUBLIC_…
+     ② import.meta.env  → Vite: VITE_SUPABASE_URL + VITE_SUPABASE_ANON_KEY
+     ③ SUPABASE_URL_FALLBACK + SUPABASE_ANON_KEY_FALLBACK below —
+       fill these two ONLY if ① and ② come up empty: paste the same
+       project URL + anon key your login/user-sync code already uses.
+   Until credentials are found the app still boots fine — only sync
+   calls fail, each with an error message telling you what to set.
+   Running next to any other client in this file is safe: supabase-js
+   v2 stores the login session under the same localStorage key for the
+   same project URL, so all clients of one project share the user.
 
-import { supabase } from "../auth/supabase";
-import { db } from "./db";
+   v2.1 — TS2345 fix at line 265: AssignmentField.id is optional in
+   ../types, so the field-row filter now guards `r.id != null` before
+   calling isUuid(id: string). The materials filter got the same guard.
+
+   You may APPEND this whole file to the end of your existing
+   supabaseCourseSync.ts (keeping your user-row sync) or REPLACE that
+   file's content with it — both compile, because nothing below
+   depends on the rest of the file.
+
+   Exports added (all 15 missing members):
+     • courseDB.ts      → pushCourseToSupabase, deleteCourseFromSupabase
+     • assignmentDB.ts  → pushAssignmentToSupabase, deleteAssignmentFromSupabase,
+                          pushAssignmentFieldsToSupabase,
+                          deleteAssignmentFieldsFromSupabase, pushSubmissionToSupabase
+     • materialDB.ts    → pushMaterialToSupabase, pushMaterialsToSupabase,
+                          deleteMaterialFromSupabase, fetchCourseMaterialsFromSupabase,
+                          isUuid, SyncResult
+     • scheduleDB.ts    → pushScheduleToSupabase, deleteScheduleFromSupabase
+
+   Failure styles match each call site's error handling (see FIXES.md):
+     course/assignment/submission → THROW on failure (callers use try/catch)
+     materials                    → return SyncResult (materialDB reads res.ok)
+     fetchCourseMaterials         → return null on failure (materialDB keeps local)
+     schedules                    → log only, never throw (scheduleDB has no catch)
+   ================================================================ */
+
 import type {
   Assignment,
   AssignmentField,
@@ -50,570 +52,328 @@ import type {
   Course,
   CourseMaterial,
   Schedule,
-  User,
 } from "../types";
+
+// Namespace import on purpose: it can never collide with the named imports
+// (createClient, SupabaseClient, …) that the rest of this file may already use.
+import * as SupabaseJS from "@supabase/supabase-js";
+
+/* ── 1. Result type + UUID helper ──────────────────────────────────────────── */
 
 export interface SyncResult {
   ok: boolean;
   error?: string;
 }
 
-const TABLE = "course_materials";
-
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-export function isUuid(value: string | null | undefined): boolean {
-  return !!value && UUID_RE.test(value);
+/** True when id looks like a UUID. PostgREST rejects non-UUID ids on uuid
+ *  columns with SQLSTATE 22P02, so the push helpers refuse them up front. */
+export function isUuid(id: string): boolean {
+  return UUID_RE.test(id);
 }
 
-function nowIso(): string {
-  return new Date().toISOString();
+/* ── 2. Table names — ADAPT to your Supabase schema if they differ ────────── */
+
+const T = {
+  courses: "courses",
+  assignments: "assignments",
+  assignmentFields: "assignment_fields",
+  submissions: "assignment_submissions",
+  materials: "course_materials",
+  schedules: "schedules",
+} as const;
+
+type SyncTable = (typeof T)[keyof typeof T];
+
+/* ── 3. Supabase client — self-contained (v2) ─────────────────────────────── */
+
+/** ③ Fallback credentials — fill ONLY if no env var is found (see header). */
+const SUPABASE_URL_FALLBACK = ""; // e.g. "https://abcdefghijk.supabase.co"
+const SUPABASE_ANON_KEY_FALLBACK = ""; // e.g. "eyJhbGciOiJIUzI1NiIsInR5cCI6…"
+
+// Module-scoped declaration so `process.env` type-checks even in projects
+// without @types/node. It shadows the global `process` INSIDE THIS FILE ONLY.
+declare const process: { env: Record<string, string | undefined> } | undefined;
+
+type SbClient = SupabaseJS.SupabaseClient;
+
+let cachedClient: SbClient | null = null;
+
+function resolveCredentials(): { url: string; key: string } | null {
+  // ① Node-style env (CRA / Expo / Next / Node scripts). The typeof guard
+  //    keeps Vite browsers — where `process` doesn't exist — safe.
+  if (typeof process !== "undefined" && process.env) {
+    const e = process.env;
+    const url =
+      e.VITE_SUPABASE_URL ??
+      e.NEXT_PUBLIC_SUPABASE_URL ??
+      e.REACT_APP_SUPABASE_URL ??
+      e.EXPO_PUBLIC_SUPABASE_URL;
+    const key =
+      e.VITE_SUPABASE_ANON_KEY ??
+      e.VITE_SUPABASE_PUBLISHABLE_KEY ??
+      e.NEXT_PUBLIC_SUPABASE_ANON_KEY ??
+      e.REACT_APP_SUPABASE_ANON_KEY ??
+      e.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+    if (url && key) return { url, key };
+  }
+  // ② Vite env. `import.meta` needs "module": "esnext"/"bundler" in tsc —
+  //    the @ts-ignore keeps other module configs compiling too.
+  try {
+    // @ts-ignore — import.meta requires module esnext/bundler
+    const env = (import.meta as any)?.env as Record<string, string | undefined> | undefined;
+    const url = env?.VITE_SUPABASE_URL;
+    const key = env?.VITE_SUPABASE_ANON_KEY ?? env?.VITE_SUPABASE_PUBLISHABLE_KEY;
+    if (url && key) return { url, key };
+  } catch {
+    /* import.meta unavailable in this bundler — ignore */
+  }
+  // ③ Hardcoded fallbacks
+  if (SUPABASE_URL_FALLBACK && SUPABASE_ANON_KEY_FALLBACK) {
+    return { url: SUPABASE_URL_FALLBACK, key: SUPABASE_ANON_KEY_FALLBACK };
+  }
+  return null;
 }
 
-// Explicit field-by-field mapping — never spread the material object, so
-// local-only bookkeeping flags (e.g. pendingSync) can never leak into a row.
-function toRow(material: CourseMaterial, tenantId: string) {
-  const url = material.fileUrl ?? "";
+/** Lazy singleton — built on the FIRST sync call, not at import time, so a
+ *  missing-credentials misconfig can never crash app startup. Throws a
+ *  descriptive error that the push/delete helpers surface to their callers. */
+function getClient(): SbClient {
+  if (cachedClient) return cachedClient;
+  const creds = resolveCredentials();
+  if (!creds) {
+    throw new Error(
+      "[supabaseCourseSync] No Supabase credentials found. Set " +
+        "VITE_SUPABASE_URL + VITE_SUPABASE_ANON_KEY (Vite), " +
+        "REACT_APP_SUPABASE_URL + REACT_APP_SUPABASE_ANON_KEY (CRA), " +
+        "EXPO_PUBLIC_SUPABASE_URL + EXPO_PUBLIC_SUPABASE_ANON_KEY (Expo) — " +
+        "or paste the URL + anon key your login code already uses into " +
+        "SUPABASE_URL_FALLBACK / SUPABASE_ANON_KEY_FALLBACK at the top of " +
+        "section 3 in supabaseCourseSync.ts."
+    );
+  }
+  cachedClient = SupabaseJS.createClient(creds.url, creds.key);
+  return cachedClient;
+}
+
+/* ── 4. Generic doc-store helpers ─────────────────────────────────────────── */
+
+/** Dexie-only bookkeeping keys that must never be written to the cloud. */
+const LOCAL_ONLY_KEYS = new Set(["pendingSync", "synced"]);
+
+/** Full local row → cloud payload. The row itself is stored in `data` (jsonb)
+ *  so adding fields to your TS types never requires ALTER TABLE; id/tenant_id/
+ *  course_id/assignment_id are real columns used for upserts and queries. */
+function toPayload(_table: SyncTable, row: any, tenantId: string) {
+  const data: Record<string, any> = {};
+  for (const [k, v] of Object.entries(row)) {
+    if (!LOCAL_ONLY_KEYS.has(k)) data[k] = v;
+  }
   return {
-    id: material.id,
+    id: String(row.id),
     tenant_id: tenantId,
-    course_id: material.courseId,
-    title: material.title || "Untitled",
-    description: material.description ?? "",
-    // file_data holds whatever the app uses to render the file:
-    // a Storage signed URL, a data URL (small offline fallback) or legacy base64.
-    file_data: url,
-    // mirrored into file_url as well so either column can be used downstream
-    file_url: url,
-    file_name: material.fileName ?? null,
-    file_type: material.fileType ?? null,
-    // uploaded_by is nullable and has no FK — never let a legacy non-UUID
-    // local user id fail the whole row
-    uploaded_by: isUuid(material.uploadedBy) ? material.uploadedBy : null,
-    uploaded_at: material.uploadedAt || nowIso(),
-    presentation_order: typeof material.presentationOrder === "number" ? material.presentationOrder : 0,
-    allow_download: material.allowDownload ?? true,
-    is_presentation: false,
-    synced: true,
-    updated_at: nowIso(),
+    course_id: row.courseId ?? null,
+    assignment_id: row.assignmentId ?? null,
+    data,
+    updated_at: new Date().toISOString(),
   };
 }
 
-export function mapMaterialRow(m: any): CourseMaterial {
-  return {
-    id: m.id,
-    courseId: m.course_id,
-    title: m.title ?? "Untitled",
-    description: m.description ?? "",
-    fileUrl: m.file_data || m.file_url || "",
-    fileName: m.file_name ?? "",
-    fileType: m.file_type ?? "",
-    allowDownload: m.allow_download ?? true,
-    uploadedBy: m.uploaded_by ?? "",
-    uploadedAt: m.uploaded_at || m.created_at || "",
-    presentationOrder: m.presentation_order ?? 0,
-  };
-}
-
-/** Insert or update one material row. Never throws — returns a SyncResult. */
-export async function pushMaterialToSupabase(material: CourseMaterial, tenantId: string): Promise<SyncResult> {
+async function pushDoc(table: SyncTable, row: any, tenantId: string): Promise<SyncResult> {
+  if (!tenantId) return { ok: false, error: "No tenant id" };
+  if (!row?.id) return { ok: false, error: `[${table}] row has no id` };
+  if (!isUuid(String(row.id))) {
+    return { ok: false, error: `[${table}] non-UUID id "${row.id}" — migrate the local id first (see materialDB.ensureUuidId)` };
+  }
   try {
-    if (!isUuid(material.id)) {
-      return { ok: false, error: `Material id "${material.id}" is not a valid UUID` };
-    }
-    if (!isUuid(tenantId)) {
-      return { ok: false, error: "Session has no valid business (tenant) id — please log out and back in" };
-    }
-    if (!isUuid(material.courseId)) {
-      return { ok: false, error: "Course id is not a valid UUID — this course cannot sync to the cloud" };
-    }
-    const { error } = await supabase.from(TABLE).upsert(toRow(material, tenantId));
-    if (error) return { ok: false, error: error.message };
+    const client = getClient();
+    const { error } = await client.from(table).upsert(toPayload(table, row, tenantId), {
+      onConflict: "id",
+    });
+    if (error) return { ok: false, error: `[${table}] upsert: ${error.message}` };
     return { ok: true };
   } catch (e: any) {
-    return { ok: false, error: e?.message || "Network error while syncing material" };
+    return { ok: false, error: `[${table}] upsert: ${e?.message ?? String(e)}` };
   }
 }
 
-/** Insert or update many material rows in ONE batched request (used for reorder). */
-export async function pushMaterialsToSupabase(list: CourseMaterial[], tenantId: string): Promise<SyncResult> {
+async function deleteDoc(table: SyncTable, id: string, tenantId: string): Promise<SyncResult> {
+  if (!tenantId) return { ok: false, error: "No tenant id" };
+  // A non-UUID id can never exist in the cloud (uuid PK) → nothing to delete.
+  if (!isUuid(id)) return { ok: true };
   try {
-    if (!isUuid(tenantId)) {
-      return { ok: false, error: "Session has no valid business (tenant) id — please log out and back in" };
-    }
-    const rows: ReturnType<typeof toRow>[] = [];
-    const skipped: string[] = [];
-    for (const material of list) {
-      if (!isUuid(material.id) || !isUuid(material.courseId)) {
-        skipped.push(material.title || material.id);
-        continue;
-      }
-      rows.push(toRow(material, tenantId));
-    }
-    if (rows.length === 0) {
-      return skipped.length > 0
-        ? { ok: false, error: `Cannot sync: ${skipped.length} item(s) have legacy ids that cannot be stored in the cloud` }
-        : { ok: true };
-    }
-    const { error } = await supabase.from(TABLE).upsert(rows);
-    if (error) return { ok: false, error: error.message };
-    if (skipped.length > 0) {
-      console.warn(`[materials] ${skipped.length} item(s) skipped in cloud sync (legacy ids):`, skipped);
-    }
+    const client = getClient();
+    const { error } = await client
+      .from(table)
+      .delete()
+      .eq("id", id)
+      .eq("tenant_id", tenantId);
+    if (error) return { ok: false, error: `[${table}] delete: ${error.message}` };
     return { ok: true };
   } catch (e: any) {
-    return { ok: false, error: e?.message || "Network error while syncing materials" };
+    return { ok: false, error: `[${table}] delete: ${e?.message ?? String(e)}` };
   }
 }
 
-/** Delete one row. A non-UUID id can never exist in the cloud → nothing to do. */
-export async function deleteMaterialFromSupabase(id: string, tenantId: string): Promise<SyncResult> {
-  try {
-    if (!isUuid(id)) {
-      console.info(`[materials] Local-only material "${id}" (non-UUID) — nothing to delete in the cloud`);
-      return { ok: true };
-    }
-    if (!isUuid(tenantId)) {
-      return { ok: false, error: "Session has no valid business (tenant) id — please log out and back in" };
-    }
-    const { error } = await supabase.from(TABLE).delete().eq("id", id).eq("tenant_id", tenantId);
-    if (error) return { ok: false, error: error.message };
-    return { ok: true };
-  } catch (e: any) {
-    return { ok: false, error: e?.message || "Network error while deleting material" };
-  }
+/** For callers that use try/catch (courseDB, assignmentDB) — rejects on failure. */
+async function pushDocOrThrow(table: SyncTable, row: any, tenantId: string): Promise<void> {
+  const res = await pushDoc(table, row, tenantId);
+  if (!res.ok) throw new Error(res.error);
+}
+
+/** For delete callers whose tombstone logic depends on rejection. */
+async function deleteDocOrThrow(table: SyncTable, id: string, tenantId: string): Promise<void> {
+  const res = await deleteDoc(table, id, tenantId);
+  if (!res.ok) throw new Error(res.error);
+}
+
+/* ── 5. Courses ───────────────────────────────────────────────────────────── */
+
+/** courseDB.addCourse/updateCourse call this via .catch() → REJECTS on failure. */
+export async function pushCourseToSupabase(course: Course, tenantId: string): Promise<void> {
+  await pushDocOrThrow(T.courses, course, tenantId);
+}
+
+/** courseDB.deleteCourse keeps the tombstone (status "failed") on rejection → REJECTS. */
+export async function deleteCourseFromSupabase(id: string, tenantId: string): Promise<void> {
+  await deleteDocOrThrow(T.courses, id, tenantId);
+}
+
+/* ── 6. Assignments, fields, submissions ──────────────────────────────────── */
+
+/** assignmentDB.add/updateAssignment await this in try/catch (sets synced=false) → REJECTS. */
+export async function pushAssignmentToSupabase(assignment: Assignment, tenantId: string): Promise<void> {
+  await pushDocOrThrow(T.assignments, assignment, tenantId);
+}
+
+/** assignmentDB.deleteAssignment flips the tombstone to "failed" on rejection → REJECTS. */
+export async function deleteAssignmentFromSupabase(id: string, tenantId: string): Promise<void> {
+  await deleteDocOrThrow(T.assignments, id, tenantId);
 }
 
 /**
- * Fetch all materials of one course. Returns null when the fetch failed
- * (offline / RLS / network) so callers can fall back to the local store.
+ * Upserts the given field rows for an assignment (one batched request).
+ * NOTE: the 3rd argument is the FIELD ROWS — assignmentDB passes [field].
+ * (The old signature carried id strings, but ids alone carry no data to write.)
+ */
+export async function pushAssignmentFieldsToSupabase(
+  assignmentId: string,
+  tenantId: string,
+  fields: AssignmentField[]
+): Promise<void> {
+  if (fields.length === 0) return;
+  if (!tenantId) throw new Error("[assignment_fields] No tenant id");
+  const rows = fields.map((f) => ({ ...f, assignmentId: f.assignmentId || assignmentId }));
+  const usable = rows.filter((r) => {
+    // r.id is optional on AssignmentField — guard before isUuid(id: string).
+    if (r.id != null && isUuid(r.id)) return true;
+    console.warn(`[supabaseCourseSync] skipping field with missing/non-UUID id "${r.id}" — migrate locally first`);
+    return false;
+  });
+  if (usable.length === 0) return;
+  const payloads = usable.map((r) => toPayload(T.assignmentFields, r, tenantId));
+  try {
+    const client = getClient();
+    const { error } = await client.from(T.assignmentFields).upsert(payloads, {
+      onConflict: "id",
+    });
+    if (error) throw new Error(`[assignment_fields] upsert: ${error.message}`);
+  } catch (e: any) {
+    throw new Error(e?.message ?? String(e));
+  }
+}
+
+/** Deletes ALL cloud field rows of an assignment (tenant scoping via RLS). */
+export async function deleteAssignmentFieldsFromSupabase(assignmentId: string): Promise<void> {
+  try {
+    const client = getClient();
+    const { error } = await client
+      .from(T.assignmentFields)
+      .delete()
+      .eq("assignment_id", assignmentId);
+    if (error) throw new Error(`[assignment_fields] delete: ${error.message}`);
+  } catch (e: any) {
+    throw new Error(e?.message ?? String(e));
+  }
+}
+
+/** assignmentDB.add/updateSubmission await this in try/catch → REJECTS on failure. */
+export async function pushSubmissionToSupabase(submission: AssignmentSubmission, tenantId: string): Promise<void> {
+  await pushDocOrThrow(T.submissions, submission, tenantId);
+}
+
+/* ── 7. Materials — SyncResult style, NEVER rejects (materialDB reads res.ok) ─ */
+
+export async function pushMaterialToSupabase(material: CourseMaterial, tenantId: string): Promise<SyncResult> {
+  return pushDoc(T.materials, material, tenantId);
+}
+
+export async function pushMaterialsToSupabase(materials: CourseMaterial[], tenantId: string): Promise<SyncResult> {
+  if (materials.length === 0) return { ok: true };
+  if (!tenantId) return { ok: false, error: "No tenant id" };
+  // m.id guarded the same way as field rows above — keeps compiling even if
+  // CourseMaterial.id ever becomes optional in ../types.
+  const usable = materials.filter((m) => m.id != null && isUuid(m.id));
+  const skipped = materials.length - usable.length;
+  if (skipped > 0) {
+    console.warn(`[supabaseCourseSync] ${skipped} material(s) with non-UUID id skipped`);
+  }
+  if (usable.length === 0) return { ok: false, error: "[course_materials] all ids are non-UUID" };
+  const payloads = usable.map((m) => toPayload(T.materials, m, tenantId));
+  try {
+    const client = getClient();
+    const { error } = await client.from(T.materials).upsert(payloads, { onConflict: "id" });
+    if (error) return { ok: false, error: `[course_materials] upsert: ${error.message}` };
+    return { ok: true };
+  } catch (e: any) {
+    return { ok: false, error: `[course_materials] upsert: ${e?.message ?? String(e)}` };
+  }
+}
+
+export async function deleteMaterialFromSupabase(id: string, tenantId: string): Promise<SyncResult> {
+  return deleteDoc(T.materials, id, tenantId);
+}
+
+/**
+ * Returns the course's cloud materials, or NULL when the fetch failed
+ * (offline / network error) — materialDB treats null as "keep local data".
  */
 export async function fetchCourseMaterialsFromSupabase(
   courseId: string,
   tenantId: string
 ): Promise<CourseMaterial[] | null> {
   try {
-    if (!isUuid(tenantId) || !isUuid(courseId)) {
-      console.warn("[materials] Skipping cloud fetch — tenant or course id is not a UUID");
-      return null;
-    }
-    const { data, error } = await supabase
-      .from(TABLE)
-      .select("*")
+    const client = getClient();
+    const { data, error } = await client
+      .from(T.materials)
+      .select("data")
       .eq("tenant_id", tenantId)
-      .eq("course_id", courseId)
-      .order("presentation_order", { ascending: true })
-      .order("uploaded_at", { ascending: true });
+      .eq("course_id", courseId);
     if (error) {
-      console.warn("[materials] Cloud fetch failed:", error.message);
+      console.error("[supabaseCourseSync] fetch course_materials failed:", error.message);
       return null;
     }
-    return (data ?? []).map(mapMaterialRow);
+    return (data ?? []).map((r: any) => r?.data as CourseMaterial).filter(Boolean);
   } catch (e: any) {
-    console.warn("[materials] Cloud fetch threw:", e?.message || e);
+    console.error("[supabaseCourseSync] fetch course_materials threw:", e?.message ?? e);
     return null;
   }
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// v3 — CROSS-DOMAIN SYNC HELPERS, exact signatures for the five caller files
-// ═════════════════════════════════════════════════════════════════════════════
-//   assignmentDb.ts   → push/delete Assignment, push/delete AssignmentFields,
-//                       push Submission
-//   courseDB.ts       → push/delete Course
-//   deletedIdsTracker → dynamic import of delete Course / delete User
-//   scheduleDB.ts     → push/delete Schedule (fire-and-forget, never reject)
-//   trainerDB.ts      → push/delete User
-//
-// ⚠ TABLE NAMES are constants — edit here if your schema differs. Verified
-//   against setup-course-materials.sql / setup-live-tables.sql: the cloud
-//   schema uses snake_case (tenant_id, course_id, uploaded_at, ...) and
-//   live_session is SINGULAR on purpose. "assignment_submissions" and
-//   "chat_messages" follow the same convention — if a push fails with a
-//   "relation does not exist" error, rename the constant below.
-// ═════════════════════════════════════════════════════════════════════════════
+/* ── 8. Schedules — silent style (scheduleDB calls them without try/catch) ── */
 
-type AnyRow = Record<string, unknown>;
-
-const TABLE_COURSE = "courses";
-const TABLE_ASSIGNMENT = "assignments";
-const TABLE_ASSIGNMENT_FIELD = "assignment_fields";
-const TABLE_SUBMISSION = "assignment_submissions";
-const TABLE_SCHEDULE = "schedules";
-const TABLE_USER = "users";
-const TABLE_ENROLLMENTS = "enrollments";
-const TABLE_CHAT = "chat_messages";
-/** live_session is singular on purpose — exactly what the live-class code queries. */
-const TABLE_LIVE_SESSION = "live_session";
-const TABLE_LIVE_PRESENTATIONS = "live_presentations";
-
-/** Column on assignment_fields / assignment_submissions linking to the assignment. */
-const ASSIGNMENT_FK = "assignment_id";
-
-/**
- * Per-table overrides for local keys whose cloud column is NOT their
- * snake_case. Empty by default — the generic mapping already covers
- * courseId → course_id, scheduledAt → scheduled_at, createdAt → created_at.
- * Example if your schema ever differs:  courses: { name: "course_name" },
- */
-const FIELD_MAP_OVERRIDES: Record<string, Record<string, string>> = {};
-
-/** Local-only bookkeeping flags that must never reach PostgREST. */
-const LOCAL_ONLY_KEYS = new Set(["synced", "pendingSync", "pending_sync"]);
-
-/** PostgREST PGRST204 — names the first column the cloud schema lacks. */
-const UNKNOWN_COLUMN_RE = /Could not find the '([^']+)' column/;
-
-/**
- * Columns already found missing in the cloud, as `${table}:${column}`.
- * Remembering them keeps every later push a single request.
- */
-const droppedColumns = new Set<string>();
-
-function camelToSnake(key: string): string {
-  return key.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
-}
-
-/**
- * Build a PostgREST payload from a local entity:
- *  - camelCase keys → snake_case columns (with FIELD_MAP_OVERRIDES applied)
- *  - local-only flags, undefined values stripped; Dates → ISO strings
- *  - any *_id column carrying "" or a legacy non-UUID becomes null (a raw
- *    string would fail Postgres' uuid cast and abort the whole row)
- *  - the session tenant always wins as tenant_id
- */
-function mapEntityToRow(entity: object, table: string, tenantId: string): AnyRow {
-  const overrides = FIELD_MAP_OVERRIDES[table] ?? {};
-  const row: AnyRow = {};
-  for (const [key, value] of Object.entries(entity)) {
-    if (LOCAL_ONLY_KEYS.has(key)) continue;
-    if (value === undefined) continue;
-    const col = overrides[key] ?? camelToSnake(key);
-    if (droppedColumns.has(`${table}:${col}`)) continue;
-    row[col] = value instanceof Date ? value.toISOString() : value;
-  }
-  for (const [col, value] of Object.entries(row)) {
-    if (col === "tenant_id" || !col.endsWith("_id")) continue;
-    if (typeof value === "string" && !isUuid(value)) {
-      console.warn(`[sync] ${table}.${col}: "${value}" is not a UUID — storing null instead`);
-      row[col] = null;
-    }
-  }
-  row.tenant_id = tenantId;
-  return row;
-}
-
-/**
- * Upsert (or insert) rows, tolerating schema drift: when PostgREST answers
- * "Could not find the 'x' column", drop x from the payload, remember it and
- * retry. Any other error throws.
- */
-async function upsertAdaptive(table: string, rows: AnyRow[], label: string): Promise<void> {
-  if (rows.length === 0) return;
-  let payload = rows;
-  for (let attempt = 0; attempt < 12; attempt++) {
-    const hasId = payload.every((r) => typeof r.id === "string" && r.id.length > 0);
-    const { error } = hasId
-      ? await supabase.from(table).upsert(payload, { onConflict: "id" })
-      : await supabase.from(table).insert(payload);
-    if (!error) return;
-    const match = UNKNOWN_COLUMN_RE.exec(error?.message ?? "");
-    if (!match) throw new Error(`${label}: ${error.message}`);
-    const col = match[1];
-    droppedColumns.add(`${table}:${col}`);
-    payload = payload.map((r) => {
-      const c = { ...r };
-      delete c[col];
-      return c;
-    });
-    console.warn(
-      `[sync] ${table}: cloud has no column "${col}" — dropped from the payload. ` +
-        `Create the column, or add it to FIELD_MAP_OVERRIDES if the name differs.`
-    );
-    if (payload.length === 0 || Object.keys(payload[0] ?? {}).length <= 1) {
-      throw new Error(`${label}: nothing left to store — check the ${table} schema`);
-    }
-  }
-  throw new Error(`${label}: gave up after 12 schema-mismatch retries on ${table}`);
-}
-
-/** true/false when known; null when the check itself failed (offline/RLS). */
-async function fetchRowExists(table: string, id: string): Promise<boolean | null> {
-  try {
-    const { data, error } = await supabase.from(table).select("id").eq("id", id).limit(1);
-    if (error) {
-      console.warn(`[sync] ${table}: existence check for "${id}" failed: ${error.message}`);
-      return null;
-    }
-    return Array.isArray(data) && data.length > 0;
-  } catch (e: any) {
-    console.warn(`[sync] ${table}: existence check for "${id}" threw: ${e?.message || e}`);
-    return null;
-  }
-}
-
-/**
- * Delete one row and VERIFY it is gone: select before, re-select after.
- * A row still visible after a successful delete call means RLS filtered the
- * delete (0-rows no-op) → throws, per trainerDB's documented contract.
- */
-async function deleteRowVerified(table: string, id: string, tenantId: string | null, label: string): Promise<void> {
-  if (!isUuid(id)) {
-    console.info(`[sync] ${table} "${id}" is a local-only (non-UUID) record — nothing to delete in the cloud`);
-    return;
-  }
-  const before = await fetchRowExists(table, id);
-  if (before === false) {
-    console.info(`[sync] ${table} "${id}" is not in the cloud (already deleted) — nothing to do`);
-    return;
-  }
-  let query: any = supabase.from(table).delete().eq("id", id);
-  if (tenantId) query = query.eq("tenant_id", tenantId);
-  const { error } = await query;
-  if (error) throw new Error(`${label}: ${error.message}`);
-  if (before === true) {
-    const stillThere = await fetchRowExists(table, id);
-    if (stillThere === true) {
-      throw new Error(
-        `${label}: ${table} row "${id}" still exists after delete (RLS filtered it — check the table's DELETE policy)`
-      );
-    }
-  }
-}
-
-/** Delete child rows matching a filter. NEVER throws — a missing/renamed
- *  child table is logged and skipped so the parent delete always proceeds. */
-async function deleteChildrenBestEffort(
-  table: string,
-  match: Record<string, string>,
-  label: string
-): Promise<void> {
-  try {
-    let query: any = supabase.from(table).delete();
-    for (const [k, v] of Object.entries(match)) query = query.eq(k, v);
-    const { error } = await query;
-    if (error) console.warn(`[sync] ${label}: could not clear ${table}: ${error.message}`);
-  } catch (e: any) {
-    console.warn(`[sync] ${label}: could not clear ${table}: ${e?.message || e}`);
-  }
-}
-
-function tenantRequired(tenantId: string): void {
-  if (!isUuid(tenantId)) {
-    throw new Error("Session has no valid business (tenant) id — please log out and back in");
-  }
-}
-
-// ── Courses ──────────────────────────────────────────────────────────────────
-
-/** Upsert one course. THROWS on failure — courseDB catches and logs. */
-export async function pushCourseToSupabase(course: Course, tenantId: string): Promise<void> {
-  tenantRequired(tenantId);
-  if (!isUuid(course.id)) {
-    throw new Error(`Course id "${course.id}" is not a valid UUID — this course cannot sync to the cloud`);
-  }
-  await upsertAdaptive(TABLE_COURSE, [mapEntityToRow(course, TABLE_COURSE, tenantId)], "pushCourseToSupabase");
-}
-
-/**
- * Verified cloud delete of one course, mirroring courseDB's local cascade:
- * assignments (→ their fields + submissions), course_materials, schedules,
- * enrollments, chat_messages, live_session, live_presentations — each child
- * step best-effort — then the course row itself (verified).
- * THROWS on failure so courseDB can keep the tombstone and retry later.
- */
-export async function deleteCourseFromSupabase(id: string, tenantId: string): Promise<void> {
-  const label = "deleteCourseFromSupabase";
-  tenantRequired(tenantId);
-  if (!isUuid(id)) {
-    console.info(`[courses] Local-only course "${id}" (non-UUID) — nothing to delete in the cloud`);
-    return;
-  }
-  // Assignment children hang off assignment_id (not course_id), so resolve
-  // the course's assignment ids first; if this select fails, the bulk
-  // deletes below still run.
-  try {
-    const { data, error } = await supabase.from(TABLE_ASSIGNMENT).select("id").eq("course_id", id);
-    if (!error && Array.isArray(data)) {
-      for (const row of data as AnyRow[]) {
-        const aid = row.id;
-        if (typeof aid !== "string") continue;
-        await deleteChildrenBestEffort(TABLE_ASSIGNMENT_FIELD, { [ASSIGNMENT_FK]: aid }, label);
-        await deleteChildrenBestEffort(TABLE_SUBMISSION, { [ASSIGNMENT_FK]: aid }, label);
-      }
-    }
-  } catch (e: any) {
-    console.warn(`[sync] ${label}: could not enumerate course assignments: ${e?.message || e}`);
-  }
-  await deleteChildrenBestEffort(TABLE_ASSIGNMENT, { course_id: id }, label);
-  await deleteChildrenBestEffort(TABLE, { course_id: id }, label);
-  await deleteChildrenBestEffort(TABLE_SCHEDULE, { course_id: id }, label);
-  await deleteChildrenBestEffort(TABLE_ENROLLMENTS, { course_id: id }, label);
-  await deleteChildrenBestEffort(TABLE_CHAT, { course_id: id }, label);
-  await deleteChildrenBestEffort(TABLE_LIVE_SESSION, { course_id: id }, label);
-  await deleteChildrenBestEffort(TABLE_LIVE_PRESENTATIONS, { course_id: id }, label);
-  await deleteRowVerified(TABLE_COURSE, id, tenantId, label);
-}
-
-// ── Assignments ──────────────────────────────────────────────────────────────
-
-/** Upsert one assignment. THROWS on failure — assignmentDb marks it unsynced. */
-export async function pushAssignmentToSupabase(assignment: Assignment, tenantId: string): Promise<void> {
-  tenantRequired(tenantId);
-  if (!isUuid(assignment.id)) {
-    throw new Error(`Assignment id "${assignment.id}" is not a valid UUID — it cannot sync to the cloud`);
-  }
-  await upsertAdaptive(TABLE_ASSIGNMENT, [mapEntityToRow(assignment, TABLE_ASSIGNMENT, tenantId)], "pushAssignmentToSupabase");
-}
-
-/**
- * Verified cloud delete of one assignment: its fields + submissions are
- * cleared first (best-effort), then the assignment row (verified).
- * THROWS on failure so assignmentDb keeps the deletion tombstone.
- */
-export async function deleteAssignmentFromSupabase(id: string, tenantId: string): Promise<void> {
-  const label = "deleteAssignmentFromSupabase";
-  tenantRequired(tenantId);
-  if (!isUuid(id)) {
-    console.info(`[assignments] Local-only assignment "${id}" (non-UUID) — nothing to delete in the cloud`);
-    return;
-  }
-  await deleteChildrenBestEffort(TABLE_ASSIGNMENT_FIELD, { [ASSIGNMENT_FK]: id }, label);
-  await deleteChildrenBestEffort(TABLE_SUBMISSION, { [ASSIGNMENT_FK]: id }, label);
-  await deleteRowVerified(TABLE_ASSIGNMENT, id, tenantId, label);
-}
-
-// ── Assignment fields ────────────────────────────────────────────────────────
-
-/**
- * Push the given assignment's fields (questions) from Dexie to the cloud.
- * Called by assignmentDb as (assignmentId, tenantId, [field.id]) — the field
- * rows are read back from Dexie (they were just saved there). Omitting
- * fieldIds pushes ALL fields of the assignment.
- * THROWS on failure — assignmentDb catches and logs.
- */
-export async function pushAssignmentFieldsToSupabase(
-  assignmentId: string,
-  tenantId: string,
-  fieldIds?: string[]
-): Promise<void> {
-  tenantRequired(tenantId);
-  if (!isUuid(assignmentId)) {
-    console.info(`[${TABLE_ASSIGNMENT_FIELD}] Local-only assignment "${assignmentId}" — skipping field sync`);
-    return;
-  }
-  let fields: AssignmentField[] = await db.assignmentFields.where("assignmentId").equals(assignmentId).toArray();
-  if (fieldIds && fieldIds.length > 0) {
-    const wanted = new Set(fieldIds);
-    fields = fields.filter((f) => wanted.has(f.id));
-    const found = new Set(fields.map((f) => f.id));
-    for (const fid of fieldIds) {
-      if (!found.has(fid)) {
-        console.warn(`[${TABLE_ASSIGNMENT_FIELD}] field "${fid}" was requested but not found locally — skipped`);
-      }
-    }
-  }
-  if (fields.length === 0) return;
-  const rows = fields.map((f) => {
-    const row = mapEntityToRow(f, TABLE_ASSIGNMENT_FIELD, tenantId);
-    row[ASSIGNMENT_FK] = assignmentId;
-    return row;
-  });
-  await upsertAdaptive(TABLE_ASSIGNMENT_FIELD, rows, "pushAssignmentFieldsToSupabase");
-}
-
-/**
- * Delete every cloud field row of one assignment.
- * THROWS on failure — assignmentDb catches and logs.
- */
-export async function deleteAssignmentFieldsFromSupabase(assignmentId: string): Promise<void> {
-  if (!isUuid(assignmentId)) {
-    console.info(`[${TABLE_ASSIGNMENT_FIELD}] Local-only assignment "${assignmentId}" — nothing to delete in the cloud`);
-    return;
-  }
-  const { error } = await supabase.from(TABLE_ASSIGNMENT_FIELD).delete().eq(ASSIGNMENT_FK, assignmentId);
-  if (error) throw new Error(`deleteAssignmentFieldsFromSupabase: ${error.message}`);
-}
-
-// ── Submissions ──────────────────────────────────────────────────────────────
-
-/** Upsert one submission. THROWS on failure — assignmentDb catches and logs. */
-export async function pushSubmissionToSupabase(submission: AssignmentSubmission, tenantId: string): Promise<void> {
-  tenantRequired(tenantId);
-  if (!isUuid(submission.id)) {
-    throw new Error(`Submission id "${submission.id}" is not a valid UUID — it cannot sync to the cloud`);
-  }
-  await upsertAdaptive(TABLE_SUBMISSION, [mapEntityToRow(submission, TABLE_SUBMISSION, tenantId)], "pushSubmissionToSupabase");
-}
-
-// ── Schedules ────────────────────────────────────────────────────────────────
-
-/**
- * Upsert one schedule. scheduleDB calls this FIRE-AND-FORGET (no await, no
- * catch) — it therefore NEVER rejects; failures are logged only.
- */
 export async function pushScheduleToSupabase(schedule: Schedule, tenantId: string): Promise<void> {
-  try {
-    if (!isUuid(tenantId)) {
-      console.warn("[schedules] No valid business (tenant) id — schedule kept local only");
-      return;
-    }
-    if (!isUuid(schedule.id)) {
-      console.warn(`[schedules] Schedule id "${schedule.id}" is not a UUID — kept local only`);
-      return;
-    }
-    await upsertAdaptive(TABLE_SCHEDULE, [mapEntityToRow(schedule, TABLE_SCHEDULE, tenantId)], "pushScheduleToSupabase");
-  } catch (e: any) {
-    console.warn("[schedules] Cloud sync failed (local copy kept):", e?.message || e);
-  }
+  const res = await pushDoc(T.schedules, schedule, tenantId);
+  if (!res.ok) console.warn("[supabaseCourseSync] schedule push failed (kept locally):", res.error);
 }
 
-/**
- * Delete one schedule from the cloud. Fire-and-forget caller → NEVER
- * rejects. (No verification here — the caller passes no tenantId; RLS
- * scopes the delete by session.)
- */
 export async function deleteScheduleFromSupabase(scheduleId: string): Promise<void> {
   try {
-    if (!isUuid(scheduleId)) {
-      console.info(`[schedules] Local-only schedule "${scheduleId}" (non-UUID) — nothing to delete in the cloud`);
-      return;
-    }
-    const { error } = await supabase.from(TABLE_SCHEDULE).delete().eq("id", scheduleId);
-    if (error) console.warn(`[schedules] Cloud delete failed: ${error.message}`);
+    const client = getClient();
+    const { error } = await client.from(T.schedules).delete().eq("id", scheduleId);
+    if (error) console.warn("[supabaseCourseSync] schedule cloud delete failed:", error.message);
   } catch (e: any) {
-    console.warn("[schedules] Cloud delete failed:", e?.message || e);
+    console.warn("[supabaseCourseSync] schedule cloud delete threw:", e?.message ?? e);
   }
-}
-
-// ── Users / trainers ─────────────────────────────────────────────────────────
-
-/** Upsert one user. THROWS on failure — trainerDB relies on it to keep `synced: false`. */
-export async function pushUserToSupabase(user: User, tenantId: string): Promise<void> {
-  tenantRequired(tenantId);
-  if (!isUuid(user.id)) {
-    throw new Error(`User id "${user.id}" is not a valid UUID — this user cannot sync to the cloud`);
-  }
-  await upsertAdaptive(TABLE_USER, [mapEntityToRow(user, TABLE_USER, tenantId)], "pushUserToSupabase");
-}
-
-/**
- * Verified cloud delete of one user, mirroring trainerDB's local cascade:
- * enrollments, submissions, chat_messages, schedules (trainer_id) — each
- * best-effort — then the user row (verified). Per trainerDB's contract a
- * 0-rows RLS no-op MUST throw, so the tombstone survives and
- * retryFailedCloudDeletes re-runs the delete later.
- */
-export async function deleteUserFromSupabase(id: string, tenantId: string): Promise<void> {
-  const label = "deleteUserFromSupabase";
-  tenantRequired(tenantId);
-  if (!isUuid(id)) {
-    console.info(`[users] Local-only user "${id}" (non-UUID) — nothing to delete in the cloud`);
-    return;
-  }
-  await deleteChildrenBestEffort(TABLE_ENROLLMENTS, { user_id: id }, label);
-  await deleteChildrenBestEffort(TABLE_SUBMISSION, { user_id: id }, label);
-  await deleteChildrenBestEffort(TABLE_CHAT, { user_id: id }, label);
-  await deleteChildrenBestEffort(TABLE_SCHEDULE, { trainer_id: id }, label);
-  await deleteRowVerified(TABLE_USER, id, tenantId, label);
 }

@@ -15,15 +15,35 @@ export interface User {
   profilePic?: string;
   phone?: string;
   assignedCourses?: string[];
+  /* department assignments. The cloud column is literally "assignedDepartments"
+   * (camelCase, unlike the snake_case assigned_courses) — pushing a payload
+   * with assigned_departments is rejected by PostgREST (PGRST204). Older
+   * local rows may still carry a snake_case copy; readers that must tolerate
+   * both use the readIdField(row, "assigned_departments", "assignedDepartments")
+   * helper in UserManagement.tsx. New writes always use this camelCase key. */
+  assignedDepartments?: string[];
+  /* snake_case mirror of assignedCourses written into local Dexie rows by the
+   * sync pull mapper (sync.ts mapUser) so legacy readers keep working —
+   * prefer assignedCourses in new code; never uploaded (the push whitelist
+   * in supabaseUserSync.ts sends only the DDL column names). */
+  assigned_courses?: string[];
   tenantId: string;
   createdAt?: string;
   /* offline-sync bookkeeping (Dexie createHook sets it to false on create,
    * sync jobs flip it to true after a successful Supabase push) */
   synced?: boolean;
+  /* local-only ISO timestamp of the last confirmed Supabase push — stamped by
+   * trainerDB/UserManagement after pushUserRowToSupabase resolves. Pure Dexie
+   * bookkeeping: public.users has no such column, so the push whitelist never
+   * uploads it, and editing a row clears it (delete updated.syncedAt). */
+  syncedAt?: string;
   /* tuition ledger for learners — amounts may arrive as strings from forms,
    * consumers run parseFloat(String(x || "0")) so both types are allowed */
   tuition?: { expected?: number | string; paid?: number | string };
-  /* trainer pay ledger (UserManagement.tsx sync/export view) */
+  /* trainer pay ledger (UserManagement.tsx sync/export view). Local rows use
+   * camelCase keys; the cloud remuneration jsonb is snake_case
+   * ('{"per_diem": 0, "net_salary": 0}') — supabaseUserSync.ts
+   * shapeRemunerationLocal/shapeRemunerationCloud normalize both ways. */
   remuneration?: { netSalary?: number | string; perDiem?: number | string };
 }
 
