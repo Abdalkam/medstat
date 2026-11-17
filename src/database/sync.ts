@@ -1,31 +1,39 @@
-// src/database/sync.ts — v7: enrollment-aware pulls + COMPLETE user mapping
+// src/database/sync.ts — v8: enrollment-aware pulls + shape-aware course pull
 //
-// Changes vs v6 (course-assignment fix — all preserved):
+// Changes vs v7 (cross-device data completeness fix — all preserved):
 //  1. Pull Enrollments: pair-level tombstones + pending-removal log respected,
 //     no duplicate rows for the same (userId, courseId) pair, cloud roles only
 //     trusted when explicitly present, missing roles backfilled from the user.
 //  2. Pull Users/Courses skip rows with pending local edits (synced:false).
 //  3. pullAllTenantData also runs syncPendingEnrollments() every tick.
 //  4. syncUp flags successfully pushed users as synced:true (push-then-flag).
-//
-// Changes vs v6 in THIS version (cross-device data completeness fix):
 //  5. mapUser no longer drops tuition, remuneration or assignedDepartments —
-//     the v6 mapper stripped them, so a user created on device A showed
-//     "Pay: 0/0" and lost department assignments when an admin logged in on
-//     device B. The mapping now matches the public.users DDL exactly:
+//     the mapping matches the public.users DDL exactly:
 //     • tuition jsonb is camelCase on both sides ({expected, paid}) —
 //       the column default is '{"paid": 0, "expected": 0}';
 //     • remuneration jsonb is snake_case in the cloud
 //       ('{"per_diem": 0, "net_salary": 0}') and camelCase locally —
-//       normalized here via supabaseUserSync.shapeRemunerationLocal();
+//       normalized via supabaseUserSync.shapeRemunerationLocal();
 //     • departments are carried under their literal cloud column name
 //       "assignedDepartments" (camelCase — unlike assigned_courses);
 //     • assigned_courses/assignedCourses stay mirrored (existing readers).
+//
+// Changes vs v7 in THIS version (the course-pull fix):
+//  6. Pull Courses goes through supabaseCourseSync.fetchCoursesFromSupabase —
+//     SHAPE-AWARE. The live public.courses table is the doc-store shape
+//     ({id, tenant_id, course_id, assignment_id, data jsonb, updated_at}),
+//     so the old relational pull — select("*") + is:deleted_at:null — died
+//     with PGRST204 "Could not find the 'deleted_at' column" on every tick
+//     and courses never arrived from the cloud. fetchCoursesFromSupabase
+//     handles both shapes, filters soft-deleted rows (deleted_at column OR
+//     data.deleted_at jsonb) and returns local-shape courses, so the mapper
+//     that used to live here (mapCourse) is gone — one source of truth.
 
 import { db } from "./db";
 import { sbFetch } from "../auth/supabase";
 import { purgeDeletedFromDexie, retryFailedCloudDeletes } from "./deletedIdsTracker";
 import { shapeRemunerationLocal, shapeTuition } from "./supabaseUserSync";
+import { fetchCoursesFromSupabase } from "./supabaseCourseSync";
 
 let periodicPullInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -145,22 +153,19 @@ export async function pullAllTenantData(tenantId: string) {
       console.warn("Pull users from Supabase failed:", e instanceof Error ? e.message : e);
     }
 
-    // --- Pull Courses ---
+    // --- Pull Courses (shape-aware — see supabaseCourseSync v4) ---
     try {
-      const { data: courses } = await sbFetch("courses", {
-        select: "*",
-        tenant_id: `eq.${tenantId}`,
-        is: { column: "deleted_at", value: null },
-      });
-
+      const courses = await fetchCoursesFromSupabase(tenantId);
       if (courses) {
         for (const c of courses) {
-          if (deletedCourseIds.has(c.id)) continue;
-          if (c.deleted_at) continue;
-          // ✅ Same pending-edit guard as users
+          // ✅ Course.id is optional on the shared type — skip id-less rows.
+          if (!c.id || deletedCourseIds.has(c.id)) continue;
+          // ✅ Same pending-edit guard as users — locally edited rows win
+          //    until their own push completes.
           const local: any = await db.courses.get(c.id);
           if (local && local.synced === false) continue;
-          await db.courses.put(mapCourse(c));
+          // Rows arrive already mapped to the local shape with synced:true.
+          await db.courses.put(c);
         }
       }
     } catch (e) {
@@ -410,21 +415,9 @@ function mapUser(u: any) {
   };
 }
 
-function mapCourse(c: any) {
-  return {
-    id: c.id,
-    name: c.name || "",
-    description: c.description || "",
-    tuitionType: c.tuition_type || c.tuitionType || "free",
-    amount: c.amount || 0,
-    startDate: c.start_date || c.startDate || new Date().toISOString(),
-    period: c.period || "",
-    trainerId: c.trainer_id || c.trainerId || "",
-    tenantId: c.tenant_id || c.tenantId,
-    createdAt: c.created_at || c.createdAt || new Date().toISOString(),
-    synced: true,
-  };
-}
+// mapCourse was removed in v8 — course mapping now lives in
+// supabaseCourseSync.mapCloudCourseToLocal (one source of truth for BOTH
+// cloud table shapes). Pull Courses uses fetchCoursesFromSupabase above.
 
 function mapEnrollment(e: any) {
   return {

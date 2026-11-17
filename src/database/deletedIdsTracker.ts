@@ -1,8 +1,13 @@
-// src/database/deletedIdsTracker.ts — v2: Permanent Dexie-backed tombstones
+// src/database/deletedIdsTracker.ts — v2.1: Permanent Dexie-backed tombstones
 // Prevents deleted items from reappearing during sync cycles
 //
-// v2 change (retryFailedCloudDeletes ONLY — everything else is unchanged):
-//   • "user" retries now go through deleteUserRowFromSupabase
+// v2.1 = v2 verified as-is (no behavior change): this file stays the
+// CANONICAL definition of `Tombstone` — db.ts imports it (type-only) so the
+// Dexie `tombstones` table is typed against this exact shape. Delivered
+// alongside the v4/v5/v8 sync stack so every module builds against one copy.
+//
+// v2 recap (retryFailedCloudDeletes — everything else unchanged):
+//   • "user" retries go through deleteUserRowFromSupabase
 //     (supabaseUserSync) — schema-exact, row-count-verified, and idempotent
 //     for already-deleted rows. The old dynamic import called
 //     supabaseCourseSync.deleteUserFromSupabase, an export the current
@@ -11,10 +16,8 @@
 //     course-delete export it actually carries, so this file compiles
 //     regardless of that module's export names; a missing export keeps the
 //     tombstone and warns instead of crashing the retry loop.
-//
-// NOTE: This file is the CANONICAL definition of `Tombstone`.
-// db.ts imports it (type-only) so the Dexie `tombstones` table is typed
-// against this exact shape — do not redeclare Tombstone elsewhere.
+//     (v4 of supabaseCourseSync exports deleteCourseFromSupabase — the first
+//     probe hits, so course retries use the shape-aware soft delete.)
 
 import { db } from "./db";
 import { deleteUserRowFromSupabase } from "./supabaseUserSync";

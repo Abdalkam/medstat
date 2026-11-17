@@ -1,7 +1,17 @@
-// src/database/enrollmentDB.ts — v3: single source of truth for course assignment
+// src/database/enrollmentDB.ts — v4: single source of truth for course assignment
 //
-// v3 changes (audit fixes — the v2 diff engine below is untouched):
-//  • applyUserAssignmentsCore now writes BOTH mirror spellings
+// v4 changes (cleanup — the v2/v3 diff engine below is untouched):
+//  • applyCourseAssignments now skips admin users explicitly. Admins have no
+//    trainer/trainee roleOf() (roleOf maps anything-but-trainer to trainee),
+//    so a stray admin id in a roster used to be enrolled as a phantom
+//    "trainee". Admins are excluded in the UI; this makes the engine itself
+//    safe for bulk callers too.
+//  • Header/comments reconciled; no behavior change anywhere else. Writes
+//    stay Express-first (/api/enrollments/sync, /api/enrollments/remove,
+//    PUT /api/users/update) with direct-Supabase fallback on 404/offline.
+//
+// v3 changes (audit fixes — preserved):
+//  • applyUserAssignmentsCore writes BOTH mirror spellings
 //    (assignedCourses AND assigned_courses). Local rows cached from the
 //    cloud carry the snake_case copy, legacy readers (UserManagement's
 //    readIdField/formFromRow) prefer it, and updating only the camelCase
@@ -10,7 +20,7 @@
 //  • API_BASE_URL honors VITE_API_URL, exactly like userDB.ts, so
 //    deployments on a different backend host no longer need a code change.
 //
-// v2 changes (trainer-not-seeing-assigned-courses fix):
+// v2 changes (trainer-not-seeing-assigned-courses fix — preserved):
 //  • applyUserAssignmentsCore no longer skips every course on a fresh device
 //    (empty courses table) and heals duplicate rows kept with the wrong role.
 //  • user.assignedCourses mirror updates now flag the user synced:false so the
@@ -39,7 +49,7 @@
 //     composite), exactly like userDB/courseDB, so a 60s pull can never
 //     resurrect a removed enrollment; the cloud delete retries until confirmed.
 //
-// Cloud strategy: prefers your existing Express routes (/api/enrollments/sync,
+// Cloud strategy: prefers the existing Express routes (/api/enrollments/sync,
 // /api/users/update). For REMOVALS it first tries POST /api/enrollments/remove
 // and — if that route is not deployed (404) — falls back to a direct Supabase
 // soft-delete (deleted_at = now), consistent with the pull's is:deleted_at:null.
@@ -226,8 +236,8 @@ export async function getCourseRoster(
 
 /* ============================= CLOUD I/O ============================= */
 
-/** Push newly-created enrollment rows. Express first (your existing
- *  /api/enrollments/sync endpoint, now with id/role/tenant_id so rows are
+/** Push newly-created enrollment rows. Express first (the existing
+ *  /api/enrollments/sync endpoint, with id/role/tenant_id so rows are
  *  reconcilable), direct Supabase upsert as fallback. Throws on failure —
  *  callers keep the rows as synced:false and retry later. */
 async function pushEnrollmentRows(rows: any[], tenantId: string): Promise<void> {
@@ -622,7 +632,9 @@ export async function applyCourseAssignments(opts: {
 
   for (const uid of desired) {
     const u = userMap.get(uid);
-    if (!u || (await isDeleted("user", uid))) { skipped.push(uid); continue; }
+    // ✅ FIX v4: admins are never enrolled — roleOf() would map them to a
+    // phantom "trainee" row. (Bulk callers may not filter like the UI does.)
+    if (!u || u.role === "admin" || (await isDeleted("user", uid))) { skipped.push(uid); continue; }
     const cur = await getAssignedCourseIdsForUser(uid, tenantId);
     if (cur.includes(opts.courseId)) continue; // already a member — nothing to do
     const core = await applyUserAssignmentsCore(
@@ -696,7 +708,7 @@ export async function bulkAssignCourses(opts: {
 
   for (const uid of opts.userIds || []) {
     const u = userMap.get(uid);
-    if (!u || (await isDeleted("user", uid))) { skipped.push(uid); continue; }
+    if (!u || u.role === "admin" || (await isDeleted("user", uid))) { skipped.push(uid); continue; }
     const cur = await getAssignedCourseIdsForUser(uid, tenantId);
     const merged = [...cur];
     for (const cid of opts.courseIds || []) if (!merged.includes(cid)) merged.push(cid);
@@ -825,7 +837,7 @@ export async function reconcileAllEnrollments(tenantId?: string): Promise<void> 
 }
 
 /** Push the full user row (with the refreshed assigned_courses mirror) through
- *  your existing PUT /api/users/update — same payload shape as
+ *  the existing PUT /api/users/update — same payload shape as
  *  UserManagement.saveInlineUser, so the server contract is unchanged.
  *  Best-effort: returns false when offline; the local mirror is already saved. */
 export async function pushUserAssignmentsMirror(userId: string): Promise<boolean> {

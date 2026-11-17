@@ -1,67 +1,76 @@
 /* ================================================================
-   src/database/supabaseCourseSync.ts — v3: schema-exact courses +
+   src/database/supabaseCourseSync.ts — v4: shape-aware courses +
    doc-store course-content sync
    ================================================================
-   WHAT CHANGED IN v3 (P1 fix from the integration audit):
 
-   public.courses is a REAL relational table — AssignCourses pulls it with
-   .select("*") and maps name, tuition_type, amount, start_date, logo, and
-   filters .is("deleted_at", null). v2/v2.1 pushed courses through the
-   doc-store jsonb shape ({ id, tenant_id, course_id, assignment_id, data }),
-   which on a relational table fails with PGRST204 "Could not find the
-   column" — and because courseDB catches push failures, every course push
-   silently died and courses never reached the cloud.
+   WHAT CHANGED IN v4 (the course-CRUD fix):
 
-   • Courses are now SCHEMA-EXACT, mirroring how supabaseUserSync treats
-     public.users: an explicit column whitelist, camelCase fields mapped to
-     the snake_case DDL columns, UUID/tenant/username-style validation up
-     front. Adjust COURSE payload columns to your DDL if they differ —
-     PostgREST names the offending column in the error either way.
-   • deleteCourseFromSupabase is now a count-verified SOFT delete
-     (deleted_at = now). A hard delete could never propagate: every device
-     only ever UPSERTS on pull, so a vanished row left all other devices
-     holding the course forever. Soft-deleted rows flow through the
-     existing is:deleted_at:null pull filter instead, exactly like users.
-   • deleteScheduleFromSupabase / deleteAssignmentFieldsFromSupabase accept
-     an optional tenantId and scope the delete when given (backward
-     compatible — existing single-argument call sites keep compiling).
-   • No-row cloud deletes THROW (same verify-or-throw contract as
-     deleteUserRowFromSupabase); courseDB.deleteCourse guards the legitimate
-     never-synced case by checking the local synced flag first.
+   The REAL public.courses DDL is the DOC-STORE shape:
 
-   UNCHANGED from v2/v2.1 — the doc-store pattern still drives
-   assignments / assignment_fields / assignment_submissions /
-   course_materials / schedules (jsonb `data` column + real id/tenant_id/
-   course_id/assignment_id columns), the self-contained lazy Supabase
-   client, and the per-table failure styles:
+     create table public.courses (
+       id uuid primary key,
+       tenant_id text not null,
+       course_id text null,
+       assignment_id text null,
+       data jsonb not null default '{}'::jsonb,
+       updated_at timestamptz not null default now()
+     );
+     create index courses_tenant_idx on public.courses (tenant_id, course_id);
+
+   ... i.e. it has NO relational course columns (name, tuition_type,
+   amount, start_date, logo) and NO deleted_at column. v3 pushed a
+   relational payload at that table, so every course push failed with
+   PGRST204 "Could not find the 'name' column" — courseDB caught the
+   failure and the row silently stayed unsynced forever — and the soft
+   delete updated a column that does not exist. Cloud course CRUD simply
+   never worked. v4 makes course sync SHAPE-AWARE:
+
+   • One cheap probe (select * limit 1) decides the live shape:
+       - "docstore"   → rows carry a `data` jsonb column (the pasted DDL)
+       - "relational" → rows carry real course columns (name, …)
+     The result is cached in-module AND in localStorage
+     ("medstat.coursesTableShape") so the probe runs once per device.
+     An empty/unprovable table defaults to "docstore" (the pasted DDL).
+
+   • Push: doc-store rows are written as
+       { id, tenant_id, course_id: <course id>, assignment_id: null,
+         data: <full local course>, updated_at: now }
+     relational rows keep the v3 column-exact payload. A PGRST204 column
+     mismatch flips the cached shape once and retries, then re-caches.
+
+   • Soft delete (both shapes, count-verified, idempotent):
+       - docstore:    deleted_at merged INTO the existing data jsonb
+                      (PostgREST replaces the whole jsonb on update, so
+                      the row is read first, merged, then written)
+       - relational:  deleted_at = now (v3 behavior)
+     Other devices hide the row through their pull filters — zero DDL
+     change needed.
+
+   • fetchCoursesFromSupabase(tenantId): shape-aware pull that returns
+     LOCAL-SHAPE courses (camelCase, synced:true) or null on failure.
+     sync.ts and the admin screens consume this, so no caller needs to
+     know which shape the cloud table happens to be.
+
+   UNCHANGED from v3 — the doc-store pattern still drives assignments /
+   assignment_fields / assignment_submissions / course_materials /
+   schedules, the self-contained lazy Supabase client, the per-table
+   failure styles:
      course/assignment/submission → THROW on failure (callers use try/catch)
      materials                    → return SyncResult (materialDB reads res.ok)
      fetchCourseMaterials         → return null on failure (materialDB keeps local)
      schedules                    → log only, never throw (scheduleDB has no catch)
+   and the credential resolution order (env ①, import.meta ②, fallbacks ③).
 
-   Exports (all 15 members courseDB/assignmentDB/materialDB/scheduleDB use):
-     • courseDB.ts      → pushCourseToSupabase, deleteCourseFromSupabase
-     • assignmentDB.ts  → pushAssignmentToSupabase, deleteAssignmentFromSupabase,
+   Exports (callers):
+     courseDB.ts       → pushCourseToSupabase, deleteCourseFromSupabase
+     sync.ts           → fetchCoursesFromSupabase            (NEW in v4)
+     assignmentDB.ts   → pushAssignmentToSupabase, deleteAssignmentFromSupabase,
                           pushAssignmentFieldsToSupabase,
                           deleteAssignmentFieldsFromSupabase, pushSubmissionToSupabase
-     • materialDB.ts    → pushMaterialToSupabase, pushMaterialsToSupabase,
+     materialDB.ts     → pushMaterialToSupabase, pushMaterialsToSupabase,
                           deleteMaterialFromSupabase, fetchCourseMaterialsFromSupabase,
                           isUuid, SyncResult
-     • scheduleDB.ts    → pushScheduleToSupabase, deleteScheduleFromSupabase
-
-   CREDENTIALS (unchanged from v2): the client builds lazily on the first
-   sync call, resolving in this order:
-     ① process.env      → CRA: REACT_APP_SUPABASE_URL + …ANON_KEY
-                          Expo: EXPO_PUBLIC_…, Next: NEXT_PUBLIC_…
-     ② import.meta.env  → Vite: VITE_SUPABASE_URL + VITE_SUPABASE_ANON_KEY
-     ③ SUPABASE_URL_FALLBACK + SUPABASE_ANON_KEY_FALLBACK below —
-       fill these two ONLY if ① and ② come up empty: paste the same
-       project URL + anon key your login/user-sync code already uses.
-   Until credentials are found the app still boots fine — only sync
-   calls fail, each with an error message telling you what to set.
-   Running next to any other client in this file is safe: supabase-js
-   v2 stores the login session under the same localStorage key for the
-   same project URL, so all clients of one project share the user.
+     scheduleDB.ts     → pushScheduleToSupabase, deleteScheduleFromSupabase
    ================================================================ */
 
 import type {
@@ -180,7 +189,7 @@ function getClient(): SbClient {
         materials, schedules — NOT courses, see section 5) ─────────────────── */
 
 /** Dexie-only bookkeeping keys that must never be written to the cloud. */
-const LOCAL_ONLY_KEYS = new Set(["pendingSync", "synced"]);
+const LOCAL_ONLY_KEYS = new Set(["pendingSync", "synced", "syncedAt", "synced_at"]);
 
 /** Full local row → cloud payload. The row itself is stored in `data` (jsonb)
  *  so adding fields to your TS types never requires ALTER TABLE; id/tenant_id/
@@ -248,16 +257,128 @@ async function deleteDocOrThrow(table: SyncTable, id: string, tenantId: string):
   if (!res.ok) throw new Error(res.error);
 }
 
-/* ── 5. Courses — SCHEMA-EXACT (v3) ─────────────────────────────────────────
- * public.courses is relational: AssignCourses maps name, tuition_type,
- * amount, start_date, logo, tenant_id and filters deleted_at on pull.
- * The column list below mirrors that shape. ADAPT to your DDL: if your
- * table lacks an optional column (description / created_by / created_at),
- * delete that payload line — PGRST204 names any column you get wrong.     */
+/* ── 5. Courses — SHAPE-AWARE (v4) ──────────────────────────────────────────
+ * The live table is either the doc-store DDL (data jsonb) or a relational
+ * courses table (name, tuition_type, …). Everything below detects, caches
+ * and self-heals the shape, so course push / delete / pull work on BOTH
+ * without any code change or migration.
+ * ------------------------------------------------------------------------- */
+
+export type CoursesTableShape = "docstore" | "relational";
+
+const SHAPE_PREF_KEY = "medstat.coursesTableShape";
+let coursesShape: CoursesTableShape | null = null;
+
+function readShapePref(): CoursesTableShape | null {
+  try {
+    const v = localStorage.getItem(SHAPE_PREF_KEY);
+    return v === "docstore" || v === "relational" ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeShapePref(shape: CoursesTableShape): void {
+  try {
+    localStorage.setItem(SHAPE_PREF_KEY, shape);
+  } catch {
+    /* storage unavailable — the in-memory cache still applies */
+  }
+}
+
+/** PostgREST names a missing column: PGRST204 / "Could not find the 'x'
+ *  column of 'courses' …". Either signature means we aimed at the wrong shape. */
+function isColumnMismatch(error: any): boolean {
+  if (!error) return false;
+  return (
+    error.code === "PGRST204" || /could not find the/i.test(String(error.message ?? ""))
+  );
+}
+
+function flipShape(shape: CoursesTableShape): CoursesTableShape {
+  return shape === "docstore" ? "relational" : "docstore";
+}
+
+/** Detects the live public.courses shape once per device:
+ *  1. in-module cache, 2. localStorage preference from a previous probe,
+ *  3. one `select * limit 1` — a row containing a `data` object key (and no
+ *     `name` column) is doc-store; anything else is relational,
+ *  4. empty/unprovable table → "docstore" (the pasted DDL). */
+async function detectCoursesShape(): Promise<CoursesTableShape> {
+  if (coursesShape) return coursesShape;
+  const pref = readShapePref();
+  if (pref) {
+    coursesShape = pref;
+    return pref;
+  }
+  try {
+    const client = getClient();
+    const { data, error } = await client.from(T.courses).select("*").limit(1);
+    if (!error && Array.isArray(data) && data.length > 0) {
+      const row: any = data[0];
+      coursesShape =
+        row && typeof row === "object" && "data" in row && !("name" in row)
+          ? "docstore"
+          : "relational";
+      writeShapePref(coursesShape);
+      return coursesShape;
+    }
+  } catch {
+    /* offline / no client yet — caller decides the fallback shape */
+  }
+  coursesShape = "docstore";
+  return coursesShape;
+}
+
+/* ── 5a. Payload builders ─────────────────────────────────────────────────── */
+
+/** Full local course → the jsonb stored inside a doc-store row. */
+function courseDataPayload(course: any): Record<string, any> {
+  const data: Record<string, any> = {};
+  for (const [k, v] of Object.entries(course)) {
+    if (!LOCAL_ONLY_KEYS.has(k)) data[k] = v;
+  }
+  return data;
+}
+
+function courseDocStorePayload(course: any, tenantId: string) {
+  const id = String(course.id);
+  return {
+    id,
+    tenant_id: String(course.tenantId || course.tenant_id || tenantId),
+    // Self-key so the (tenant_id, course_id) index stays meaningful.
+    course_id: id,
+    assignment_id: null,
+    data: courseDataPayload(course),
+    updated_at: new Date().toISOString(),
+  };
+}
+
+function courseRelationalPayload(course: any, tenantId: string) {
+  const payload: Record<string, unknown> = {
+    id: String(course.id),
+    tenant_id: String(course.tenantId || course.tenant_id || tenantId),
+    name: String(course.name || course.title || "").trim(),
+    tuition_type: course.tuitionType === "paid" ? "paid" : "free",
+    amount: Number(course.amount) || 0,
+    start_date: course.startDate ? String(course.startDate) : null,
+    logo: course.logo ? String(course.logo) : null,
+  };
+  // Optional columns — remove any line your relational table does not have.
+  const description = String(course.description ?? "").trim();
+  if (description) payload.description = description;
+  if (course.createdBy) payload.created_by = String(course.createdBy);
+  if (course.createdAt || course.created_at) {
+    payload.created_at = String(course.createdAt || course.created_at);
+  }
+  return payload;
+}
+
+/* ── 5b. Push (upsert) ────────────────────────────────────────────────────── */
 
 /** courseDB.addCourse/updateCourse call this via try/catch → REJECTS on
- *  failure. Local-only bookkeeping keys (synced, syncedAt, pendingSync) are
- *  never sent. */
+ *  failure. Doc-store first (the pasted DDL); a PGRST204 mismatch flips the
+ *  shape once and retries, then the working shape is re-cached. */
 export async function pushCourseToSupabase(course: Course, tenantId: string): Promise<void> {
   if (!tenantId) throw new Error("[courses] No tenant id");
   const c: any = course;
@@ -269,76 +390,185 @@ export async function pushCourseToSupabase(course: Course, tenantId: string): Pr
   const name = String(c?.name || c?.title || "").trim();
   if (!name) throw new Error("[courses] row has no name/title");
 
-  const payload: Record<string, unknown> = {
-    id,
-    tenant_id: String(c?.tenantId || c?.tenant_id || tenantId),
-    name,
-    tuition_type: c?.tuitionType === "paid" ? "paid" : "free",
-    amount: Number(c?.amount) || 0,
-    start_date: c?.startDate ? String(c.startDate) : null,
-    logo: c?.logo ? String(c.logo) : null,
-  };
+  const client = getClient(); // throws the descriptive credentials error when unset
+  let shape = await detectCoursesShape();
 
-  // Optional columns — remove any line your courses table does not have.
-  const description = String(c?.description ?? "").trim();
-  if (description) payload.description = description;
-  if (c?.createdBy) payload.created_by = String(c.createdBy);
-  if (c?.createdAt || c?.created_at) {
-    payload.created_at = String(c.createdAt || c.created_at);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const payload =
+      shape === "docstore"
+        ? courseDocStorePayload(c, tenantId)
+        : courseRelationalPayload(c, tenantId);
+    const { error } = await client.from(T.courses).upsert([payload], { onConflict: "id" });
+    if (!error) {
+      coursesShape = shape;
+      writeShapePref(shape);
+      return;
+    }
+    if (attempt === 0 && isColumnMismatch(error)) {
+      console.warn(
+        `[courses] live table rejected the ${shape} payload (${error.message}) — retrying as ${flipShape(shape)}`
+      );
+      shape = flipShape(shape);
+      continue;
+    }
+    throw new Error(`[courses] upsert: ${error.message}`);
   }
-
-  try {
-    const client = getClient();
-    const { error } = await client
-      .from(T.courses)
-      .upsert([payload], { onConflict: "id" });
-    if (error) throw new Error(`[courses] upsert: ${error.message}`);
-  } catch (e: any) {
-    throw new Error(e?.message ?? String(e));
-  }
+  throw new Error("[courses] upsert failed against both table shapes");
 }
 
+/* ── 5c. Soft delete (count-verified, idempotent) ─────────────────────────── */
+
 /** courseDB.deleteCourse keeps the tombstone (status "failed") on rejection
- *  → REJECTS. v3: count-verified SOFT delete (deleted_at = now) so other
- *  devices learn about the deletion through their existing
- *  is:deleted_at:null pull filter — a hard delete could never propagate
- *  because pulls only ever upsert. Same verify-or-throw contract as
- *  deleteUserRowFromSupabase; courseDB checks the local synced flag first,
- *  so a course that never reached the cloud never gets here. */
+ *  → REJECTS. v4: works on both shapes —
+ *    docstore:    deleted_at is merged into the existing data jsonb
+ *                 (read row → merge → write; PostgREST would otherwise
+ *                 REPLACE the whole jsonb and wipe the course fields)
+ *    relational:  deleted_at = now (v3 behavior)
+ *  Same verify-or-throw contract as deleteUserRowFromSupabase; courseDB
+ *  checks the local synced flag first, so a course that never reached the
+ *  cloud never gets here. */
 export async function deleteCourseFromSupabase(id: string, tenantId: string): Promise<void> {
   // A non-UUID id can never exist in the cloud (uuid PK) → nothing to delete.
   if (!isUuid(id)) return;
+  const client = getClient();
   const now = new Date().toISOString();
-  try {
-    const client = getClient();
-    const { error, count } = await client
-      .from(T.courses)
-      .update({ deleted_at: now }, { count: "exact" })
-      .eq("id", id)
-      .eq("tenant_id", tenantId);
+  let shape = await detectCoursesShape();
 
-    if (error) throw new Error(error.message);
-    if ((count ?? 0) > 0) return;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (shape === "relational") {
+      const { error, count } = await client
+        .from(T.courses)
+        .update({ deleted_at: now }, { count: "exact" })
+        .eq("id", id)
+        .eq("tenant_id", tenantId);
 
-    // 0 rows updated — was it already deleted, or did RLS swallow the update?
-    const { data: existing, error: selectError } = await client
-      .from(T.courses)
-      .select("deleted_at")
-      .eq("id", id)
-      .maybeSingle();
-    if (selectError) throw new Error(selectError.message);
-    if (!existing) {
+      if (error) {
+        if (attempt === 0 && isColumnMismatch(error)) {
+          shape = flipShape(shape);
+          continue;
+        }
+        throw new Error(error.message);
+      }
+      if ((count ?? 0) > 0) return; // soft-deleted
+
+      // 0 rows updated — was it already deleted, or did RLS swallow it?
+      const { data: existing, error: selectError } = await client
+        .from(T.courses)
+        .select("deleted_at")
+        .eq("id", id)
+        .maybeSingle();
+      if (selectError) throw new Error(selectError.message);
+      if (!existing) {
+        throw new Error(
+          "Cloud course delete matched no row (never synced, or hidden by RLS)."
+        );
+      }
+      if (existing?.deleted_at) return; // already soft-deleted — success
       throw new Error(
-        "Cloud course delete matched no row (never synced, or hidden by RLS).",
+        "Cloud course delete was silently skipped — check the RLS policies on public.courses."
       );
     }
-    if (existing?.deleted_at) return; // already soft-deleted — success
 
+    // docstore — read the row first so the rest of the jsonb survives.
+    const { data: rows, error: selErr } = await client
+      .from(T.courses)
+      .select("id, tenant_id, data")
+      .eq("id", id)
+      .eq("tenant_id", tenantId)
+      .limit(1);
+    if (selErr) {
+      if (attempt === 0 && isColumnMismatch(selErr)) {
+        shape = flipShape(shape);
+        continue;
+      }
+      throw new Error(selErr.message);
+    }
+    const row: any = rows && rows.length > 0 ? rows[0] : null;
+    if (!row) {
+      throw new Error(
+        "Cloud course delete matched no row (never synced, or hidden by RLS)."
+      );
+    }
+    const data: any = { ...(row.data ?? {}) };
+    if (data.deleted_at) return; // already soft-deleted — idempotent success
+    data.deleted_at = now;
+    const { error: updErr, count } = await client
+      .from(T.courses)
+      .update({ data, updated_at: now }, { count: "exact" })
+      .eq("id", id)
+      .eq("tenant_id", tenantId);
+    if (updErr) throw new Error(updErr.message);
+    if ((count ?? 0) > 0) return; // soft-deleted
+
+    // 0 rows updated — re-read: another device may have deleted it meanwhile.
+    const { data: after, error: afterErr } = await client
+      .from(T.courses)
+      .select("data")
+      .eq("id", id)
+      .maybeSingle();
+    if (afterErr) throw new Error(afterErr.message);
+    if (after?.data?.deleted_at) return; // already soft-deleted — success
     throw new Error(
-      "Cloud course delete was silently skipped — check the RLS policies on public.courses.",
+      "Cloud course delete was silently skipped — check the RLS policies on public.courses."
     );
+  }
+  throw new Error("[courses] delete failed against both table shapes");
+}
+
+/* ── 5d. Shape-aware pull (NEW in v4) ─────────────────────────────────────── */
+
+/** Cloud row (either shape) → local Course. Tolerates camelCase and
+ *  snake_case inside the data jsonb (old writers / Express-written rows)
+ *  and the relational columns. */
+function mapCloudCourseToLocal(raw: any, src: any, tenantId: string): Course {
+  const course: any = {
+    id: String(src?.id ?? raw?.id),
+    name: String(src?.name ?? src?.title ?? ""),
+    description: String(src?.description ?? ""),
+    tuitionType: src?.tuitionType ?? src?.tuition_type ?? "free",
+    amount: Number(src?.amount) || 0,
+    startDate: src?.startDate ?? src?.start_date ?? "",
+    period: String(src?.period ?? ""),
+    trainerId: String(src?.trainerId ?? src?.trainer_id ?? ""),
+    tenantId: String(src?.tenantId ?? src?.tenant_id ?? raw?.tenant_id ?? tenantId),
+    createdAt: src?.createdAt ?? src?.created_at ?? new Date().toISOString(),
+    synced: true,
+  };
+  if (src?.logo) course.logo = String(src.logo);
+  return course as Course;
+}
+
+/**
+ * Shape-aware pull of this tenant's live courses, mapped to the LOCAL course
+ * shape (camelCase, synced:true) so callers can put() rows straight into
+ * Dexie. Soft-deleted rows (relational deleted_at OR data.deleted_at) are
+ * filtered out. Returns NULL when the fetch failed (offline / no
+ * credentials) — callers keep their local data, exactly like
+ * fetchCourseMaterialsFromSupabase. Never throws.
+ */
+export async function fetchCoursesFromSupabase(tenantId: string): Promise<Course[] | null> {
+  if (!tenantId) return null;
+  try {
+    const client = getClient();
+    const { data, error } = await client.from(T.courses).select("*").eq("tenant_id", tenantId);
+    if (error) {
+      console.error("[supabaseCourseSync] fetch courses failed:", error.message);
+      return null;
+    }
+    const out: Course[] = [];
+    for (const raw of (data ?? []) as any[]) {
+      // Doc-store rows carry the course inside `data`; relational rows ARE
+      // the course. `name` disambiguates when both keys somehow exist.
+      const isDoc = raw && typeof raw === "object" && "data" in raw && !raw.name;
+      const src: any = isDoc ? raw.data ?? {} : raw;
+      if (raw?.deleted_at || src?.deleted_at || src?.deletedAt) continue; // soft-deleted
+      if (!src || !src.id) continue;
+      out.push(mapCloudCourseToLocal(raw, src, tenantId));
+    }
+    return out;
   } catch (e: any) {
-    throw new Error(e?.message ?? String(e));
+    console.error("[supabaseCourseSync] fetch courses threw:", e?.message ?? e);
+    return null;
   }
 }
 
