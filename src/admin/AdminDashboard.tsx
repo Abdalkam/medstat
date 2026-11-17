@@ -1,20 +1,48 @@
-// src/admin/AdminDashboard.tsx — Google Material Design 3 Redesign
+// src/admin/AdminDashboard.tsx — Material You (Android) responsive rewrite
 // ----------------------------------------------------------------------------
+// RESPONSIVE MD3 v2 — professional Android UI that fits ANY device screen:
+//   • Class-based responsive stylesheet (injected once, below) instead of
+//     inline-only styles, so real media queries can drive the layout:
+//       phones (2-col stats) → large phones (3) → tablets (4) →
+//       desktop (7-in-a-row stats, 2-col charts, 3-col courses).
+//   • Tiny phones (≤379px, incl. Galaxy Fold cover 280px) get a dedicated
+//     compact tier (.mdx-hide-xs trims secondary info instead of squeezing).
+//   • Android-native interaction feel: ≥44px touch targets, pressed/selected
+//     state layers, hover elevation ONLY on hover-capable devices, no
+//     tap-flash, TalkBack/keyboard focus rings, safe-area insets for
+//     notched phones, prefers-reduced-motion honored.
+//   • Fluid paddings/type via clamp() — no horizontal scroll at any width.
+//
 // MTN PREPAID WALLET integration (2 marked blocks + stat card):
 //   1. "Wallet & Top-up" quick action in the hero → /admin/wallet
 //   2. Live "Wallet" stat card — prepaid UGX balance; red at zero, orange
 //      under the low-balance threshold, green when healthy
-// Data comes from src/api/walletApi.ts with the same login JWT; a failed
-// wallet fetch never blocks the dashboard (card just stays neutral).
+//   Data comes from src/api/walletApi.ts with the same login JWT; a failed
+//   wallet fetch never blocks the dashboard (card just stays neutral).
+//
+// OFFLINE-FIRST + DOC-STORE FIXES:
+//   • Courses no longer query `deleted_at=is.null` on public.courses — that
+//     table is doc-store { id, tenant_id, course_id, data jsonb, updated_at }
+//     and has NO deleted_at / created_at columns, so the old query answered
+//     400 on every dashboard load. The pull now goes through the shape-aware
+//     fetchCoursesFromSupabase() (supabaseCourseSync v5), which filters
+//     soft-deletes itself and returns local-shape courses, or null offline.
+//   • Schedules pull maps BOTH table shapes: doc-store rows keep everything
+//     inside `data`, so title/courseId/trainerId/scheduledAt are read from
+//     there when the row has no relational columns.
 // ----------------------------------------------------------------------------
+
 import { useEffect, useState } from "react";
-import type { CSSProperties, ReactNode } from "react";
+import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "../auth/supabase";
 import { db } from "../database/db";
 import { getUsers } from "../database/userDB";
 import { getCourses } from "../database/courseDB";
 import { pullRemoteSmsLogs, syncUnsyncedSmsLogs } from "../database/smsLogDB";
+// Shape-aware courses pull (doc-store { data jsonb } vs relational) — the
+// dashboard must NOT filter courses on columns that do not exist in the cloud.
+import { fetchCoursesFromSupabase } from "../database/supabaseCourseSync";
 // MTN PREPAID WALLET: prepaid balance data layer (same JWT as the rest of the app)
 import { fetchWallet } from "../api/walletApi";
 import type { Wallet } from "../api/walletApi";
@@ -79,7 +107,9 @@ const C = {
 };
 
 /* ================= MD3 TYPOGRAPHY ================= */
-const font = "'Google Sans', 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif";
+// Roboto first: it is the Android system font, so phones render it natively
+// (zero font download, true Material look); desktops fall back gracefully.
+const font = "'Roboto', 'Google Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif";
 
 /* ================= MD3 ELEVATION SHADOWS ================= */
 const S = {
@@ -94,10 +124,7 @@ const S = {
 /* ================= MD3 BORDER RADIUS ================= */
 const R = { sm: 8, md: 12, lg: 16, xl: 28 };
 
-/* ================= RESPONSIVE LAYOUT ================= */
-const gutter = "clamp(12px, 3vw, 24px)";
-const PAGE_MAX = 1400;
-
+/* ================= NON-INTERACTIVE CARD BASE (skeletons / empty states) ==== */
 const cardBase: CSSProperties = {
   background: C.surface,
   borderRadius: R.md,
@@ -106,6 +133,158 @@ const cardBase: CSSProperties = {
   boxSizing: "border-box",
   minWidth: 0,
 };
+
+/* ============================================================================
+   GLOBAL RESPONSIVE STYLESHEET — injected once per dashboard mount.
+   Plain CSS (no interpolation) so it stays a single constant string.
+
+   Breakpoint ladder (Android device classes):
+     base    ≤479px  phones portrait            stats 2-col, everything 1-col
+     480px           large phones / landscape   stats 3-col
+     600px           phablets                   hero switches to one row
+     768px           tablets                    stats 4-col, charts 2-col
+     1024px          desktop / tablet-landscape stats 7-col, courses 3-col
+     ≤379px          tiny phones                .mdx-hide-xs trims secondary info
+   ============================================================================ */
+const GLOBAL_CSS = `
+*, *::before, *::after { box-sizing: border-box; }
+.mdx-root { -webkit-tap-highlight-color: transparent; -webkit-text-size-adjust: 100%; }
+
+/* ---------- page shell ---------- */
+.mdx-page {
+  width: 100%; max-width: 1400px; margin: 0 auto;
+  padding: 12px clamp(12px, 3.5vw, 24px) calc(clamp(24px, 4vh, 40px) + env(safe-area-inset-bottom, 0px));
+}
+@media (min-width: 600px) { .mdx-page { padding-top: 16px; } }
+
+/* ---------- surfaces ---------- */
+.mdx-card {
+  background: #FFFFFF; border: 1px solid #DADCE0; border-radius: 16px;
+  box-shadow: 0 1px 2px 0 rgba(60,64,67,0.30), 0 1px 6px 2px rgba(60,64,67,0.15);
+  min-width: 0;
+}
+.mdx-anim { animation: fadeUp 0.35s cubic-bezier(0.2,0,0,1) both; }
+
+/* ---------- hero ---------- */
+.mdx-hero { display: flex; flex-direction: column; gap: 12px; padding: 16px; }
+.mdx-hero-top { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.mdx-hero-avatar { width: 42px; height: 42px; border-radius: 50%; flex-shrink: 0; }
+@media (min-width: 600px) {
+  .mdx-hero { flex-direction: row; align-items: center; gap: 16px; padding: 20px clamp(18px, 3vw, 24px); }
+  .mdx-hero-top { flex: 1; gap: 14px; }
+  .mdx-hero-avatar { width: 46px; height: 46px; }
+}
+
+/* ---------- buttons (44-48dp touch targets, pressed state) ---------- */
+.mdx-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  min-height: 44px; padding: 0 18px; border: none; border-radius: 24px;
+  font-family: inherit; font-size: 14px; font-weight: 500; letter-spacing: 0.01em;
+  cursor: pointer; user-select: none; outline: none;
+  transition: box-shadow 0.2s cubic-bezier(0.2,0,0,1), background-color 0.15s ease, transform 0.08s ease;
+}
+.mdx-btn:active { transform: scale(0.98); }
+.mdx-btn-primary { background: #1A73E8; color: #FFFFFF; box-shadow: 0 1px 2px 0 rgba(60,64,67,0.30), 0 1px 6px 2px rgba(60,64,67,0.15); }
+@media (hover: hover) {
+  .mdx-btn-primary:hover { background: #1765CC; box-shadow: 0 1px 3px 0 rgba(60,64,67,0.30), 0 4px 8px 3px rgba(60,64,67,0.15); }
+}
+.mdx-btn-primary:active { background: #185FC7; }
+.mdx-hero-action { width: 100%; }
+@media (min-width: 600px) { .mdx-hero-action { width: auto; min-height: 42px; } }
+
+/* keyboard / TalkBack focus ring */
+.mdx-btn:focus-visible, .mdx-tap:focus-visible { outline: 2px solid #1A73E8; outline-offset: 2px; }
+
+/* ---------- stat grid: 2 → 3 → 4 → 7 columns ---------- */
+.mdx-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding-top: 14px; }
+@media (min-width: 480px) { .mdx-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; padding-top: 16px; } }
+@media (min-width: 768px) { .mdx-stats { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+@media (min-width: 1024px) { .mdx-stats { grid-template-columns: repeat(7, minmax(0, 1fr)); } }
+
+.mdx-stat { display: flex; align-items: center; gap: 10px; padding: 12px; border-radius: 14px; }
+@media (min-width: 768px) { .mdx-stat { padding: 14px 16px; gap: 12px; } }
+.mdx-stat-icon { width: 36px; height: 36px; border-radius: 10px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+@media (min-width: 768px) { .mdx-stat-icon { width: 40px; height: 40px; } }
+.mdx-stat-label { font-size: 11px; font-weight: 500; letter-spacing: 0.02em; line-height: 16px; color: #5F6368; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@media (min-width: 480px) { .mdx-stat-label { font-size: 12px; } }
+.mdx-stat-value { font-size: 16px; font-weight: 500; letter-spacing: -0.01em; line-height: 1.3; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@media (min-width: 480px) { .mdx-stat-value { font-size: 18px; } }
+@media (min-width: 1024px) { .mdx-stat-value { font-size: 17px; } }
+
+/* ---------- chart grid: 1 → 2 columns ---------- */
+.mdx-charts { display: grid; grid-template-columns: 1fr; gap: 12px; padding-top: 16px; }
+@media (min-width: 768px) { .mdx-charts { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; padding-top: 20px; } }
+.mdx-chartcard { padding: 14px 16px; }
+@media (min-width: 768px) { .mdx-chartcard { padding: 16px 20px; } }
+
+/* ---------- section headers ---------- */
+.mdx-section-h { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 4px 8px; }
+@media (min-width: 768px) { .mdx-section-h { padding: 20px 4px 8px; } }
+.mdx-section-title { font-size: 15px; font-weight: 500; color: #202124; letter-spacing: 0.01em; min-width: 0; }
+@media (min-width: 768px) { .mdx-section-title { font-size: 16px; } }
+.mdx-section-link {
+  background: none; border: none; color: #1A73E8; font-weight: 500; font-size: 14px;
+  font-family: inherit; cursor: pointer; padding: 8px 0 8px 12px; flex-shrink: 0;
+  letter-spacing: 0.01em; user-select: none; border-radius: 8px; outline: none;
+}
+.mdx-section-link:active { opacity: 0.7; }
+
+/* ---------- Android state layers: hover only on hover-capable devices,
+   pressed state everywhere (finger, stylus, mouse) ---------- */
+.mdx-tap { position: relative; cursor: pointer; outline: none; transition: background-color 0.15s ease; }
+@media (hover: hover) { .mdx-tap:hover { background-color: rgba(60, 64, 67, 0.06); } }
+.mdx-tap:active { background-color: rgba(60, 64, 67, 0.12); }
+.mdx-lift { transition: box-shadow 0.2s cubic-bezier(0.2,0,0,1), border-color 0.2s ease, transform 0.15s cubic-bezier(0.2,0,0,1); }
+@media (hover: hover) {
+  .mdx-lift:hover { box-shadow: 0 1px 3px 0 rgba(60,64,67,0.30), 0 4px 8px 3px rgba(60,64,67,0.15); border-color: #1A73E8; }
+}
+.mdx-lift:active { transform: scale(0.995); }
+
+/* ---------- list rows (56dp Material rows) ---------- */
+.mdx-list {
+  background: #FFFFFF; border: 1px solid #DADCE0; border-radius: 16px;
+  box-shadow: 0 1px 2px 0 rgba(60,64,67,0.30), 0 1px 6px 2px rgba(60,64,67,0.15);
+  overflow: hidden;
+}
+.mdx-row { display: flex; align-items: center; gap: 12px; padding: 12px 14px; min-height: 56px; min-width: 0; }
+@media (min-width: 768px) { .mdx-row { padding: 12px 16px; } }
+.mdx-row-avatar { width: 40px; height: 40px; border-radius: 50%; flex-shrink: 0; overflow: hidden; }
+.mdx-row-main { flex: 1; min-width: 0; }
+.mdx-row-title { font-size: 14px; font-weight: 500; color: #202124; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.mdx-row-sub { font-size: 13px; color: #5F6368; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ---------- courses grid: 1 → 2 → 3 columns ---------- */
+.mdx-courses { display: grid; grid-template-columns: 1fr; gap: 12px; }
+@media (min-width: 600px) { .mdx-courses { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; } }
+@media (min-width: 1024px) { .mdx-courses { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.mdx-course-head { display: flex; align-items: center; padding: 14px; border-bottom: 1px solid #DADCE0; gap: 12px; min-width: 0; }
+@media (min-width: 768px) { .mdx-course-head { padding: 16px; } }
+.mdx-course-logo { width: 44px; height: 44px; border-radius: 12px; flex-shrink: 0; overflow: hidden; display: flex; align-items: center; justify-content: center; }
+.mdx-chipgrid { padding: 12px 14px 14px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+@media (min-width: 480px) { .mdx-chipgrid { grid-template-columns: repeat(4, minmax(0, 1fr)); padding: 12px 16px 16px; } }
+.mdx-chip { border-radius: 10px; padding: 8px 10px; min-width: 0; }
+@media (min-width: 768px) { .mdx-chip { padding: 8px 12px; } }
+
+/* ---------- tiny-phone tier (≤379px, incl. foldables' cover screens) ------- */
+@media (max-width: 379px) {
+  .mdx-hide-xs { display: none !important; }
+  .mdx-row { padding: 12px; gap: 10px; }
+  .mdx-stat { padding: 10px; gap: 8px; }
+  .mdx-course-head { padding: 12px; }
+  .mdx-hero { padding: 14px; }
+}
+
+/* ---------- keyframes ---------- */
+@keyframes shimmer { 0% { opacity: 1; } 50% { opacity: 0.35; } 100% { opacity: 1; } }
+@keyframes fadeUp { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+/* ---------- accessibility: honor reduced-motion preference ---------- */
+@media (prefers-reduced-motion: reduce) {
+  .mdx-root *, .mdx-root *::before, .mdx-root *::after { animation: none !important; transition: none !important; }
+}
+`;
+
+/* ================= SMALL BUILDING BLOCKS ================= */
 
 function parseNum(val: any): number {
   const str = String(val ?? "0").replace(/,/g, "").trim();
@@ -155,7 +334,17 @@ function calculateDuration(startDate: string, endDate: string) {
   const y = Math.floor(diffDays / 365); return `${y} year${y > 1 ? "s" : ""}`;
 }
 
-/* ================= SMALL BUILDING BLOCKS ================= */
+/** Keyboard activation for tappable cards/rows — TalkBack + physical-keyboard
+ *  users get the same action as a pointer tap (Android a11y parity). */
+function pressActivates(onClick?: () => void) {
+  if (!onClick) return undefined;
+  return (e: ReactKeyboardEvent) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      onClick();
+    }
+  };
+}
 
 function StatCard({ icon, label, value, bg, fg, valueColor, hint, delay, onClick }: {
   icon: ReactNode; label: string; value: string | number;
@@ -166,40 +355,16 @@ function StatCard({ icon, label, value, bg, fg, valueColor, hint, delay, onClick
     <div
       title={hint}
       onClick={onClick}
-      style={{
-        ...cardBase,
-        padding: "clamp(12px, 2vw, 16px)",
-        display: "flex",
-        alignItems: "center",
-        gap: 12,
-        cursor: onClick ? "pointer" : undefined,
-        animation: "fadeUp 0.35s cubic-bezier(0.2,0,0,1) both",
-        animationDelay: `${delay ?? 0}ms`,
-      }}
+      role={onClick ? "button" : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      onKeyDown={pressActivates(onClick)}
+      className={`mdx-card mdx-stat mdx-anim${onClick ? " mdx-tap" : ""}`}
+      style={{ animationDelay: `${delay ?? 0}ms` }}
     >
-      <div style={{
-        width: 40, height: 40, borderRadius: R.sm,
-        background: bg, color: fg,
-        display: "flex", alignItems: "center", justifyContent: "center",
-        flexShrink: 0,
-      }}>{icon}</div>
+      <div className="mdx-stat-icon" style={{ background: bg, color: fg }}>{icon}</div>
       <div style={{ minWidth: 0, flex: 1 }}>
-        <div style={{
-          fontSize: 12, color: C.onSurfaceVariant, fontWeight: 500,
-          letterSpacing: "0.02em", lineHeight: "16px",
-          whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
-        }}>{label}</div>
-        <div style={{
-          fontSize: "clamp(16px, 3.4vw, 22px)",
-          fontWeight: 500,
-          color: valueColor || C.onSurface,
-          letterSpacing: "-0.01em",
-          fontVariantNumeric: "tabular-nums",
-          lineHeight: 1.3,
-          whiteSpace: "nowrap",
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-        }}>{value}</div>
+        <div className="mdx-stat-label">{label}</div>
+        <div className="mdx-stat-value" style={{ color: valueColor || C.onSurface }}>{value}</div>
       </div>
     </div>
   );
@@ -209,7 +374,7 @@ function ChartCard({ title, chip, chipColor, children }: {
   title: string; chip?: string | number; chipColor?: string; children: ReactNode;
 }) {
   return (
-    <div style={{ ...cardBase, padding: "16px 20px" }}>
+    <div className="mdx-card mdx-chartcard">
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 16, minWidth: 0 }}>
         <span style={{ fontSize: 11, color: C.onSurfaceVariant, textTransform: "uppercase", fontWeight: 700, letterSpacing: "0.08em" }}>{title}</span>
         {chip != null && (
@@ -223,15 +388,10 @@ function ChartCard({ title, chip, chipColor, children }: {
 
 function SectionHeader({ title, onViewAll }: { title: string; onViewAll?: () => void }) {
   return (
-    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "20px 4px 8px" }}>
-      <span style={{ fontSize: 14, color: C.onSurface, fontWeight: 500, letterSpacing: "0.01em" }}>{title}</span>
+    <div className="mdx-section-h">
+      <span className="mdx-section-title">{title}</span>
       {onViewAll && (
-        <button onClick={onViewAll} style={{
-          background: "none", border: "none",
-          color: C.primary, fontWeight: 500, fontSize: 14,
-          cursor: "pointer", fontFamily: font, padding: "4px 0",
-          flexShrink: 0, letterSpacing: "0.01em",
-        }}>
+        <button onClick={onViewAll} className="mdx-section-link">
           See all
         </button>
       )}
@@ -244,9 +404,9 @@ function EmptyState({ text }: { text: string }) {
     <div style={{
       background: C.surface, borderRadius: R.lg,
       border: `1px dashed ${C.outlineVariant}`,
-      padding: "32px 16px", textAlign: "center",
+      padding: "clamp(24px, 6vw, 32px) 16px", textAlign: "center",
       color: C.onSurfaceVariant, fontSize: 14,
-      boxSizing: "border-box",
+      boxSizing: "border-box", width: "100%",
     }}>
       {text}
     </div>
@@ -278,12 +438,12 @@ const DonutChart = ({ data, colors, size = 120, strokeWidth = 16, centerLabel, c
           </div>
         )}
       </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 10, minWidth: 0 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10, minWidth: 0, flex: 1 }}>
         {data.map((item: any, index: number) => (
           <div key={index} style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <div style={{ width: 12, height: 12, borderRadius: 3, background: colors[index], flexShrink: 0 }} />
             <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
-              <span style={{ fontSize: 14, fontWeight: 500, color: C.onSurface }}>{item.label}</span>
+              <span style={{ fontSize: 14, fontWeight: 500, color: C.onSurface, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{item.label}</span>
               <span style={{ fontSize: 12, color: C.onSurfaceVariant, fontVariantNumeric: "tabular-nums" }}>{item.value}</span>
             </div>
           </div>
@@ -369,8 +529,8 @@ const TrendChart = ({ data, color, gradientId, emptyText }: {
 
 function SkeletonStat() {
   return (
-    <div style={{ ...cardBase, padding: 16, display: "flex", alignItems: "center", gap: 12 }}>
-      <div style={{ width: 40, height: 40, borderRadius: R.sm, background: C.skeletonBase, animation: "shimmer 1.5s ease-in-out infinite", flexShrink: 0 }} />
+    <div style={{ ...cardBase, borderRadius: 14, padding: 12, display: "flex", alignItems: "center", gap: 10 }}>
+      <div style={{ width: 36, height: 36, borderRadius: 10, background: C.skeletonBase, animation: "shimmer 1.5s ease-in-out infinite", flexShrink: 0 }} />
       <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 8 }}>
         <div style={{ width: "55%", height: 10, borderRadius: 5, background: C.skeletonBase, animation: "shimmer 1.5s ease-in-out infinite 0.1s" }} />
         <div style={{ width: "75%", height: 18, borderRadius: 5, background: C.skeletonBase, animation: "shimmer 1.5s ease-in-out infinite 0.2s" }} />
@@ -381,7 +541,7 @@ function SkeletonStat() {
 
 function SkeletonChart() {
   return (
-    <div style={{ ...cardBase, padding: 20 }}>
+    <div style={{ ...cardBase, borderRadius: R.lg, padding: "14px 16px" }}>
       <div style={{ width: "40%", height: 10, borderRadius: 5, background: C.skeletonBase, animation: "shimmer 1.5s ease-in-out infinite" }} />
       <div style={{ marginTop: 18, width: "100%", height: 120, borderRadius: R.sm, background: C.skeletonBase, animation: "shimmer 1.5s ease-in-out infinite 0.15s", opacity: 0.7 }} />
     </div>
@@ -390,9 +550,9 @@ function SkeletonChart() {
 
 function SkeletonList({ rows = 3 }: { rows?: number }) {
   return (
-    <div style={{ backgroundColor: C.surface, borderRadius: R.lg, overflow: "hidden", boxShadow: S.level1, border: `1px solid ${C.outline}`, boxSizing: "border-box" }}>
+    <div className="mdx-list">
       {Array.from({ length: rows }).map((_, i) => (
-        <div key={i} style={{ display: "flex", alignItems: "center", padding: "14px 16px", gap: 12, borderBottom: i < rows - 1 ? `1px solid ${C.outline}` : "none" }}>
+        <div key={i} style={{ display: "flex", alignItems: "center", padding: "14px 16px", gap: 12, borderBottom: i < rows - 1 ? `1px solid ${C.outline}` : "none", minHeight: 56 }}>
           <div style={{ width: 40, height: 40, borderRadius: "50%", background: C.skeletonBase, animation: "shimmer 1.5s ease-in-out infinite", flexShrink: 0 }} />
           <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
             <div style={{ width: "50%", height: 14, borderRadius: 4, background: C.skeletonBase, animation: "shimmer 1.5s ease-in-out infinite 0.1s" }} />
@@ -427,7 +587,7 @@ export default function AdminDashboard() {
         let localCourses: any[] = [];
         let localSchedules: any[] = [];
 
-        // STEP 1: Load from Local DB FIRST (Instant Load)
+        // STEP 1: Load from Local DB FIRST (Instant Load — offline-first)
         try {
           localUsers = await getUsers();
           localCourses = await getCourses();
@@ -475,11 +635,14 @@ export default function AdminDashboard() {
           // leaves the card neutral, never blocks the dashboard.
           fetchWallet().then(setWallet).catch(() => { /* wallet stays null */ });
 
+          // Users — the users table IS relational (has deleted_at), so this
+          // direct query stays. Guarded so a failure can't kill the rest.
           try {
-            const [usersRes, coursesRes] = await Promise.all([
-              supabase.from("users").select("*").eq("tenant_id", tenantId).is("deleted_at", null),
-              supabase.from("courses").select("*").eq("tenant_id", tenantId).is("deleted_at", null),
-            ]);
+            const usersRes = await supabase
+              .from("users")
+              .select("*")
+              .eq("tenant_id", tenantId)
+              .is("deleted_at", null);
 
             if (usersRes.data && usersRes.data.length > 0) {
               const mappedUsers = usersRes.data.map((u: any) => ({
@@ -490,54 +653,78 @@ export default function AdminDashboard() {
               }));
               const mappedNonAdmin = mappedUsers.filter((u: any) => u.role !== "admin");
 
-              // FIX: MERGE remote + local instead of replacing local with remote.
-              // Previously ANY remote result overwrote the whole list, so a newly
-              // created user whose cloud upsert failed (offline / API cold-start)
-              // vanished from the dashboard, then reappeared after a later sync —
-              // "newly created users seen on and off" (same bug as UserManagement).
-              // Remote wins for known ids; local users not yet synced (cloud
-              // confirm still pending) always stay visible; synced-but-absent
-              // rows stay hidden (deleted on another device).
+              // MERGE remote + local instead of replacing local with remote.
+              // A newly created user whose cloud upsert failed (offline / API
+              // cold-start) must not vanish from the dashboard. Remote wins
+              // for known ids; local users not yet synced (cloud confirm
+              // still pending) always stay visible.
               const remoteUserIds = new Set(mappedNonAdmin.map((u: any) => u.id));
               const pendingLocalUsers = nonAdminUsers.filter(
                 (u: any) => !u.synced && !remoteUserIds.has(u.id)
               );
               setAllUsers(sortUsersByCreatedDesc([...mappedNonAdmin, ...pendingLocalUsers]));
+            } else if (usersRes.error) {
+              console.warn("Dashboard user refresh failed, keeping local DB", usersRes.error.message);
             }
-
-            if (coursesRes.data && coursesRes.data.length > 0) {
-              const mappedCourses = coursesRes.data.map((c: any) => ({
-                ...c,
-                tuitionType: c.tuition_type,
-                startDate: c.start_date,
-                mediaUrl: c.logo,
-              }));
-              setAllCourses(mappedCourses);
-            }
-
-            try {
-              const { data: schedData } = await supabase.from("schedules").select("*").eq("tenant_id", tenantId);
-              if (schedData && schedData.length > 0) {
-                const mappedSchedules = schedData.map((s: any) => ({
-                  ...s,
-                  courseId: s.course_id,
-                  trainerId: s.trainer_id,
-                  scheduledAt: s.scheduled_at || s.created_at,
-                }));
-                setAllSchedules(mappedSchedules);
-              }
-            } catch (e) { /* schedules table may not exist */ }
-
-            // Merge cloud SMS logs into Dexie so the graph reflects all devices/updates
-            try {
-              await syncUnsyncedSmsLogs();
-              const added = await pullRemoteSmsLogs(tenantId);
-              if (added > 0) await refreshSmsStats();
-            } catch (e) { /* sms merge best-effort */ }
-
-          } catch (onlineError) {
-            console.warn("Supabase fetch failed, sticking with local DB", onlineError);
+          } catch (e) {
+            console.warn("Dashboard user refresh threw, keeping local DB", e);
           }
+
+          // Courses — SHAPE-AWARE pull (supabaseCourseSync v5). The cloud
+          // public.courses table is doc-store { id, tenant_id, course_id,
+          // data jsonb, updated_at } with NO deleted_at / created_at columns,
+          // so the old `select("*").is("deleted_at", null)` answered 400 on
+          // every dashboard load. fetchCoursesFromSupabase filters soft-
+          // deletes itself (relational deleted_at OR data.deleted_at) and
+          // returns local-shape courses — or null offline (local stays).
+          try {
+            const cloudCourses = await fetchCoursesFromSupabase(tenantId);
+            if (cloudCourses && cloudCourses.length > 0) {
+              const remoteIds = new Set(cloudCourses.map((c: any) => c.id));
+              const pendingLocalCourses = localCourses.filter(
+                (c: any) => c.synced === false && !remoteIds.has(c.id)
+              );
+              setAllCourses([...cloudCourses, ...pendingLocalCourses]);
+            }
+          } catch (e) {
+            console.warn("Dashboard course refresh failed, keeping local DB", e);
+          }
+
+          // Schedules — map BOTH table shapes. Doc-store schedule rows carry
+          // everything inside `data` (no scheduled_at / created_at columns),
+          // relational rows are the schedule itself.
+          try {
+            const { data: schedData } = await supabase
+              .from("schedules")
+              .select("*")
+              .eq("tenant_id", tenantId);
+            if (schedData && schedData.length > 0) {
+              const mappedSchedules = schedData.map((s: any) => {
+                const src: any =
+                  s && typeof s === "object" && "data" in s && !s.title
+                    ? (s.data ?? {})
+                    : s;
+                return {
+                  ...src,
+                  id: s.id,
+                  tenantId: src.tenantId ?? s.tenant_id,
+                  courseId: src.courseId ?? s.course_id ?? src.course_id,
+                  trainerId: src.trainerId ?? s.trainer_id ?? src.trainer_id,
+                  scheduledAt:
+                    src.scheduledAt ?? src.scheduled_at ?? s.scheduled_at ??
+                    src.createdAt ?? src.created_at ?? s.updated_at,
+                };
+              });
+              setAllSchedules(mappedSchedules);
+            }
+          } catch (e) { /* schedules table may not exist */ }
+
+          // Merge cloud SMS logs into Dexie so the graph reflects all devices/updates
+          try {
+            await syncUnsyncedSmsLogs();
+            const added = await pullRemoteSmsLogs(tenantId);
+            if (added > 0) await refreshSmsStats();
+          } catch (e) { /* sms merge best-effort */ }
         }
       } catch (error) {
         console.error("Failed to load dashboard data", error);
@@ -655,65 +842,42 @@ export default function AdminDashboard() {
   ];
 
   return (
-    <div style={{ width: "100%", minHeight: "100%", background: C.background, fontFamily: font, boxSizing: "border-box", overflowX: "hidden" }}>
-      <style>{`
-        @keyframes shimmer { 0% { opacity: 1; } 50% { opacity: 0.35; } 100% { opacity: 1; } }
-        @keyframes fadeUp { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
-      `}</style>
+    <div
+      className="mdx-root"
+      style={{ width: "100%", minHeight: "100%", background: C.background, fontFamily: font, overflowX: "hidden" }}
+    >
+      {/* Responsive MD3 stylesheet — one injection, real media queries */}
+      <style>{GLOBAL_CSS}</style>
 
-      <div style={{ width: "100%", maxWidth: PAGE_MAX, margin: "0 auto", padding: `16px ${gutter} clamp(20px, 4vh, 44px)`, boxSizing: "border-box" }}>
+      <div className="mdx-page">
 
-        {/* ===== HERO — Google-style clean greeting bar ===== */}
-        <div style={{
-          borderRadius: R.lg, padding: "clamp(16px, 3vw, 24px) clamp(16px, 3vw, 20px)",
-          background: C.surface,
-          border: `1px solid ${C.outline}`,
-          boxShadow: S.level1,
-          animation: "fadeUp 0.35s cubic-bezier(0.2,0,0,1) both",
-          boxSizing: "border-box",
-          display: "flex",
-          alignItems: "center",
-          gap: 16,
-          flexWrap: "wrap",
-        }}>
-          {/* Blue accent circle */}
-          <div style={{
-            width: 44, height: 44, borderRadius: "50%",
-            background: C.primaryContainer,
-            color: C.primary,
-            display: "flex", alignItems: "center", justifyContent: "center",
-            flexShrink: 0, fontSize: 20,
-          }}>
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" /></svg>
-          </div>
-          <div style={{ minWidth: 0, flex: 1 }}>
-            <div style={{ fontSize: 12, color: C.onSurfaceVariant, fontWeight: 500, letterSpacing: "0.04em", marginBottom: 2 }}>{dateStr}</div>
-            <div style={{ fontSize: "clamp(20px, 4.5vw, 28px)", fontWeight: 400, color: C.onSurface, letterSpacing: "-0.01em", lineHeight: 1.25 }}>
-              {greeting}, <span style={{ color: C.primary, fontWeight: 500 }}>{firstName}</span>
+        {/* ===== HERO — greeting bar (stacks on phones, one row from 600px) ===== */}
+        <section className="mdx-card mdx-hero mdx-anim">
+          <div className="mdx-hero-top">
+            {/* Blue accent circle */}
+            <div
+              className="mdx-hero-avatar"
+              style={{ background: C.primaryContainer, color: C.primary, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20 }}
+            >
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" /></svg>
+            </div>
+            <div style={{ minWidth: 0, flex: 1 }}>
+              <div style={{ fontSize: 12, color: C.onSurfaceVariant, fontWeight: 500, letterSpacing: "0.04em", marginBottom: 2 }}>{dateStr}</div>
+              <div style={{ fontSize: "clamp(19px, 4.5vw, 28px)", fontWeight: 400, color: C.onSurface, letterSpacing: "-0.01em", lineHeight: 1.25 }}>
+                {greeting}, <span style={{ color: C.primary, fontWeight: 500 }}>{firstName}</span>
+              </div>
             </div>
           </div>
-          {/* MTN PREPAID WALLET: quick action → /admin/wallet (STK-push top-up) */}
-          <button
-            onClick={() => navigate("/admin/wallet")}
-            style={{
-              background: C.primary, color: C.onPrimary, border: "none",
-              borderRadius: R.xl, padding: "10px 18px", fontSize: 14,
-              fontWeight: 500, fontFamily: font, cursor: "pointer",
-              display: "inline-flex", alignItems: "center", gap: 8,
-              flexShrink: 0, boxShadow: S.level1, letterSpacing: "0.01em",
-            }}
-          >
+          {/* MTN PREPAID WALLET: quick action → /admin/wallet (STK-push top-up).
+              Full-width tap target on phones, inline pill on ≥600px. */}
+          <button onClick={() => navigate("/admin/wallet")} className="mdx-btn mdx-btn-primary mdx-hero-action">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12V7H5a2 2 0 0 1 0-4h14v4" /><path d="M3 5v14a2 2 0 0 0 2 2h16v-5" /><path d="M18 12a2 2 0 0 0 0 4h4v-4Z" /></svg>
-            Wallet & Top-up
+            Wallet &amp; Top-up
           </button>
-        </div>
+        </section>
 
-        {/* ===== STAT CARDS — 2-col mobile, 3-col tablet, 6-col desktop ===== */}
-        <div style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(min(160px, 100%), 1fr))",
-          gap: 12, paddingTop: 16, width: "100%", boxSizing: "border-box",
-        }}>
+        {/* ===== STAT CARDS — 2-col phone · 3-col large phone · 4-col tablet · 7-col desktop ===== */}
+        <div className="mdx-stats">
           {isLoading
             ? Array.from({ length: 7 }).map((_, i) => <SkeletonStat key={i} />)
             : statDefs.map((s, i) => (
@@ -721,12 +885,8 @@ export default function AdminDashboard() {
             ))}
         </div>
 
-        {/* ===== CHARTS — 1-col mobile, 2-col tablet/desktop ===== */}
-        <div style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(min(320px, 100%), 1fr))",
-          gap: 16, paddingTop: 20, width: "100%", boxSizing: "border-box",
-        }}>
+        {/* ===== CHARTS — 1-col mobile, 2-col from 768px ===== */}
+        <div className="mdx-charts">
           {isLoading ? (
             <><SkeletonChart /><SkeletonChart /><SkeletonChart /><SkeletonChart /></>
           ) : (
@@ -753,14 +913,14 @@ export default function AdminDashboard() {
           )}
         </div>
 
-        {/* ===== RECENT USERS ===== */}
+        {/* ===== RECENT USERS — 56dp Material rows; tuition + chevron trimmed on tiny phones ===== */}
         <SectionHeader title="Recent Users" onViewAll={() => navigate("/admin/users")} />
         {isLoading ? (
           <SkeletonList rows={4} />
         ) : recentUsers.length === 0 ? (
           <EmptyState text="No users yet" />
         ) : (
-          <div style={{ backgroundColor: C.surface, borderRadius: R.lg, overflow: "hidden", boxShadow: S.level1, border: `1px solid ${C.outline}`, boxSizing: "border-box" }}>
+          <div className="mdx-list">
             {recentUsers.map((user: any, index: number) => {
               const expected = parseNum(user.tuition?.expected);
               const paid = parseNum(user.tuition?.paid);
@@ -772,22 +932,24 @@ export default function AdminDashboard() {
                 <div
                   key={user.id}
                   onClick={() => navigate("/admin/users")}
-                  onMouseEnter={(e) => { e.currentTarget.style.background = C.inset; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
-                  style={{ display: "flex", alignItems: "center", padding: "12px 16px", gap: 12, borderBottom: index < recentUsers.length - 1 ? `1px solid ${C.outline}` : "none", cursor: "pointer", transition: "background 0.15s ease", minWidth: 0 }}
+                  onKeyDown={pressActivates(() => navigate("/admin/users"))}
+                  tabIndex={0}
+                  role="button"
+                  className="mdx-row mdx-tap"
+                  style={{ borderBottom: index < recentUsers.length - 1 ? `1px solid ${C.outline}` : "none" }}
                 >
                   {user.profilePic ? (
-                    <div style={{ width: 40, height: 40, borderRadius: "50%", background: C.surfaceVariant, overflow: "hidden", flexShrink: 0 }}>
+                    <div className="mdx-row-avatar" style={{ background: C.surfaceVariant }}>
                       <img src={user.profilePic} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
                     </div>
                   ) : (
-                    <div style={{ width: 40, height: 40, borderRadius: "50%", background: getAvatarColor(user.username || "U"), color: C.onPrimary, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, fontWeight: 500, flexShrink: 0 }}>
+                    <div className="mdx-row-avatar" style={{ background: getAvatarColor(user.username || "U"), color: C.onPrimary, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, fontWeight: 500 }}>
                       {(user.username || "U").charAt(0).toUpperCase()}
                     </div>
                   )}
-                  <div style={{ flex: 1, minWidth: 0 }}>
+                  <div className="mdx-row-main">
                     <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-                      <div style={{ fontSize: 14, fontWeight: 500, color: C.onSurface, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }}>{user.username}</div>
+                      <div className="mdx-row-title">{user.username}</div>
                       {/* MD3 tonal pill badge */}
                       <span style={{
                         display: "inline-flex", alignItems: "center",
@@ -799,32 +961,32 @@ export default function AdminDashboard() {
                         {user.role === "trainer" ? "Trainer" : "Trainee"}
                       </span>
                     </div>
-                    <div style={{ fontSize: 13, color: C.onSurfaceVariant, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                    <div className="mdx-row-sub">
                       {user.phone || user.email || "No contact"}
                     </div>
                   </div>
                   {user.role === "trainee" && (
-                    <div style={{ textAlign: "right", flexShrink: 0 }}>
+                    <div className="mdx-hide-xs" style={{ textAlign: "right", flexShrink: 0 }}>
                       <div style={{ fontSize: 11, color: C.onSurfaceVariant, textTransform: "uppercase", fontWeight: 700, letterSpacing: "0.06em" }}>Tuition</div>
                       <div style={{ fontSize: 14, fontWeight: 500, color: balanceColor, whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>{tuitionLabel(expected, paid)}</div>
                     </div>
                   )}
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={C.outlineVariant} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><polyline points="9 18 15 12 9 6" /></svg>
+                  <svg className="mdx-hide-xs" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={C.outlineVariant} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><polyline points="9 18 15 12 9 6" /></svg>
                 </div>
               );
             })}
           </div>
         )}
 
-        {/* ===== COURSES — 1-col mobile, 2-col tablet, 3-col desktop ===== */}
+        {/* ===== COURSES — 1-col mobile · 2-col phablet/tablet · 3-col desktop ===== */}
         <SectionHeader title="Courses" onViewAll={() => navigate("/admin/courses")} />
         {isLoading ? (
           <SkeletonList rows={3} />
         ) : recentCourses.length === 0 ? (
           <EmptyState text="No courses yet" />
         ) : (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(280px, 100%), 1fr))", gap: 16, width: "100%", boxSizing: "border-box" }}>
-            {recentCourses.map((course: any) => {
+          <div className="mdx-courses">
+            {recentCourses.map((course: any, index: number) => {
               const courseTrainees = allUsers.filter((u: any) => u.role === "trainee" && Array.isArray(u.assignedCourses) && u.assignedCourses.includes(course.id));
               const courseTrainer = allUsers.find((u: any) => u.role === "trainer" && Array.isArray(u.assignedCourses) && u.assignedCourses.includes(course.id));
               const courseSchedules = allSchedules.filter((s: any) => s.courseId === course.id);
@@ -832,34 +994,39 @@ export default function AdminDashboard() {
                 <div
                   key={course.id}
                   onClick={() => navigate("/admin/courses")}
-                  onMouseEnter={(e) => { e.currentTarget.style.boxShadow = S.level2; e.currentTarget.style.borderColor = C.primary; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.boxShadow = S.level1; e.currentTarget.style.borderColor = C.outline; }}
-                  style={{ backgroundColor: C.surface, borderRadius: R.lg, overflow: "hidden", boxShadow: S.level1, border: `1px solid ${C.outline}`, cursor: "pointer", transition: "box-shadow 0.2s cubic-bezier(0.2,0,0,1), border-color 0.2s ease", minWidth: 0, boxSizing: "border-box" }}
+                  onKeyDown={pressActivates(() => navigate("/admin/courses"))}
+                  tabIndex={0}
+                  role="button"
+                  className="mdx-card mdx-lift mdx-anim"
+                  style={{ cursor: "pointer", animationDelay: `${index * 40}ms` }}
                 >
-                  <div style={{ display: "flex", alignItems: "center", padding: 16, borderBottom: `1px solid ${C.outline}`, gap: 12, minWidth: 0 }}>
-                    <div style={{ width: 44, height: 44, borderRadius: R.sm, background: course.logo || course.mediaUrl ? "transparent" : C.primaryContainer, flexShrink: 0, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <div className="mdx-course-head">
+                    <div
+                      className="mdx-course-logo"
+                      style={{ background: course.logo || course.mediaUrl ? "transparent" : C.primaryContainer }}
+                    >
                       {course.logo || course.mediaUrl
                         ? <img src={course.logo || course.mediaUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
                         : <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={C.primary} strokeWidth="1.8"><path d="M6 2v6a6 6 0 0 0 12 0V2" /><circle cx="12" cy="14" r="2" /></svg>}
                     </div>
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 14, fontWeight: 500, color: C.onSurface, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{course.name}</div>
+                      <div className="mdx-row-title">{course.name}</div>
                       <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4, flexWrap: "wrap", minWidth: 0 }}>
                         <span style={tuitionPill(course)}>{displayTuition(course)}</span>
-                        {course.startDate && <span style={{ fontSize: 12, color: C.onSurfaceVariant, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{course.startDate}</span>}
+                        {course.startDate && <span className="mdx-hide-xs" style={{ fontSize: 12, color: C.onSurfaceVariant, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{course.startDate}</span>}
                       </div>
                     </div>
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={C.outlineVariant} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><polyline points="9 18 15 12 9 6" /></svg>
                   </div>
-                  {/* MD3 tonal chip grid */}
-                  <div style={{ padding: "12px 14px 14px", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(110px, 100%), 1fr))", gap: 8 }}>
+                  {/* MD3 tonal chip grid — 2×2 on phones, 4-across from 480px */}
+                  <div className="mdx-chipgrid">
                     {[
                       { label: "Trainer", value: courseTrainer?.username || "None", bg: C.purpleBg, fg: C.purple },
                       { label: "Trainees", value: String(courseTrainees.length), bg: C.greenBg, fg: C.green },
                       { label: "Duration", value: calculateDuration(course.startDate, course.period), bg: C.orangeBg, fg: C.orange },
                       { label: "Schedules", value: String(courseSchedules.length), bg: C.medBlueBg, fg: C.medBlue },
                     ].map((chip) => (
-                      <div key={chip.label} style={{ background: chip.bg, color: chip.fg, borderRadius: R.sm, padding: "8px 12px", minWidth: 0 }}>
+                      <div key={chip.label} className="mdx-chip" style={{ background: chip.bg, color: chip.fg }}>
                         <div style={{ fontSize: 10, textTransform: "uppercase", fontWeight: 700, opacity: 0.7, letterSpacing: "0.06em" }}>{chip.label}</div>
                         <div style={{ fontSize: 13, fontWeight: 500, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{chip.value}</div>
                       </div>
@@ -878,22 +1045,29 @@ export default function AdminDashboard() {
         ) : upcomingSchedules.length === 0 ? (
           <EmptyState text="No upcoming schedules" />
         ) : (
-          <div style={{ backgroundColor: C.surface, borderRadius: R.lg, overflow: "hidden", boxShadow: S.level1, border: `1px solid ${C.outline}`, boxSizing: "border-box" }}>
+          <div className="mdx-list">
             {upcomingSchedules.map((schedule: any, index: number) => {
               const linkedCourse = allCourses.find((c: any) => c.id === schedule.courseId);
               const linkedTrainer = allUsers.find((u: any) => u.id === schedule.trainerId);
               const scheduleDate = new Date(schedule.scheduledAt || schedule.created_at);
               const isPast = scheduleDate < new Date();
               return (
-                <div key={schedule.id} style={{ display: "flex", alignItems: "center", padding: "12px 16px", gap: 12, borderBottom: index < upcomingSchedules.length - 1 ? `1px solid ${C.outline}` : "none", opacity: isPast ? 0.5 : 1, minWidth: 0 }}>
+                <div
+                  key={schedule.id}
+                  className="mdx-row"
+                  style={{
+                    borderBottom: index < upcomingSchedules.length - 1 ? `1px solid ${C.outline}` : "none",
+                    opacity: isPast ? 0.5 : 1,
+                  }}
+                >
                   <div style={{ width: 40, height: 40, borderRadius: R.sm, background: isPast ? C.surfaceVariant : C.orangeBg, color: isPast ? C.onSurfaceVariant : C.orange, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" /></svg>
                   </div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 14, fontWeight: 500, color: C.onSurface, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{schedule.title || "Untitled Schedule"}</div>
+                  <div className="mdx-row-main">
+                    <div className="mdx-row-title">{schedule.title || "Untitled Schedule"}</div>
                     <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 3, flexWrap: "wrap", minWidth: 0 }}>
                       {linkedCourse && <span style={{ fontSize: 12, color: C.primary, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "60%" }}>{linkedCourse.name}</span>}
-                      {linkedTrainer && <span style={{ fontSize: 12, color: C.purple, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{linkedTrainer.username}</span>}
+                      {linkedTrainer && <span className="mdx-hide-xs" style={{ fontSize: 12, color: C.purple, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{linkedTrainer.username}</span>}
                     </div>
                   </div>
                   <div style={{ textAlign: "right", flexShrink: 0 }}>

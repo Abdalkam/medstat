@@ -135,13 +135,17 @@ function markQueueSuccess(queue: string): void {
   delete queueBackoff[queue];
 }
 
-function markQueueFailure(queue: string, msg: string): void {
+function markQueueFailure(queue: string, msg: string, silent = false): void {
   const failures = (queueBackoff[queue]?.failures || 0) + 1;
   const delay = Math.min(BACKOFF_BASE_MS * Math.pow(2, failures - 1), BACKOFF_MAX_MS);
   queueBackoff[queue] = { failures, nextAt: Date.now() + delay };
-  console.warn(
-    `[sync] ${queue} failed (${failures}x) — backing off ${Math.round(delay / 1000)}s: ${msg}`
-  );
+  // silent=true keeps repeated failures OFF the console (non-critical tables
+  // like sms_logs can 401/400 forever — one warning per outage streak is enough).
+  if (!silent) {
+    console.warn(
+      `[sync] ${queue} failed (${failures}x) — backing off ${Math.round(delay / 1000)}s: ${msg}`
+    );
+  }
 }
 
 function resetAllBackoff(): void {
@@ -478,23 +482,37 @@ export async function pullAllTenantData(tenantId: string) {
       console.warn("Pull assignments from Supabase failed:", e instanceof Error ? e.message : e);
     }
 
-    // --- Pull SMS Logs (non-critical) ---
-    try {
-      const { data: smsLogs } = await sbFetch("sms_logs", {
-        select: "*",
-        tenant_id: `eq.${tenantId}`,
-        order: { column: "sent_at", ascending: false },
-        limit: "1000",
-      });
+    // --- Pull SMS Logs (non-critical, self-throttling) ---
+    // sms_logs is the one table that can 401/400 forever (RLS policy, token
+    // scope) without breaking anything else. Reuse the per-queue backoff so
+    // it retries at exponential intervals (60s → 10min cap) and logs exactly
+    // ONCE per outage streak — no more per-tick console spam.
+    if (queueDue("sms-pull", false)) {
+      try {
+        const { data: smsLogs } = await sbFetch("sms_logs", {
+          select: "*",
+          tenant_id: `eq.${tenantId}`,
+          order: { column: "sent_at", ascending: false },
+          limit: "1000",
+        });
+        markQueueSuccess("sms-pull");
 
-      if (smsLogs) {
-        for (const log of smsLogs) {
-          if (log.deleted_at) continue;
-          await db.smsLogs.put(mapSmsLog(log));
+        if (smsLogs) {
+          for (const log of smsLogs) {
+            if (log.deleted_at) continue;
+            await db.smsLogs.put(mapSmsLog(log));
+          }
+        }
+      } catch (e) {
+        const wasAlreadyFailing = !!queueBackoff["sms-pull"];
+        markQueueFailure("sms-pull", e instanceof Error ? e.message : String(e), true);
+        if (!wasAlreadyFailing) {
+          console.warn(
+            "Pull SMS logs failed (non-critical — retries continue silently every few minutes):",
+            e instanceof Error ? e.message : e
+          );
         }
       }
-    } catch (e) {
-      console.warn("Pull SMS logs failed (non-critical):", e instanceof Error ? e.message : e);
     }
 
     // Defensively purge any tombstoned items that snuck back into Dexie
