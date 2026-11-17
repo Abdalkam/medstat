@@ -1,7 +1,18 @@
 /* ================================================================
-   src/database/supabaseCourseSync.ts — v4: shape-aware courses +
-   doc-store course-content sync
+   src/database/supabaseCourseSync.ts — v5: OFFLINE-FIRST guards
+   (v4: shape-aware courses + doc-store course-content sync)
    ================================================================
+
+   WHAT CHANGED IN v5 (offline-first):
+
+   • pushCourseToSupabase / deleteCourseFromSupabase throw INSTANTLY when
+     navigator.onLine is false ("Offline — queued"). Callers keep the row
+     at synced:false / the tombstone queued, so nothing is lost — and no
+     request ever hangs waiting on a dead network stack.
+   • fetchCoursesFromSupabase returns null immediately when offline — the
+     caller keeps its local Dexie data on screen.
+   • The table-shape cache (memory + localStorage) survives restarts, so
+     the working shape is reused the moment we are back online.
 
    WHAT CHANGED IN v4 (the course-CRUD fix):
 
@@ -381,6 +392,11 @@ function courseRelationalPayload(course: any, tenantId: string) {
  *  shape once and retries, then the working shape is re-cached. */
 export async function pushCourseToSupabase(course: Course, tenantId: string): Promise<void> {
   if (!tenantId) throw new Error("[courses] No tenant id");
+  // ✅ OFFLINE-FIRST: fail fast and stay pending — the request itself would
+  //    just die, and a queued row syncs via retryPendingCoursePushes later.
+  if (typeof navigator !== "undefined" && navigator.onLine === false) {
+    throw new Error("Offline — course queued locally and will sync when you reconnect");
+  }
   const c: any = course;
   const id = String(c?.id ?? "").trim();
   if (!id) throw new Error("[courses] row has no id");
@@ -430,6 +446,11 @@ export async function pushCourseToSupabase(course: Course, tenantId: string): Pr
 export async function deleteCourseFromSupabase(id: string, tenantId: string): Promise<void> {
   // A non-UUID id can never exist in the cloud (uuid PK) → nothing to delete.
   if (!isUuid(id)) return;
+  // ✅ OFFLINE-FIRST: same instant-fail contract as the push — the tombstone
+  //    stays queued and retryFailedCloudDeletes finishes the job on reconnect.
+  if (typeof navigator !== "undefined" && navigator.onLine === false) {
+    throw new Error("Offline — cloud delete queued for retry when you reconnect");
+  }
   const client = getClient();
   const now = new Date().toISOString();
   let shape = await detectCoursesShape();
@@ -548,6 +569,7 @@ function mapCloudCourseToLocal(raw: any, src: any, tenantId: string): Course {
  */
 export async function fetchCoursesFromSupabase(tenantId: string): Promise<Course[] | null> {
   if (!tenantId) return null;
+  if (typeof navigator !== "undefined" && navigator.onLine === false) return null; // ✅ offline — local data stays authoritative
   try {
     const client = getClient();
     const { data, error } = await client.from(T.courses).select("*").eq("tenant_id", tenantId);

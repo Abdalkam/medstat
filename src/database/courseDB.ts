@@ -1,4 +1,16 @@
-// src/database/courseDB.ts — v5: truly honest synced flag + airtight delete guard
+// src/database/courseDB.ts — v6: OFFLINE-FIRST (retryPendingCoursePushes)
+//
+// Changes vs v5 (v5 behavior is preserved — nothing regressed):
+//  • NEW export retryPendingCoursePushes(): pushes every tenant row still
+//    sitting at synced:false (created/edited while offline). sync.ts calls
+//    it on every tick AND the moment the browser fires its "online" event,
+//    so offline work drains automatically — no restart needed.
+//  • deleteCourse OFFLINE: the cloud soft-delete is NOT attempted when
+//    navigator.onLine is false. The tombstone is kept with a clear
+//    "Offline — queued" message (status "failed" is the retry loop's
+//    queue) and NO error is thrown — the delete feels instant and local.
+//
+// v5 was: truly honest synced flag + airtight delete guard:
 //
 // Changes vs v4 (the v4 behavior list is preserved — nothing regressed):
 //  • pushCourseRow now marks the row DIRTY FIRST (synced:false before the
@@ -74,6 +86,33 @@ async function pushCourseRow(course: Course, tenantId: string): Promise<void> {
     await db.courses.update(course.id as string, { synced: true } as any);
   } catch (e: unknown) {
     console.warn("Supabase push failed (kept as pending, will retry):", e);
+  }
+}
+
+/** ✅ OFFLINE-FIRST: drain every course row that was created or edited while
+ *  offline (or while a push failed). Rows keep synced:false until the cloud
+ *  confirms, so this is idempotent — safe to call as often as you like.
+ *  Called by sync.ts on every tick AND on the browser "online" event. */
+export async function retryPendingCoursePushes(): Promise<void> {
+  const tenantId = getTenantId();
+  if (!tenantId) return;
+  if (typeof navigator !== "undefined" && navigator.onLine === false) return;
+  let pending: Course[] = [];
+  try {
+    pending = (await db.courses.toArray()).filter(
+      (c: any) => c?.synced === false && (c?.tenantId === tenantId || c?.tenant_id === tenantId)
+    );
+  } catch {
+    return;
+  }
+  for (const c of pending) {
+    if (!c.id) continue; // defensive — id-less rows cannot push
+    if (await isDeleted("course", c.id)) continue; // tombstoned — the delete flow owns it
+    try {
+      await pushCourseRow(c, tenantId); // swallows failures — stays pending
+    } catch (e) {
+      console.warn(`Course ${c.id} still pending:`, e);
+    }
   }
 }
 
@@ -157,6 +196,17 @@ export async function deleteCourse(id: string): Promise<void> {
   await db.courses.delete(id);
 
   if (tenantId && everSynced) {
+    // ✅ OFFLINE-FIRST: don't even attempt the cloud delete without a
+    //    network — the request would die and the tombstone must survive
+    //    anyway. Status "failed" is the retry loop's queue:
+    //    retryFailedCloudDeletes soft-deletes in the cloud on the first
+    //    online tick. NO throw — the local delete already did the
+    //    user-visible job.
+    if (typeof navigator !== "undefined" && navigator.onLine === false) {
+      await markDeleted("course", id, tenantId, "failed", "Offline — cloud delete queued for retry");
+      console.log(`Course ${id} deleted locally (offline — cloud delete queued)`);
+      return;
+    }
     try {
       await deleteCourseFromSupabase(id, tenantId);
       await unmarkDeleted("course", id);

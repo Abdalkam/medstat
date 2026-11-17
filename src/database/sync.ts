@@ -1,4 +1,15 @@
-// src/database/sync.ts — v8: enrollment-aware pulls + shape-aware course pull
+// src/database/sync.ts — v9: OFFLINE-FIRST ticks + auto-flush on reconnect
+//
+// Changes vs v8 (offline-first hardening — v8 behavior preserved):
+//  • The periodic tick SKIPS entirely when navigator.onLine is false — no
+//    more per-minute console noise from doomed requests.
+//  • pullAllTenantData returns immediately when offline.
+//  • NEW: a browser "online" event triggers an immediate flush — pending
+//    course pushes (retryPendingCoursePushes), failed cloud deletes,
+//    pending enrollments (via the pull) and users (syncUp). Offline work
+//    drains the moment connectivity returns, without waiting for a tick.
+//
+// v8 was: enrollment-aware pulls + shape-aware course pull
 //
 // Changes vs v7 (cross-device data completeness fix — all preserved):
 //  1. Pull Enrollments: pair-level tombstones + pending-removal log respected,
@@ -34,8 +45,14 @@ import { sbFetch } from "../auth/supabase";
 import { purgeDeletedFromDexie, retryFailedCloudDeletes } from "./deletedIdsTracker";
 import { shapeRemunerationLocal, shapeTuition } from "./supabaseUserSync";
 import { fetchCoursesFromSupabase } from "./supabaseCourseSync";
+import { retryPendingCoursePushes } from "./courseDB";
 
 let periodicPullInterval: ReturnType<typeof setInterval> | null = null;
+let onlineFlushHandler: (() => void) | null = null;
+
+function isOnline(): boolean {
+  return typeof navigator === "undefined" ? true : navigator.onLine !== false;
+}
 
 const API_BASE_URL = import.meta.env.PROD ? "https://medstat-3rxl.onrender.com" : "";
 
@@ -79,6 +96,16 @@ export function enableSyncHooks() {
   console.log("Sync hooks enabled (Polling mode).");
 }
 
+/** ✅ OFFLINE-FIRST: drain everything queued while offline the moment the
+ *  network returns. Cheap, idempotent, and tolerant of partial failures. */
+async function flushPendingWork(tenantId: string) {
+  if (!isOnline()) return;
+  try { await retryPendingCoursePushes(); } catch (e) { console.warn("Pending course push failed:", e); }
+  try { await retryFailedCloudDeletes(); } catch (e) { console.warn("Cloud delete retry failed:", e); }
+  try { await pullAllTenantData(tenantId); } catch { /* logged inside */ }
+  try { await syncUp(); } catch (e) { console.warn("syncUp failed:", e); }
+}
+
 // ==========================================
 // 2. PERIODIC PULL
 // ==========================================
@@ -87,6 +114,9 @@ export function startPeriodicPull(ms: number = 60000) {
 
   periodicPullInterval = setInterval(async () => {
     if (!hasValidAuth()) return;
+
+    // ✅ OFFLINE-FIRST: skip doomed pulls while the network is down.
+    if (!isOnline()) return;
 
     const token = localStorage.getItem("authToken");
     if (token === "offline-mode-pending-sync") return;
@@ -101,12 +131,26 @@ export function startPeriodicPull(ms: number = 60000) {
       }
     }
   }, ms);
+
+  // ✅ Flush the offline queue the moment connectivity comes back.
+  if (!onlineFlushHandler && typeof window !== "undefined") {
+    onlineFlushHandler = () => {
+      if (!hasValidAuth()) return;
+      const user = JSON.parse(localStorage.getItem("currentUser") || "{}");
+      if (user?.tenantId) void flushPendingWork(user.tenantId);
+    };
+    window.addEventListener("online", onlineFlushHandler);
+  }
 }
 
 export function stopPeriodicPull() {
   if (periodicPullInterval) {
     clearInterval(periodicPullInterval);
     periodicPullInterval = null;
+  }
+  if (onlineFlushHandler) {
+    if (typeof window !== "undefined") window.removeEventListener("online", onlineFlushHandler);
+    onlineFlushHandler = null;
   }
 }
 
@@ -115,6 +159,11 @@ export function stopPeriodicPull() {
 // ==========================================
 export async function pullAllTenantData(tenantId: string) {
   if (!tenantId) return;
+
+  // ✅ OFFLINE-FIRST: reads without a network are pure noise — the local
+  //    Dexie data is already on screen and stays authoritative until a
+  //    later online tick merges the cloud again.
+  if (!isOnline()) return;
 
   const token = localStorage.getItem("authToken");
   if (token === "offline-mode-pending-sync") return;

@@ -1277,6 +1277,24 @@ export default function CourseManagement({ initialCourseId }: { initialCourseId?
     setSnackbar({ message, color });
   }
 
+  // ✅ OFFLINE-FIRST: connectivity is surfaced, never blocking — every write
+  //    lands in Dexie first and syncs automatically when the network returns.
+  const [online, setOnline] = useState(typeof navigator === "undefined" ? true : navigator.onLine);
+  useEffect(() => {
+    const up = () => {
+      setOnline(true);
+      void loadData(); // repaint with the freshly merged cloud data
+    };
+    const down = () => setOnline(false);
+    window.addEventListener("online", up);
+    window.addEventListener("offline", down);
+    return () => {
+      window.removeEventListener("online", up);
+      window.removeEventListener("offline", down);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   /* ------------------------------------------------------------------------
      DATA LOAD — local paint first, Supabase merge second.
   -------------------------------------------------------------------------- */
@@ -1613,7 +1631,12 @@ export default function CourseManagement({ initialCourseId }: { initialCourseId?
       await deleteCourse(target.id);
       setConfirmDelete(null);
       if (selectedCourseId === target.id) setSelectedCourseId(null);
-      showSnack(`${target.name || "Course"} deleted.`);
+      showSnack(
+        online
+          ? `${target.name || "Course"} deleted.`
+          : `${target.name || "Course"} deleted — cloud cleanup will finish when you're back online.`,
+        online ? C.green : C.orange
+      );
     } catch (e: any) {
       // Local delete already succeeded; the cloud delete keeps retrying.
       setConfirmDelete(null);
@@ -1875,12 +1898,13 @@ export default function CourseManagement({ initialCourseId }: { initialCourseId?
             </h1>
             <p style={{ margin: "6px 0 0", color: C.onSurfaceVariant, fontSize: 14, fontWeight: 400, lineHeight: 1.5 }}>
               Create courses, edit their details, and attach trainers and trainees
-              {merging ? " · syncing…" : ""}
+              {merging ? " · syncing…" : !online ? " · offline mode" : ""}
             </p>
           </div>
 
           <div style={{ display: "inline-flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
             {merging && <Chip label="Syncing…" bg={C.blueBg} fg={C.blue} />}
+            {!online && <Chip label="Offline" bg={C.orangeBg} fg={C.orange} />}
             <MiniTextButton label="Refresh" onClick={() => void loadData()} />
             <FilledButton
               label="+ New course"
@@ -1891,6 +1915,31 @@ export default function CourseManagement({ initialCourseId }: { initialCourseId?
             />
           </div>
         </div>
+
+        {/* ✅ OFFLINE-FIRST banner — informative only, nothing is disabled:
+            courses, edits and rosters all keep working offline. */}
+        {!online && (
+          <div
+            style={{
+              marginTop: 14,
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              padding: "10px 14px",
+              borderRadius: R.md,
+              background: C.orangeBg,
+            }}
+          >
+            <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke={C.orange} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ flexShrink: 0 }}>
+              <path d="m10.29 3.86-8.4 14.14A2 2 0 0 0 3.6 21h16.8a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+              <path d="M12 9v4" />
+              <path d="M12 17h.01" />
+            </svg>
+            <span style={{ fontSize: 13, color: C.orange, lineHeight: 1.45, flex: 1, minWidth: 0 }}>
+              You're offline — courses, edits and rosters save on this device and sync automatically when the connection returns.
+            </span>
+          </div>
+        )}
 
         {/* ================================================================
             MASTER / DETAIL LAYOUT
@@ -2238,4 +2287,3 @@ export default function CourseManagement({ initialCourseId }: { initialCourseId?
     </div>
   );
 }
-
