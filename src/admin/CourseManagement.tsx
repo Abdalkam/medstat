@@ -298,15 +298,17 @@ function SectionHeader({
   );
 }
 
-/** MD3 text button — transparent pill with 8% primary state layer on hover. */
+/** MD3 text button — transparent pill with 8% state layer on hover. */
 function MiniTextButton({
   label,
   onClick,
   disabled,
+  danger,
 }: {
   label: string;
   onClick: () => void;
   disabled?: boolean;
+  danger?: boolean;
 }) {
   return (
     <button
@@ -316,7 +318,7 @@ function MiniTextButton({
       style={{
         border: "none",
         background: "transparent",
-        color: disabled ? C.outlineVariant : C.primary,
+        color: disabled ? C.outlineVariant : danger ? C.red : C.primary,
         fontSize: 14,
         fontWeight: 500,
         letterSpacing: "0.01em",
@@ -332,7 +334,7 @@ function MiniTextButton({
         justifyContent: "center",
       }}
       onMouseEnter={(e) => {
-        if (!disabled) e.currentTarget.style.background = "rgba(11,87,208,0.08)";
+        if (!disabled) e.currentTarget.style.background = danger ? "rgba(179,38,30,0.08)" : "rgba(11,87,208,0.08)";
       }}
       onMouseLeave={(e) => {
         e.currentTarget.style.background = "transparent";
@@ -816,23 +818,350 @@ function EmptyState({ title, description }: { title: string; description: string
   );
 }
 
-/** Labeled form field wrapper. */
-function Field({
+/** MD3 filled text field — floating label, 2dp primary indicator on focus,
+ *  trailing suffix, supporting text, multiline support. Matches the Android
+ *  Material 3 controls used across Google's own apps. */
+function TextField({
   label,
-  children,
-  hint,
+  value,
+  onChange,
+  type = "text",
+  placeholder,
+  disabled,
+  inputMode,
+  suffix,
+  supporting,
+  multiline,
+  rows = 3,
 }: {
   label: string;
-  children: ReactNode;
-  hint?: string;
+  value: string;
+  onChange: (v: string) => void;
+  type?: string;
+  placeholder?: string;
+  disabled?: boolean;
+  inputMode?: "numeric" | "text" | "tel" | "email" | "url";
+  suffix?: string;
+  supporting?: string;
+  multiline?: boolean;
+  rows?: number;
+}) {
+  const [focused, setFocused] = useState(false);
+  // Date and multiline fields float permanently — the native hint text and
+  // the first text line would otherwise collide with the resting label.
+  const alwaysFloat = type === "date" || multiline;
+  const floated = focused || value !== "" || alwaysFloat;
+
+  const labelStyle: CSSProperties = {
+    position: "absolute",
+    left: 14,
+    right: 14,
+    top: floated ? 6 : multiline ? 15 : 17,
+    fontSize: floated ? 11 : 15,
+    fontWeight: floated ? 500 : 400,
+    letterSpacing: floated ? "0.04em" : "0.01em",
+    color: focused ? C.primary : C.onSurfaceVariant,
+    opacity: disabled ? 0.45 : 1,
+    pointerEvents: "none",
+    whiteSpace: "nowrap",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    transition: motion,
+    fontFamily: font,
+  };
+
+  const text: CSSProperties = {
+    display: "block",
+    width: "100%",
+    boxSizing: "border-box",
+    border: "none",
+    outline: "none",
+    background: "transparent",
+    fontFamily: font,
+    fontSize: 15,
+    color: disabled ? "rgba(31,31,31,0.38)" : C.onSurface,
+    caretColor: C.primary,
+    transition: motion,
+  };
+
+  return (
+    <div style={{ minWidth: 0 }}>
+      <div
+        style={{
+          position: "relative",
+          background: disabled ? "rgba(31,31,31,0.04)" : C.surfaceVariant,
+          borderRadius: "12px 12px 0 0",
+          transition: motion,
+        }}
+      >
+        <span style={labelStyle}>{label}</span>
+        {multiline ? (
+          <textarea
+            rows={rows}
+            value={value}
+            disabled={disabled}
+            placeholder={focused ? placeholder : undefined}
+            onChange={(e) => onChange(e.target.value)}
+            onFocus={() => setFocused(true)}
+            onBlur={() => setFocused(false)}
+            style={{
+              ...text,
+              padding: floated ? "24px 14px 8px" : "14px",
+              resize: "vertical",
+              minHeight: rows * 22 + 30,
+            }}
+          />
+        ) : (
+          <div style={{ display: "flex", alignItems: "center" }}>
+            <input
+              type={type}
+              value={value}
+              disabled={disabled}
+              inputMode={inputMode}
+              placeholder={focused ? placeholder : undefined}
+              onChange={(e) => onChange(e.target.value)}
+              onFocus={() => setFocused(true)}
+              onBlur={() => setFocused(false)}
+              style={{ ...text, flex: 1, minWidth: 0, padding: "22px 14px 10px" }}
+            />
+            {suffix ? (
+              <span
+                style={{
+                  flexShrink: 0,
+                  paddingRight: 14,
+                  paddingBottom: 12,
+                  fontSize: 13,
+                  fontWeight: 500,
+                  color: disabled ? "rgba(31,31,31,0.38)" : C.onSurfaceVariant,
+                  userSelect: "none",
+                  fontFamily: font,
+                }}
+              >
+                {suffix}
+              </span>
+            ) : null}
+          </div>
+        )}
+      </div>
+      <div style={{ height: 2, display: "flex", alignItems: "flex-end" }}>
+        <div
+          style={{
+            height: focused ? 2 : 1,
+            width: "100%",
+            background: focused ? C.primary : C.outlineVariant,
+            transition: motion,
+          }}
+        />
+      </div>
+      {supporting ? (
+        <div
+          style={{
+            fontSize: 11.5,
+            lineHeight: 1.45,
+            color: disabled ? "rgba(31,31,31,0.38)" : C.onSurfaceVariant,
+            padding: "4px 14px 0",
+            fontFamily: font,
+          }}
+        >
+          {supporting}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** MD3 segmented button pair — Free / Paid. Full-radius outline, selected
+ *  segment fills with the secondary container colour and gains a check. */
+function TuitionSegmented({
+  value,
+  onChange,
+}: {
+  value: "free" | "paid";
+  onChange: (v: "free" | "paid") => void;
 }) {
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
-      <label style={{ fontSize: 12, fontWeight: 500, color: C.onSurfaceVariant, letterSpacing: "0.01em" }}>
-        {label}
-      </label>
-      {children}
-      {hint ? <span style={{ fontSize: 11, color: C.outline, lineHeight: 1.4 }}>{hint}</span> : null}
+    <div
+      style={{
+        display: "flex",
+        height: 44,
+        border: `1px solid ${C.outlineVariant}`,
+        borderRadius: 999,
+        overflow: "hidden",
+        minWidth: 0,
+      }}
+    >
+      {(["free", "paid"] as const).map((k, i) => {
+        const on = value === k;
+        return (
+          <button
+            key={k}
+            type="button"
+            onClick={() => onChange(k)}
+            style={{
+              flex: 1,
+              minWidth: 0,
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 6,
+              border: "none",
+              borderLeft: i === 1 ? `1px solid ${C.outlineVariant}` : "none",
+              background: on ? C.secondaryContainer : "transparent",
+              color: on ? C.onSurface : C.onSurfaceVariant,
+              fontSize: 13.5,
+              fontWeight: on ? 600 : 500,
+              fontFamily: font,
+              cursor: "pointer",
+              transition: motion,
+              padding: "0 8px",
+            }}
+          >
+            {on ? (
+              <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M20 6 9 17l-5-5" />
+              </svg>
+            ) : null}
+            {k === "free" ? "Free" : "Paid"}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Reads an image file and returns a compact PNG data URI (256px max edge,
+ *  aspect preserved) that can live directly inside the course `data` jsonb
+ *  — no storage bucket, no URL typing. */
+async function fileToLogoDataUrl(file: File): Promise<string> {
+  if (!/^image\/(png|jpeg|webp|gif)$/i.test(file.type)) {
+    throw new Error("Use a PNG, JPG, WEBP or GIF image.");
+  }
+  if (file.size > 15 * 1024 * 1024) {
+    throw new Error("That image is larger than 15 MB — pick a smaller one.");
+  }
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const im = new Image();
+      im.onload = () => resolve(im);
+      im.onerror = () => reject(new Error("That file could not be read as an image."));
+      im.src = url;
+    });
+    const maxEdge = 256;
+    const w0 = img.naturalWidth || maxEdge;
+    const h0 = img.naturalHeight || maxEdge;
+    const scale = Math.min(1, maxEdge / Math.max(w0, h0));
+    const w = Math.max(1, Math.round(w0 * scale));
+    const h = Math.max(1, Math.round(h0 * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("This device cannot process images.");
+    ctx.drawImage(img, 0, 0, w, h);
+    return canvas.toDataURL("image/png");
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+/** Logo attachment — picks an image from the device (Android file picker /
+ *  gallery), downscales it and shows it as the course icon. Replaces the
+ *  old "Logo URL" text input. */
+function LogoPicker({
+  value,
+  onChange,
+  onError,
+}: {
+  value: string;
+  onChange: (dataUrl: string) => void;
+  onError: (msg: string) => void;
+}) {
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function handleFile(file: File | undefined) {
+    if (!file || busy) return;
+    setBusy(true);
+    try {
+      onChange(await fileToLogoDataUrl(file));
+    } catch (e: any) {
+      onError(e?.message || "That file could not be read as an image.");
+    } finally {
+      setBusy(false);
+      if (fileRef.current) fileRef.current.value = ""; // re-picking the same file must fire change
+    }
+  }
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+      <input
+        ref={fileRef}
+        type="file"
+        accept="image/png,image/jpeg,image/webp,image/gif"
+        style={{ display: "none" }}
+        onChange={(e) => handleFile(e.target.files?.[0])}
+      />
+      <div style={{ position: "relative", flexShrink: 0 }}>
+        <div
+          style={{
+            width: 64,
+            height: 64,
+            borderRadius: R.md,
+            overflow: "hidden",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            background: value ? "transparent" : C.surface,
+            border: value ? "none" : `1.5px dashed ${C.outlineVariant}`,
+            boxShadow: value ? S.level1 : "none",
+            transition: motion,
+          }}
+        >
+          {value ? (
+            <img src={value} alt="Course logo" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+          ) : (
+            <svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke={C.outline} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <rect x="3" y="3" width="18" height="18" rx="3" />
+              <circle cx="9" cy="9" r="1.8" />
+              <path d="m21 15-4.2-4.2a1.6 1.6 0 0 0-2.3 0L6 19" />
+            </svg>
+          )}
+        </div>
+        {busy ? (
+          <div
+            style={{
+              position: "absolute",
+              inset: 0,
+              borderRadius: R.md,
+              background: "rgba(255,255,255,0.65)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <div
+              style={{
+                width: 18,
+                height: 18,
+                border: `2px solid ${C.outlineVariant}`,
+                borderTopColor: C.primary,
+                borderRadius: "50%",
+                animation: "cmSpin 0.8s linear infinite",
+              }}
+            />
+          </div>
+        ) : null}
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 4, minWidth: 0 }}>
+        <div style={{ display: "flex", flexWrap: "wrap" }}>
+          <MiniTextButton label={value ? "Replace" : "Attach logo"} onClick={() => fileRef.current?.click()} disabled={busy} />
+          {value ? <MiniTextButton label="Remove" danger onClick={() => onChange("")} disabled={busy} /> : null}
+        </div>
+        <span style={{ fontSize: 11.5, color: C.onSurfaceVariant, padding: "0 16px", lineHeight: 1.4 }}>
+          {value ? "Stored with the course — no URL needed." : "PNG · JPG · WEBP — auto-resized for the course icon"}
+        </span>
+      </div>
     </div>
   );
 }
@@ -1148,14 +1477,35 @@ export default function CourseManagement({ initialCourseId }: { initialCourseId?
     setTab((membersByCourse.get(id)?.size ?? 0) > 0 ? "members" : "details");
   }
 
-  // Load the edit form whenever the selection changes. Deliberately NOT
-  // re-run on every courses repaint — the admin owns the form while editing.
+  // Load the edit form whenever the selection changes, and also when the
+  // selected course itself arrives or updates (deep-link cold start: the
+  // course may exist only in the cloud until the background merge lands it).
+  // In-progress edits are never clobbered — formDirty guards that.
   useEffect(() => {
-    const sel = courses.find((c) => c.id === selectedCourseId);
-    setForm(sel ? fromCourse(sel) : EMPTY_COURSE_FORM);
+    if (!selectedCourseId) {
+      setForm(EMPTY_COURSE_FORM);
+      setFormDirty(false);
+      return;
+    }
+    const sel = courses.find((c: any) => c.id === selectedCourseId);
+    if (!sel || formDirty) return; // not merged yet, or the admin owns the form
+    setForm(fromCourse(sel));
     setFormDirty(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedCourseId]);
+  }, [selectedCourseId, courses]);
+
+  // ✅ AUTO-OPEN: the first course in the list opens itself as soon as data
+  //    is available (local paint or cloud merge) — its Details form and the
+  //    Members tab (with its users) show without an extra click. Hands off
+  //    whenever the admin already has a valid selection, and falls back to
+  //    the first course after a delete or a stale deep-link.
+  useEffect(() => {
+    if (isLoading || merging) return;
+    if (selectedCourseId && courses.some((c: any) => c.id === selectedCourseId)) return;
+    const first = filteredCourseList[0];
+    if (first?.id) selectCourse(first.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLoading, merging, selectedCourseId, filteredCourseList]);
 
   // Draft follows the canonical enrollment rows while the admin has not
   // ticked anything — a background merge can freely correct it.
@@ -1346,89 +1696,57 @@ export default function CourseManagement({ initialCourseId }: { initialCourseId?
 
   const courseFormPane = (target: CourseForm, setTarget: (patch: Partial<CourseForm>) => void) => (
     <>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 14 }}>
-        <Field label="Course name">
-          <input
-            className="cmInput"
-            value={target.name}
-            onChange={(e) => setTarget({ name: e.target.value })}
-            placeholder="e.g. Mathematics P4"
-          />
-        </Field>
-        <Field label="Period">
-          <input
-            className="cmInput"
-            value={target.period}
-            onChange={(e) => setTarget({ period: e.target.value })}
-            placeholder="e.g. Term 1 · Mon & Wed"
-          />
-        </Field>
-        <Field label="Tuition">
-          <div style={{ display: "flex", border: `1px solid ${C.outline}`, borderRadius: R.xl, overflow: "hidden" }}>
-            {(["free", "paid"] as const).map((k) => {
-              const on = target.tuitionType === k;
-              return (
-                <button
-                  key={k}
-                  type="button"
-                  onClick={() => setTarget({ tuitionType: k })}
-                  style={{
-                    flex: 1,
-                    padding: "9px 8px",
-                    border: "none",
-                    background: on ? C.primaryContainer : C.surface,
-                    color: on ? C.onPrimaryContainer : C.onSurfaceVariant,
-                    fontSize: 13,
-                    fontWeight: 500,
-                    fontFamily: font,
-                    cursor: "pointer",
-                    transition: motion,
-                  }}
-                >
-                  {k === "free" ? "Free" : "Paid"}
-                </button>
-              );
-            })}
-          </div>
-        </Field>
-        <Field label="Amount (UGX)" hint={target.tuitionType === "free" ? "Free courses carry no amount." : undefined}>
-          <input
-            className="cmInput"
-            value={target.tuitionType === "free" ? "" : target.amount}
-            disabled={target.tuitionType === "free"}
-            onChange={(e) => setTarget({ amount: e.target.value })}
-            placeholder={target.tuitionType === "free" ? "—" : "e.g. 150000"}
-            inputMode="numeric"
-          />
-        </Field>
-        <Field label="Start date">
-          <input
-            className="cmInput"
-            type="date"
-            value={target.startDate}
-            onChange={(e) => setTarget({ startDate: e.target.value })}
-          />
-        </Field>
-        <Field label="Logo URL" hint="Optional image shown as the course icon.">
-          <input
-            className="cmInput"
-            value={target.logo}
-            onChange={(e) => setTarget({ logo: e.target.value })}
-            placeholder="https://…"
-          />
-        </Field>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 16 }}>
+        <TextField
+          label="Course name"
+          value={target.name}
+          onChange={(v) => setTarget({ name: v })}
+          placeholder="e.g. Mathematics P4"
+        />
+        <TextField
+          label="Period"
+          value={target.period}
+          onChange={(v) => setTarget({ period: v })}
+          placeholder="e.g. Term 1 · Mon & Wed"
+        />
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
+          <span style={{ fontSize: 12, fontWeight: 500, color: C.onSurfaceVariant, letterSpacing: "0.01em", fontFamily: font }}>
+            Tuition
+          </span>
+          <TuitionSegmented value={target.tuitionType} onChange={(k) => setTarget({ tuitionType: k })} />
+        </div>
+        <TextField
+          label="Amount"
+          suffix="UGX"
+          value={target.tuitionType === "free" ? "" : target.amount}
+          disabled={target.tuitionType === "free"}
+          onChange={(v) => setTarget({ amount: v.replace(/[^0-9]/g, "") })}
+          inputMode="numeric"
+          placeholder="e.g. 150000"
+          supporting={target.tuitionType === "free" ? "Free courses carry no amount." : "Ugandan Shillings — digits only."}
+        />
+        <TextField
+          label="Start date"
+          type="date"
+          value={target.startDate}
+          onChange={(v) => setTarget({ startDate: v })}
+        />
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
+          <span style={{ fontSize: 12, fontWeight: 500, color: C.onSurfaceVariant, letterSpacing: "0.01em", fontFamily: font }}>
+            Course logo
+          </span>
+          <LogoPicker value={target.logo} onChange={(d) => setTarget({ logo: d })} onError={(m) => showSnack(m, C.red)} />
+        </div>
       </div>
-      <div style={{ marginTop: 14 }}>
-        <Field label="Description">
-          <textarea
-            className="cmInput"
-            rows={3}
-            value={target.description}
-            onChange={(e) => setTarget({ description: e.target.value })}
-            placeholder="What the course covers…"
-            style={{ resize: "vertical" }}
-          />
-        </Field>
+      <div style={{ marginTop: 16 }}>
+        <TextField
+          label="Description"
+          multiline
+          rows={3}
+          value={target.description}
+          onChange={(v) => setTarget({ description: v })}
+          placeholder="What the course covers…"
+        />
       </div>
     </>
   );
@@ -1497,9 +1815,7 @@ export default function CourseManagement({ initialCourseId }: { initialCourseId?
           background: transparent;
         }
 
-        .cmInput:focus { border-color: ${C.primary}; box-shadow: inset 0 0 0 1px ${C.primary}; outline: none; }
-        .cmInput:disabled { background: ${C.inset}; color: ${C.outline}; cursor: default; }
-        .cmTextarea:focus { border-color: ${C.primary}; box-shadow: inset 0 0 0 1px ${C.primary}; outline: none; }
+        @keyframes cmSpin { to { transform: rotate(360deg); } }
 
         .cmLayout button:focus-visible, .cmLayout input:focus-visible, .cmLayout [tabindex]:focus-visible {
           outline: 2px solid ${C.primary};
@@ -1922,3 +2238,4 @@ export default function CourseManagement({ initialCourseId }: { initialCourseId?
     </div>
   );
 }
+
