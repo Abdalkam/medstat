@@ -1,374 +1,1027 @@
-// src/screens/LoginScreen.tsx — v1: Material sign-in for MedStat
-//
-// "Log in from any device, anywhere" — this screen is a thin Material shell
-// over the machinery that already lives in src/database/userDB.ts:
-//   • loginWithIdentifier() resolves the business identifier (tenant UUID |
-//     institution phone | business name) against the tenants table, then
-//     authenticates straight against Supabase public.users — no localhost /
-//     Render hop, no cold starts.
-//   • Offline: Supabase-unreachable logins fall back to credentials cached in
-//     Dexie from a previous sign-in on THIS device (the app-side contract).
-//   • The user record (incl. bcrypt hash) is cached after every success, so
-//     the NEXT sign-in on the same device works with no network at all.
-//
-// Wiring: render <LoginScreen onSignedIn={(user) => ...} /> from your app
-// shell (router or App.tsx auth gate). On success the component also fires
-// the same "authStateChanged" event hardRedirectToLogin() uses, so existing
-// listeners re-evaluate the session. After the shell switches to the app,
-// make sure startPeriodicPull() is running (see CHANGES.md).
+/* ============================================================================
+   src/login.tsx — v1: OFFLINE-FIRST SIGN-IN + PROFESSIONAL ANDROID (MD3) UI
+   ============================================================================
+
+   WHAT THIS FILE IS
+
+   The app's sign-in screen, rebuilt in the same Material Design 3 language
+   as CourseManagement.tsx (same palette, radii, shadows, motion) and laid
+   out to fit ANY device screen size:
+
+     • phones (360px+)     → single centered card, compact brand header
+     • tablets / desktops  → two-panel layout (brand panel + form card)
+     • landscape phones    → compact spacing via @media (max-height: 500px)
+     • notched devices     → env(safe-area-inset-*) padding
+     • text never smaller  → clamp() type scale, 16px inputs (no iOS zoom)
+     • touch targets       → 48px buttons, 40px+ icon buttons (Material a11y)
+
+   AUTH FLOW (offline-first, mirrors database/sync.ts):
+
+     1. Online sign-in  → supabase.auth.signInWithPassword, then the app
+        profile is read from public.users (by email; falls back to the local
+        Dexie copy). Session token → localStorage "authToken", profile →
+        "currentUser", then the sync engine is started (startPeriodicPull +
+        syncNow) and the user is routed by role (admin → /admin,
+        trainer → /trainer, anything else → /).
+     2. Network failure → automatic OFFLINE SIGN-IN: the account is looked
+        up in the local Dexie cache and the session is marked with the
+        "offline-mode-pending-sync" token that database/sync.ts already
+        understands (cloud pulls/pushes are skipped, local Dexie stays
+        authoritative, everything queues for later).
+     3. "Continue offline" button → the same offline path, on demand —
+        for when you simply don't want to wait on a slow network.
+
+   ROUTING / INTEGRATION
+
+     • Default export <Login /> (named export Login too) — point your router
+       at it:  <Route path="/login" element={<Login />} />
+     • Optional overrides:  <Login routes={{ admin: "/admin", trainer: "/trainer", member: "/" }} />
+     • If a session already exists the screen forwards to the role home.
+   ============================================================================ */
 
 import { useEffect, useState } from "react";
-import type { CSSProperties } from "react";
-import {
-  loginWithIdentifier,
-  resolveTenantIdentifier,
-  type MedStatUser,
-} from "../database/userDB";
+import type { ReactNode } from "react";
+import { useNavigate } from "react-router-dom";
 
-/* -------------------------------------------------------------------------- */
-/* Injected stylesheet — focus rings, press states, entrance animation        */
-/* -------------------------------------------------------------------------- */
+import { supabase } from "./auth/supabase";
+import { db } from "./database/db";
+import { startPeriodicPull, syncNow } from "./database/sync";
 
-const LGS_CSS = `
-.lgs-root{font-family:Roboto,'Segoe UI',system-ui,-apple-system,sans-serif;
-  min-height:100vh;background:linear-gradient(180deg,#eff6ff 0%,#f8fafc 45%,#f1f5f9 100%);
-  display:flex;align-items:center;justify-content:center;padding:24px;color:#0f172a;}
-.lgs-root *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
-.lgs-card{width:100%;max-width:400px;background:#ffffff;border:1px solid #e2e8f0;
-  border-radius:28px;padding:28px 24px;box-shadow:0 10px 30px rgba(15,23,42,.08);
-  animation:lgs-in .25s ease-out;}
-@keyframes lgs-in{from{transform:translateY(16px);opacity:0;}to{transform:none;opacity:1;}}
-.lgs-field:focus-within{border-color:#2563eb !important;box-shadow:inset 0 0 0 1px #2563eb;}
-.lgs-field input:focus{outline:none;}
-.lgs-btn{transition:transform .06s ease;}
-.lgs-btn:active:not(:disabled){transform:scale(.98);}
-.lgs-btn:disabled{opacity:.55;cursor:default;}
-.lgs-iconbtn{border:none;background:transparent;border-radius:999px;width:40px;height:40px;
-  display:inline-flex;align-items:center;justify-content:center;cursor:pointer;color:#64748b;flex-shrink:0;}
-.lgs-iconbtn:hover{background:#e2e8f0;}
-`;
+/* ------------------------------------------------------------------ */
+/* Shared constants (same values as database/sync.ts / UploadMaterials) */
+/* ------------------------------------------------------------------ */
 
-/* -------------------------------------------------------------------------- */
-/* Icons                                                                      */
-/* -------------------------------------------------------------------------- */
+const OFFLINE_LOGIN_TOKEN = "offline-mode-pending-sync";
+const LAST_USER_KEY = "medstat_last_user";
 
-const LGS_ICONS: Record<string, string> = {
-  visibility:
-    "M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-8a3 3 0 1 0 0 6 3 3 0 0 0 0-6z",
-  visibilityOff:
-    "M12 7c2.76 0 5 2.24 5 5 0 .65-.13 1.26-.36 1.83l2.92 2.92c1.51-1.26 2.7-2.89 3.43-4.75-1.73-4.39-6-7.5-11-7.5-1.4 0-2.74.25-3.98.7l2.16 2.16C10.74 7.13 11.35 7 12 7zM2 4.27l2.28 2.28.46.46C3.08 8.3 1.78 10.02 1 12c1.73 4.39 6 7.5 11 7.5 1.55 0 3.03-.3 4.38-.84l.42.42L19.73 22 21 20.73 3.27 3 2 4.27zM7.53 9.8l1.55 1.55c-.05.21-.08.43-.08.65 0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.55 1.55c-.67.33-1.41.53-2.2.53-2.76 0-5-2.24-5-5 0-.79.2-1.53.53-2.2zm4.31-.78 3.15 3.15.02-.16c0-1.66-1.34-3-3-3l-.17.01z",
-  domain:
-    "M12 7V3H2v18h20V7H12zM6 19H4v-2h2v2zm0-4H4v-2h2v2zm0-4H4V9h2v2zm0-4H4V5h2v2zm4 12H8v-2h2v2zm0-4H8v-2h2v2zm0-4H8V9h2v2zm0-4H8V5h2v2zm10 12h-8v-2h2v-2h-2v-2h2v-2h-2V9h8v10zm-2-8h-2v2h2v-2zm0 4h-2v2h2v-2z",
-  person:
-    "M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z",
-  lock:
-    "M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3-9H9V6c0-1.66 1.34-3 3-3s3 1.34 3 3v2z",
+/* ============================================================================
+   MD3 DESIGN TOKENS — identical to CourseManagement.tsx
+============================================================================ */
+
+const C = {
+  primary: "#0B57D0",
+  onPrimary: "#FFFFFF",
+  primaryContainer: "#D3E3FD",
+  onPrimaryContainer: "#041E49",
+  primaryDeep: "#0842A0",
+
+  surface: "#FFFFFF",
+  background: "#F8FAFD",
+
+  onSurface: "#1F1F1F",
+  onSurfaceVariant: "#444746",
+
+  secondaryContainer: "#DAE2F2",
+  onSecondaryContainer: "#1A2E45",
+  surfaceVariant: "#E9EEF6",
+
+  outline: "#747775",
+  outlineVariant: "#C4C7C5",
+
+  green: "#146C2E",
+  greenBg: "#E6F4EA",
+  orange: "#B06000",
+  orangeBg: "#FEF7E0",
+  red: "#B3261E",
+  redBg: "#F9DEDC",
+  blueBg: "#D3E3FD",
 };
 
-function LgsIcon({ path, size = 22 }: { path: string; size?: number }) {
+const FONT =
+  "'Google Sans', 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif";
+
+const SHADOW = {
+  level1: "0 1px 2px 0 rgba(0,0,0,0.10), 0 1px 3px 1px rgba(0,0,0,0.07)",
+  level2: "0 1px 2px 0 rgba(0,0,0,0.12), 0 2px 6px 2px rgba(0,0,0,0.08)",
+  level3: "0 4px 8px 3px rgba(0,0,0,0.10), 0 1px 3px 0 rgba(0,0,0,0.20)",
+};
+
+const MOTION = "all 0.2s cubic-bezier(0.2, 0, 0, 1)";
+
+/* ============================================================================
+   TYPES + ROLE ROUTING
+============================================================================ */
+
+export interface HomeRoutes {
+  admin?: string;
+  trainer?: string;
+  member?: string;
+}
+
+export interface LoginProps {
+  routes?: HomeRoutes;
+}
+
+type AnyUser = Record<string, any> & { id?: string };
+
+/** Role → home route. Exported so startup.tsx / App can reuse the same rule. */
+export function routeForRole(role: string | undefined | null, routes?: HomeRoutes): string {
+  const r = String(role || "").toLowerCase();
+  if (r === "admin" || r === "owner" || r === "super_admin" || r === "superadmin") {
+    return routes?.admin ?? "/admin";
+  }
+  if (r === "trainer" || r === "teacher") return routes?.trainer ?? "/trainer";
+  return routes?.member ?? "/";
+}
+
+function readCurrentUser(): AnyUser | null {
+  try {
+    const raw = localStorage.getItem("currentUser");
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/* ============================================================================
+   INLINE SVG ICONS (stroke style, currentColor — no icon font dependency)
+============================================================================ */
+
+const iconProps = {
+  fill: "none",
+  stroke: "currentColor",
+  strokeWidth: 1.8,
+  strokeLinecap: "round" as const,
+  strokeLinejoin: "round" as const,
+};
+
+function IconMail({ size = 20 }: { size?: number }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-      <path d={path} />
+    <svg width={size} height={size} viewBox="0 0 24 24" {...iconProps}>
+      <rect x="3" y="5" width="18" height="14" rx="2.5" />
+      <path d="m3.5 7.5 8.5 6 8.5-6" />
     </svg>
   );
 }
 
-/* -------------------------------------------------------------------------- */
-/* Styles                                                                     */
-/* -------------------------------------------------------------------------- */
-
-const S: Record<string, CSSProperties> = {
-  brand: { textAlign: "center", marginBottom: 22 },
-  logo: {
-    width: 56,
-    height: 56,
-    borderRadius: 999,
-    background: "#2563eb",
-    color: "#ffffff",
-    fontSize: 24,
-    fontWeight: 700,
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    margin: "0 auto 12px",
-    boxShadow: "0 6px 16px rgba(37, 99, 235, 0.35)",
-  },
-  title: { fontSize: 20, fontWeight: 700, margin: 0 },
-  subtitle: { fontSize: 13, color: "#64748b", marginTop: 4 },
-  offlineChip: {
-    display: "block",
-    background: "#fef3c7",
-    border: "1px solid #fde68a",
-    color: "#92400e",
-    borderRadius: 12,
-    padding: "9px 12px",
-    fontSize: 12,
-    lineHeight: 1.5,
-    marginBottom: 14,
-  },
-  errorCard: {
-    background: "#fef2f2",
-    border: "1px solid #fecaca",
-    color: "#b91c1c",
-    borderRadius: 12,
-    padding: "10px 12px",
-    fontSize: 13,
-    lineHeight: 1.5,
-    marginBottom: 12,
-  },
-  fieldWrap: { display: "flex", flexDirection: "column", gap: 6, marginBottom: 12 },
-  label: { fontSize: 12, fontWeight: 600, color: "#334155" },
-  field: {
-    border: "1px solid #cbd5e1",
-    borderRadius: 14,
-    background: "#ffffff",
-    display: "flex",
-    alignItems: "center",
-    gap: 8,
-    padding: "0 6px 0 12px",
-  },
-  input: {
-    border: "none",
-    outline: "none",
-    background: "transparent",
-    fontSize: 14,
-    padding: "13px 0",
-    width: "100%",
-    minWidth: 0,
-    color: "#0f172a",
-  },
-  hint: { fontSize: 11, color: "#64748b", lineHeight: 1.5, padding: "0 2px" },
-  hintFound: { color: "#166534" },
-  button: {
-    width: "100%",
-    border: "none",
-    background: "#2563eb",
-    color: "#ffffff",
-    borderRadius: 999,
-    padding: "13px 20px",
-    fontSize: 15,
-    fontWeight: 700,
-    cursor: "pointer",
-    marginTop: 6,
-    boxShadow: "0 4px 12px rgba(37, 99, 235, 0.35)",
-  },
-  footer: { fontSize: 11, color: "#94a3b8", textAlign: "center", marginTop: 18, lineHeight: 1.6 },
-};
-
-/* -------------------------------------------------------------------------- */
-/* Screen                                                                     */
-/* -------------------------------------------------------------------------- */
-
-interface LoginScreenProps {
-  /** Called after a successful sign-in (session already persisted). */
-  onSignedIn?: (user: MedStatUser) => void;
+function IconLock({ size = 20 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" {...iconProps}>
+      <rect x="4.5" y="10.5" width="15" height="10" rx="2.5" />
+      <path d="M8 10.5V8a4 4 0 0 1 8 0v2.5" />
+    </svg>
+  );
 }
 
-type TenantHint = "empty" | "checking" | "found" | "unknown";
-
-const LAST_BUSINESS_KEY = "medstat.lastBusiness";
-
-export default function LoginScreen({ onSignedIn }: LoginScreenProps) {
-  const [business, setBusiness] = useState<string>("");
-  const [username, setUsername] = useState<string>("");
-  const [password, setPassword] = useState<string>("");
-  const [showPassword, setShowPassword] = useState<boolean>(false);
-  const [busy, setBusy] = useState<boolean>(false);
-  const [error, setError] = useState<string>("");
-  const [tenantHint, setTenantHint] = useState<TenantHint>("empty");
-  const [online, setOnline] = useState<boolean>(
-    typeof navigator !== "undefined" ? navigator.onLine : true,
+function IconEye({ size = 20 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" {...iconProps}>
+      <path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
   );
+}
 
-  // Prefill the institution from the last successful sign-in on this device.
-  useEffect(() => {
-    try {
-      const last = localStorage.getItem(LAST_BUSINESS_KEY) || "";
-      if (last) setBusiness(last);
-    } catch {
-      // Storage unavailable — start blank.
+function IconEyeOff({ size = 20 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" {...iconProps}>
+      <path d="M10.6 5.6A10 10 0 0 1 12 5.5c6 0 9.5 6.5 9.5 6.5a17.6 17.6 0 0 1-2.8 3.8" />
+      <path d="M6.5 6.7A16.7 16.7 0 0 0 2.5 12S6 18.5 12 18.5a9.9 9.9 0 0 0 3.9-.8" />
+      <path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" />
+      <line x1="3" y1="3" x2="21" y2="21" />
+    </svg>
+  );
+}
+
+function IconSchool({ size = 28 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" {...iconProps}>
+      <path d="m2.5 9.5 9.5-5 9.5 5-9.5 5z" />
+      <path d="M6.5 11.8V16c0 1.6 2.9 3 5.5 3s5.5-1.4 5.5-3v-4.2" />
+      <path d="M21.5 9.5v5.5" />
+    </svg>
+  );
+}
+
+function IconCloudOn({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" {...iconProps}>
+      <path d="M17.5 18.5a4.5 4.5 0 0 0 .4-8.98A7 7 0 0 0 4.1 11.7 3.5 3.5 0 0 0 6.5 18.5z" />
+      <path d="m9 13 2.2 2.2L15.5 11" />
+    </svg>
+  );
+}
+
+function IconCloudOff({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" {...iconProps}>
+      <path d="M17.5 18.5a4.5 4.5 0 0 0 .4-8.98A7 7 0 0 0 4.1 11.7 3.5 3.5 0 0 0 6.5 18.5z" />
+      <line x1="3" y1="4" x2="21" y2="21" />
+    </svg>
+  );
+}
+
+function IconAlert({ size = 20 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" {...iconProps}>
+      <circle cx="12" cy="12" r="9" />
+      <line x1="12" y1="7.5" x2="12" y2="13" />
+      <line x1="12" y1="16.2" x2="12" y2="16.3" />
+    </svg>
+  );
+}
+
+function IconInfo({ size = 20 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" {...iconProps}>
+      <circle cx="12" cy="12" r="9" />
+      <line x1="12" y1="11" x2="12" y2="16.5" />
+      <line x1="12" y1="7.8" x2="12" y2="7.9" />
+    </svg>
+  );
+}
+
+function IconArrowRight({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" {...iconProps}>
+      <line x1="5" y1="12" x2="19" y2="12" />
+      <polyline points="12 5 19 12 12 19" />
+    </svg>
+  );
+}
+
+/* ============================================================================
+   MD3 STYLE SHEET (class-based so media queries can restructure the layout)
+   lg- = login namespace — cannot collide with other screens.
+============================================================================ */
+
+const CSS = `
+.lg-root {
+  min-height: 100vh; min-height: 100dvh;
+  box-sizing: border-box;
+  display: flex; align-items: stretch; justify-content: center;
+  background: ${C.background};
+  font-family: ${FONT};
+  color: ${C.onSurface};
+  padding: env(safe-area-inset-top) env(safe-area-inset-right)
+           env(safe-area-inset-bottom) env(safe-area-inset-left);
+  -webkit-tap-highlight-color: transparent;
+}
+.lg-shell {
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: 1fr;
+  align-items: center;
+  justify-content: center;
+  gap: clamp(24px, 4vw, 56px);
+  width: 100%; max-width: 1080px;
+  margin: 0 auto;
+  padding: clamp(14px, 3vh, 36px) clamp(16px, 4vw, 40px);
+}
+/* ---------- brand panel (tablet / desktop only) ---------- */
+.lg-brand {
+  display: none;
+  flex-direction: column; justify-content: space-between;
+  border-radius: 28px;
+  padding: clamp(28px, 3.4vw, 44px);
+  min-height: 520px;
+  background: linear-gradient(150deg, ${C.primary} 0%, ${C.primaryDeep} 78%);
+  color: ${C.onPrimary};
+  box-shadow: ${SHADOW.level2};
+}
+.lg-brand-top { display: flex; align-items: center; gap: 14px; }
+.lg-brand-badge {
+  width: 52px; height: 52px; flex-shrink: 0;
+  border-radius: 16px;
+  background: rgba(255,255,255,0.16);
+  border: 1px solid rgba(255,255,255,0.28);
+  display: flex; align-items: center; justify-content: center;
+}
+.lg-brand-name { font-size: clamp(18px, 1.6vw, 21px); font-weight: 600; letter-spacing: 0.2px; }
+.lg-brand-sub { font-size: 13px; opacity: 0.82; margin-top: 2px; }
+.lg-brand-hero { font-size: clamp(26px, 2.6vw, 34px); line-height: 1.22; font-weight: 600; letter-spacing: 0.1px; margin: 0 0 10px; }
+.lg-brand-copy { font-size: clamp(14px, 1.25vw, 15.5px); line-height: 1.55; opacity: 0.88; margin: 0; max-width: 44ch; }
+.lg-features { display: flex; flex-direction: column; gap: 14px; margin: 26px 0 0; padding: 0; list-style: none; }
+.lg-feature { display: flex; align-items: flex-start; gap: 12px; font-size: 14px; line-height: 1.45; opacity: 0.95; }
+.lg-feature-icon {
+  width: 38px; height: 38px; flex-shrink: 0; border-radius: 12px;
+  background: rgba(255,255,255,0.14); border: 1px solid rgba(255,255,255,0.24);
+  display: flex; align-items: center; justify-content: center;
+}
+.lg-feature b { font-weight: 600; }
+/* ---------- form side ---------- */
+.lg-panel { display: flex; flex-direction: column; align-items: center; width: 100%; min-width: 0; }
+.lg-mobile-brand { display: flex; flex-direction: column; align-items: center; gap: 10px; margin-bottom: clamp(14px, 2.6vh, 26px); text-align: center; }
+.lg-logo-tile {
+  width: 64px; height: 64px; border-radius: 20px;
+  background: ${C.primaryContainer}; color: ${C.onPrimaryContainer};
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: ${SHADOW.level1};
+}
+.lg-app-name { font-size: clamp(19px, 5vw, 23px); font-weight: 600; color: ${C.onSurface}; letter-spacing: 0.2px; }
+.lg-app-tag { font-size: 12.5px; color: ${C.onSurfaceVariant}; letter-spacing: 0.3px; }
+.lg-card {
+  box-sizing: border-box;
+  width: 100%; max-width: 440px;
+  background: ${C.surface};
+  border-radius: 28px;
+  box-shadow: ${SHADOW.level2};
+  padding: clamp(22px, 5vw, 38px);
+  display: flex; flex-direction: column; gap: 14px;
+}
+.lg-card-title { font-size: clamp(21px, 5.6vw, 26px); font-weight: 600; margin: 2px 0 0; letter-spacing: 0.1px; }
+.lg-card-sub { font-size: 14px; color: ${C.onSurfaceVariant}; margin: 0 0 4px; line-height: 1.5; }
+.lg-chip-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.lg-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 28px; padding: 0 12px 0 8px;
+  border-radius: 999px; font-size: 12px; font-weight: 600; letter-spacing: 0.2px;
+}
+.lg-chip-dot { width: 7px; height: 7px; border-radius: 50%; }
+/* ---------- banners ---------- */
+.lg-banner {
+  display: flex; align-items: flex-start; gap: 10px;
+  border-radius: 12px; padding: 11px 13px;
+  font-size: 13.5px; line-height: 1.5;
+}
+.lg-banner svg { flex-shrink: 0; margin-top: 1px; }
+/* ---------- MD3 outlined text field ---------- */
+.lg-field {
+  position: relative; display: flex; align-items: center;
+  height: 56px; border-radius: 12px;
+  background: ${C.surface};
+  border: 1px solid ${C.outlineVariant};
+  transition: ${MOTION};
+}
+.lg-field:focus-within { border-color: ${C.primary}; box-shadow: inset 0 0 0 1px ${C.primary}; }
+.lg-lead { position: absolute; left: 14px; display: flex; color: ${C.onSurfaceVariant}; transition: ${MOTION}; }
+.lg-field:focus-within .lg-lead { color: ${C.primary}; }
+.lg-field.lg-field-error { border-color: ${C.red}; }
+.lg-field.lg-field-error:focus-within { box-shadow: inset 0 0 0 1px ${C.red}; }
+.lg-field.lg-field-error .lg-lead { color: ${C.red}; }
+.lg-input {
+  flex: 1; min-width: 0; height: 100%;
+  border: none; outline: none; background: transparent;
+  padding: 0 46px 0 46px;
+  font-family: inherit; font-size: 16px; color: ${C.onSurface};
+}
+.lg-input:disabled { opacity: 0.55; }
+.lg-float {
+  position: absolute; left: 46px; top: 50%;
+  transform: translateY(-50%);
+  color: ${C.onSurfaceVariant};
+  font-size: 15px;
+  pointer-events: none;
+  transition: ${MOTION};
+  white-space: nowrap;
+}
+.lg-float.lg-floated {
+  top: 0; transform: translateY(-50%) scale(0.76);
+  transform-origin: left center;
+  background: ${C.surface};
+  padding: 0 5px; margin-left: -5px;
+  color: ${C.onSurfaceVariant};
+}
+.lg-field:focus-within .lg-float.lg-floated { color: ${C.primary}; }
+.lg-field.lg-field-error .lg-float.lg-floated { color: ${C.red}; }
+.lg-trailing {
+  position: absolute; right: 6px;
+  width: 42px; height: 42px;
+  border: none; background: transparent; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  color: ${C.onSurfaceVariant}; cursor: pointer;
+  transition: ${MOTION};
+}
+.lg-trailing:hover { background: ${C.surfaceVariant}; color: ${C.onSurface}; }
+/* ---------- buttons ---------- */
+.lg-btn {
+  position: relative;
+  height: 48px; width: 100%;
+  border: none; border-radius: 999px;
+  font-family: inherit; font-size: 15px; font-weight: 600; letter-spacing: 0.2px;
+  display: inline-flex; align-items: center; justify-content: center; gap: 9px;
+  cursor: pointer;
+  transition: ${MOTION};
+}
+.lg-btn:active:not(:disabled) { transform: scale(0.985); }
+.lg-btn:disabled { opacity: 0.42; cursor: default; }
+.lg-btn-filled { background: ${C.primary}; color: ${C.onPrimary}; box-shadow: ${SHADOW.level1}; }
+.lg-btn-filled:hover:not(:disabled) { box-shadow: ${SHADOW.level2}; }
+.lg-btn-tonal { background: ${C.secondaryContainer}; color: ${C.onSecondaryContainer}; }
+.lg-btn-tonal:hover:not(:disabled) { box-shadow: ${SHADOW.level1}; }
+.lg-btn-text {
+  background: transparent; color: ${C.primary};
+  height: 44px; width: auto; align-self: center; padding: 0 14px;
+}
+.lg-btn-text:hover:not(:disabled) { background: ${C.primaryContainer}; }
+.lg-link {
+  background: none; border: none; padding: 6px 2px;
+  font-family: inherit; font-size: 13.5px; font-weight: 600;
+  color: ${C.primary}; cursor: pointer;
+  border-radius: 8px;
+  transition: ${MOTION};
+  align-self: flex-end;
+}
+.lg-link:hover:not(:disabled) { text-decoration: underline; }
+.lg-link:disabled { opacity: 0.5; cursor: default; }
+/* ---------- misc ---------- */
+.lg-divider-row { display: flex; align-items: center; gap: 14px; color: ${C.onSurfaceVariant}; font-size: 12px; letter-spacing: 0.6px; text-transform: uppercase; margin: 2px 0; }
+.lg-divider-row::before, .lg-divider-row::after { content: ""; flex: 1; height: 1px; background: ${C.outlineVariant}; }
+.lg-spinner {
+  width: 18px; height: 18px; flex-shrink: 0;
+  border-radius: 50%;
+  border: 2.5px solid currentColor; border-top-color: transparent;
+  animation: lgSpin 0.8s linear infinite;
+}
+@keyframes lgSpin { to { transform: rotate(360deg); } }
+.lg-footer { font-size: 12px; color: ${C.onSurfaceVariant}; text-align: center; line-height: 1.5; margin-top: 6px; }
+.lg-focusable:focus-visible { outline: 2px solid ${C.primary}; outline-offset: 2px; }
+
+/* ---------- responsive structure ---------- */
+@media (min-width: 940px) {
+  .lg-shell { grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); }
+  .lg-brand { display: flex; }
+  .lg-mobile-brand { display: none; }
+}
+@media (max-width: 374px) {
+  .lg-field { height: 52px; }
+  .lg-float { left: 42px; }
+}
+/* Landscape phones: keep everything above the fold */
+@media (max-height: 520px) and (orientation: landscape) {
+  .lg-shell { padding-top: 10px; padding-bottom: 10px; gap: 20px; }
+  .lg-brand { min-height: 0; padding: 18px 24px; }
+  .lg-brand-hero { font-size: 19px; }
+  .lg-features, .lg-brand-copy { display: none; }
+  .lg-mobile-brand { margin-bottom: 8px; }
+  .lg-logo-tile { width: 46px; height: 46px; border-radius: 14px; }
+  .lg-card { padding: 16px 22px; gap: 9px; border-radius: 20px; }
+  .lg-field { height: 48px; }
+  .lg-btn { height: 42px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .lg-root *, .lg-root *::before, .lg-root *::after { transition: none !important; animation-duration: 0.01ms !important; }
+}
+`;
+
+/* ============================================================================
+   SMALL PRESENTATIONAL PIECES
+============================================================================ */
+
+function TextField(props: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  type?: string;
+  icon: ReactNode;
+  autoComplete?: string;
+  inputMode?: "email" | "text";
+  error?: boolean;
+  disabled?: boolean;
+  onEnter?: () => void;
+  trailing?: ReactNode;
+}) {
+  const [focused, setFocused] = useState(false);
+  const floated = focused || props.value.length > 0;
+  return (
+    <div
+      className={`lg-field${props.error ? " lg-field-error" : ""}`}
+    >
+      <span className="lg-lead">{props.icon}</span>
+      <input
+        className="lg-input"
+        style={{ paddingLeft: 46, paddingRight: props.trailing ? 48 : 46 }}
+        type={props.type ?? "text"}
+        value={props.value}
+        placeholder=" "
+        disabled={props.disabled}
+        autoComplete={props.autoComplete}
+        inputMode={props.inputMode}
+        spellCheck={false}
+        onChange={(e) => props.onChange(e.target.value)}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && props.onEnter) props.onEnter();
+        }}
+      />
+      <label className={`lg-float${floated ? " lg-floated" : ""}`}>{props.label}</label>
+      {props.trailing}
+    </div>
+  );
+}
+
+function Banner(props: {
+  kind: "error" | "info" | "success";
+  children: ReactNode;
+}) {
+  const conf = {
+    error: { bg: C.redBg, color: C.red, Icon: IconAlert },
+    info: { bg: C.blueBg, color: C.onPrimaryContainer, Icon: IconInfo },
+    success: { bg: C.greenBg, color: C.green, Icon: IconCloudOn },
+  }[props.kind];
+  return (
+    <div className="lg-banner" style={{ background: conf.bg, color: conf.color }} role={props.kind === "error" ? "alert" : "status"}>
+      <conf.Icon size={18} />
+      <span>{props.children}</span>
+    </div>
+  );
+}
+
+function ConnectionChip({ online }: { online: boolean }) {
+  return (
+    <span
+      className="lg-chip"
+      style={{
+        background: online ? C.greenBg : C.orangeBg,
+        color: online ? C.green : C.orange,
+      }}
+    >
+      <span className="lg-chip-dot" style={{ background: online ? C.green : C.orange }} />
+      {online ? "Online" : "Offline"}
+    </span>
+  );
+}
+
+/* ============================================================================
+   HELPERS — session + local account lookup
+============================================================================ */
+
+/** Cloud/row values (snake_case or camelCase) → the currentUser shape the
+ *  whole app reads (id, name, email, role, tenantId — see AdminDashboard,
+ *  TrainerLiveClassroom, sync.ts). */
+function localShapeFrom(row: any, fallbackEmail: string, authId?: string): AnyUser {
+  const email = String(row?.email ?? fallbackEmail ?? "").trim();
+  const u: AnyUser = {
+    id: String(authId ?? row?.id ?? ""),
+    name: String(row?.name ?? row?.username ?? row?.full_name ?? email.split("@")[0] ?? "User").trim() || "User",
+    email,
+    role: String(row?.role ?? "admin").toLowerCase(),
+    tenantId: String(row?.tenantId ?? row?.tenant_id ?? ""),
+  };
+  if (row?.phone) u.phone = String(row.phone);
+  if (row?.logo) u.logo = String(row.logo);
+  if (Array.isArray(row?.assignedCourses)) u.assignedCourses = row.assignedCourses;
+  return u;
+}
+
+/** Find the account in the OFFLINE caches: Dexie users first (the synced
+ *  roster), then the last account that signed in on this device. */
+async function findLocalUser(email: string): Promise<AnyUser | null> {
+  const needle = email.trim().toLowerCase();
+  try {
+    const all = await db.users.toArray();
+    const hit = all.find((u: any) => String(u?.email ?? "").trim().toLowerCase() === needle && needle !== "");
+    if (hit) return hit as AnyUser;
+  } catch {
+    /* Dexie not open / table missing — fall through to the last-user cache */
+  }
+  try {
+    const last = JSON.parse(localStorage.getItem(LAST_USER_KEY) || "null");
+    if (last && (needle === "" || String(last?.email ?? "").toLowerCase() === needle)) {
+      return last as AnyUser;
     }
-  }, []);
+  } catch {
+    /* no cache */
+  }
+  return null;
+}
 
-  // Track connectivity for the offline notice.
+function classifyAuthError(err: any): "network" | "credentials" | "other" {
+  const msg = String(err?.message ?? err ?? "");
+  if (typeof navigator !== "undefined" && navigator.onLine === false) return "network";
+  if (/failed to fetch|networkerror|network request|fetch failed|load failed|timed?\s?out|ERR_INTERNET|ERR_NETWORK|dns/i.test(msg)) {
+    return "network";
+  }
+  if (/invalid login|invalid credentials|incorrect email or password/i.test(msg)) return "credentials";
+  return "other";
+}
+
+function friendlyAuthError(raw: string): string {
+  const msg = String(raw ?? "");
+  if (/invalid login|invalid credentials/i.test(msg)) {
+    return "Wrong email or password. Please check them and try again.";
+  }
+  if (/email not confirmed/i.test(msg)) {
+    return "This email hasn't been confirmed yet — open the confirmation link in your inbox, then sign in.";
+  }
+  if (/too many requests/i.test(msg)) {
+    return "Too many attempts. Wait about a minute, then try again.";
+  }
+  if (/rate limit/i.test(msg)) {
+    return "Sign-in is rate-limited right now. Please wait a moment and retry.";
+  }
+  return msg || "Sign-in failed. Please try again.";
+}
+
+/* ============================================================================
+   <Login /> — default export
+============================================================================ */
+
+export default function Login(props: LoginProps) {
+  const navigate = useNavigate();
+
+  const [appName, setAppName] = useState("MedStat");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPw, setShowPw] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [offlineBusy, setOfflineBusy] = useState(false);
+  const [resetBusy, setResetBusy] = useState(false);
+  const [errorMsg, setErrorMsg] = useState("");
+  const [notice, setNotice] = useState("");
+  const [noticeKind, setNoticeKind] = useState<"info" | "success">("info");
+  const [emailError, setEmailError] = useState(false);
+  const [pwError, setPwError] = useState(false);
+  const [online, setOnline] = useState(
+    typeof navigator !== "undefined" ? navigator.onLine : true
+  );
+  const [hasLocalAccount, setHasLocalAccount] = useState(false);
+
+  /* ---- mount: connection chips, prefill, session forward, local check ---- */
   useEffect(() => {
-    const goOnline = (): void => setOnline(true);
-    const goOffline = (): void => setOnline(false);
-    window.addEventListener("online", goOnline);
-    window.addEventListener("offline", goOffline);
+    const markOnline = () => setOnline(true);
+    const markOffline = () => setOnline(false);
+    window.addEventListener("online", markOnline);
+    window.addEventListener("offline", markOffline);
+
+    try {
+      const settings = localStorage.getItem("localBusinessSettings");
+      if (settings) {
+        const parsed = JSON.parse(settings);
+        if (parsed?.businessName) setAppName(String(parsed.businessName));
+      }
+      const last = JSON.parse(localStorage.getItem(LAST_USER_KEY) || "null");
+      if (last?.email) setEmail(String(last.email));
+    } catch {
+      /* ignore */
+    }
+
+    (async () => {
+      // Already signed in on this device? Forward straight to the role home.
+      const token = localStorage.getItem("authToken");
+      const cu = readCurrentUser();
+      if (token && cu?.id) {
+        startPeriodicPull();
+        navigate(routeForRole(cu.role, props.routes), { replace: true });
+        return;
+      }
+      try {
+        const count = await db.users.count();
+        setHasLocalAccount(count > 0 || !!localStorage.getItem(LAST_USER_KEY));
+      } catch {
+        setHasLocalAccount(!!localStorage.getItem(LAST_USER_KEY));
+      }
+    })();
+
     return () => {
-      window.removeEventListener("online", goOnline);
-      window.removeEventListener("offline", goOffline);
+      window.removeEventListener("online", markOnline);
+      window.removeEventListener("offline", markOffline);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Debounced business-identifier resolution — instant feedback that the
-  // institution was recognized (UUID, phone, or name all resolve).
-  useEffect(() => {
-    const raw = business.trim();
-    if (!raw) {
-      setTenantHint("empty");
+  /* ---------------------------- session write ---------------------------- */
+
+  function setUserSession(user: AnyUser, token: string, offline: boolean) {
+    try {
+      localStorage.setItem("authToken", token);
+      localStorage.setItem("currentUser", JSON.stringify(user));
+      if (user.tenantId) localStorage.setItem("activeTenantId", user.tenantId);
+      localStorage.setItem(
+        LAST_USER_KEY,
+        JSON.stringify({
+          id: user.id,
+          email: user.email,
+          name: user.name,
+          role: user.role,
+          tenantId: user.tenantId,
+        })
+      );
+    } catch {
+      /* storage full/blocked — session still lives in memory for this page */
+    }
+    window.dispatchEvent(new Event("authStateChanged"));
+    // The engine is idempotent (it clears its previous interval first) and it
+    // skips doomed cloud work by itself while the offline token is set.
+    startPeriodicPull();
+    if (!offline) void syncNow(user.tenantId);
+    navigate(routeForRole(user.role, props.routes), { replace: true });
+  }
+
+  /* ------------------------- OFFLINE sign-in path ------------------------ */
+
+  async function finishOffline(afterNetworkFailure: boolean) {
+    const mail = email.trim();
+    if (!hasLocalAccount) {
+      setErrorMsg(
+        "There is no saved account on this device yet. Sign in once with an internet connection — after that, offline sign-in works everywhere."
+      );
       return;
     }
-    setTenantHint("checking");
-    const timer = setTimeout(() => {
-      void (async (): Promise<void> => {
-        try {
-          const tenantId = await resolveTenantIdentifier(raw);
-          setTenantHint(tenantId ? "found" : "unknown");
-        } catch {
-          setTenantHint("unknown");
-        }
-      })();
-    }, 500);
-    return () => clearTimeout(timer);
-  }, [business]);
+    setOfflineBusy(true);
+    setErrorMsg("");
+    setNotice("");
+    try {
+      const hit = await findLocalUser(mail);
+      if (!hit || !hit.id) {
+        setErrorMsg(
+          mail
+            ? `"${mail}" is not saved on this device. Connect to the internet once and sign in with it to enable offline access.`
+            : "Enter your email above so the saved account can be found."
+        );
+        return;
+      }
+      const user = localShapeFrom(hit, mail, String(hit.id));
+      if (afterNetworkFailure) {
+        setNoticeKind("info");
+        setNotice(
+          "You're offline — signed in to the local copy. Everything you do will sync automatically when you reconnect."
+        );
+      }
+      setUserSession(user, OFFLINE_LOGIN_TOKEN, true);
+    } finally {
+      setOfflineBusy(false);
+    }
+  }
 
-  const submit = async (): Promise<void> => {
-    if (busy) return;
-    setError("");
-    const trimmedUsername = username.trim();
-    if (!trimmedUsername || !password) {
-      setError("Enter your username and password.");
+  /* -------------------------- ONLINE sign-in path ------------------------ */
+
+  async function finishOnline() {
+    const mail = email.trim();
+    const pass = password;
+    if (!mail) {
+      setEmailError(true);
+      setErrorMsg("Enter your email to continue.");
+      return;
+    }
+    if (!pass) {
+      setPwError(true);
+      setErrorMsg("Enter your password to continue.");
       return;
     }
     setBusy(true);
+    setErrorMsg("");
+    setNotice("");
+    setEmailError(false);
+    setPwError(false);
     try {
-      const user = await loginWithIdentifier({
-        business: business.trim() || undefined,
-        username: trimmedUsername,
-        password,
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: mail,
+        password: pass,
       });
-      try {
-        localStorage.setItem(LAST_BUSINESS_KEY, business.trim());
-      } catch {
-        // Storage unavailable — prefill is best-effort.
+
+      if (error) {
+        // Offline-first: a dead network must never block the user — fall back
+        // to the local account automatically instead of showing an error.
+        if (classifyAuthError(error) === "network") {
+          await finishOffline(true);
+          return;
+        }
+        setErrorMsg(friendlyAuthError(error.message));
+        return;
       }
-      try {
-        window.dispatchEvent(new Event("authStateChanged"));
-      } catch {
-        // Listeners may not exist.
+
+      const session = data?.session;
+      const authUser = data?.user;
+      if (!session || !authUser) {
+        setErrorMsg("Sign-in succeeded but no session was returned. Please try again.");
+        return;
       }
-      onSignedIn?.(user);
+
+      // App profile: public.users row first, then the local Dexie copy.
+      let row: any = null;
+      try {
+        const { data: profile } = await supabase
+          .from("users")
+          .select("*")
+          .eq("email", mail)
+          .maybeSingle();
+        row = profile ?? null;
+      } catch {
+        row = null;
+      }
+      if (!row) {
+        const localHit = await findLocalUser(mail);
+        if (localHit) row = localHit;
+      }
+
+      const user = localShapeFrom(row, mail, String(authUser.id));
+      if (!user.tenantId) {
+        const meta = (authUser.user_metadata ?? {}) as any;
+        user.tenantId = String(meta.tenant_id ?? meta.tenantId ?? localStorage.getItem("activeTenantId") ?? "");
+      }
+
+      setNoticeKind("success");
+      setNotice("Welcome back!");
+      setUserSession(user, session.access_token, false);
     } catch (e: any) {
-      setError(String(e?.message ?? e) || "Sign-in failed. Try again.");
+      if (classifyAuthError(e) === "network") {
+        await finishOffline(true);
+        return;
+      }
+      setErrorMsg(friendlyAuthError(e?.message ?? "Sign-in failed. Please try again."));
     } finally {
       setBusy(false);
     }
-  };
+  }
 
-  const hintText = (): string => {
-    if (tenantHint === "found") {
-      return "Institution recognized — sign-in will be scoped to it.";
+  /* --------------------------- password reset ---------------------------- */
+
+  async function sendPasswordReset() {
+    const mail = email.trim();
+    if (!mail) {
+      setEmailError(true);
+      setErrorMsg("Type your email above first, then tap “Forgot password”.");
+      return;
     }
-    if (tenantHint === "unknown") {
-      return "No exact match yet — we'll search every institution for your username when you sign in.";
+    setResetBusy(true);
+    setErrorMsg("");
+    setNotice("");
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(mail);
+      if (error) {
+        if (classifyAuthError(error) === "network") {
+          setNoticeKind("info");
+          setNotice("You're offline — password reset needs a connection. Try again once you're back online.");
+        } else {
+          setErrorMsg(friendlyAuthError(error.message));
+        }
+        return;
+      }
+      setNoticeKind("info");
+      setNotice(`Password reset email sent to ${mail}. Check your inbox.`);
+    } catch (e: any) {
+      setErrorMsg(classifyAuthError(e) === "network" ? "You're offline — password reset needs a connection." : friendlyAuthError(e?.message));
+    } finally {
+      setResetBusy(false);
     }
-    return "Institution name, phone, or ID — leave blank if your username is unique.";
-  };
+  }
+
+  const working = busy || offlineBusy;
+
+  /* -------------------------------- view -------------------------------- */
 
   return (
-    <div className="lgs-root">
-      <style>{LGS_CSS}</style>
-      <div className="lgs-card">
-        <div style={S.brand}>
-          <div style={S.logo}>M</div>
-          <h1 style={S.title}>MedStat</h1>
-          <div style={S.subtitle}>Sign in to your institution</div>
-        </div>
-
-        {!online && (
-          <div style={S.offlineChip}>
-            You're offline. Previously signed-in accounts on this device can still sign in —
-            everything syncs once the connection returns.
-          </div>
-        )}
-        {error && <div style={S.errorCard}>{error}</div>}
-
-        <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            void submit();
-          }}
-        >
-          <div style={S.fieldWrap}>
-            <label style={S.label} htmlFor="lgs-business">
-              Business (name or phone)
-            </label>
-            <div className="lgs-field" style={S.field}>
-              <LgsIcon path={LGS_ICONS.domain} size={20} />
-              <input
-                id="lgs-business"
-                style={S.input}
-                value={business}
-                onChange={(event) => setBusiness(event.target.value)}
-                placeholder="e.g. Nairobi Medical Trainers"
-                autoComplete="organization"
-              />
+    <div className="lg-root">
+      <style>{CSS}</style>
+      <div className="lg-shell">
+        {/* ---------- brand panel (≥ 940px) ---------- */}
+        <aside className="lg-brand" aria-hidden="true">
+          <div>
+            <div className="lg-brand-top">
+              <div className="lg-brand-badge">
+                <IconSchool size={26} />
+              </div>
+              <div>
+                <div className="lg-brand-name">{appName}</div>
+                <div className="lg-brand-sub">Attendance · Courses · Live classes</div>
+              </div>
             </div>
-            <span
-              className="lgs-hint"
-              style={{ ...S.hint, ...(tenantHint === "found" ? S.hintFound : {}) }}
+            <h1 className="lg-brand-hero" style={{ marginTop: "clamp(26px, 5vh, 54px)" }}>
+              Teach, manage and sync — even without internet.
+            </h1>
+            <p className="lg-brand-copy">
+              Courses, members, materials and attendance live safely on this device
+              and reconcile with the cloud the moment you're back online.
+            </p>
+            <ul className="lg-features">
+              <li className="lg-feature">
+                <span className="lg-feature-icon"><IconCloudOff size={20} /></span>
+                <span><b>Offline-first.</b> Create courses and take attendance with zero network.</span>
+              </li>
+              <li className="lg-feature">
+                <span className="lg-feature-icon"><IconSchool size={20} /></span>
+                <span><b>Live classroom.</b> Present PDFs and slides to learners in real time.</span>
+              </li>
+              <li className="lg-feature">
+                <span className="lg-feature-icon"><IconCloudOn size={20} /></span>
+                <span><b>Auto sync.</b> Everything drains to the cloud on reconnect — nothing to remember.</span>
+              </li>
+            </ul>
+          </div>
+        </aside>
+
+        {/* ---------- form side ---------- */}
+        <main className="lg-panel">
+          <div className="lg-mobile-brand">
+            <div className="lg-logo-tile"><IconSchool size={32} /></div>
+            <div>
+              <div className="lg-app-name">{appName}</div>
+              <div className="lg-app-tag">Attendance · Courses · Live classes</div>
+            </div>
+          </div>
+
+          <div className="lg-card">
+            <div className="lg-chip-row">
+              <ConnectionChip online={online} />
+              <span style={{ fontSize: 12, color: C.onSurfaceVariant }}>v1 · offline-first</span>
+            </div>
+
+            <div>
+              <h1 className="lg-card-title">Welcome back</h1>
+              <p className="lg-card-sub">Sign in to manage courses, members and live classes.</p>
+            </div>
+
+            {errorMsg && <Banner kind="error">{errorMsg}</Banner>}
+            {notice && <Banner kind={noticeKind}>{notice}</Banner>}
+
+            <TextField
+              label="Email address"
+              value={email}
+              onChange={(v) => {
+                setEmail(v);
+                setEmailError(false);
+              }}
+              type="email"
+              inputMode="email"
+              autoComplete="email"
+              icon={<IconMail />}
+              error={emailError}
+              disabled={working}
+              onEnter={() => {
+                if (busy) return;
+                if (password) void finishOnline();
+              }}
+            />
+
+            <TextField
+              label="Password"
+              value={password}
+              onChange={(v) => {
+                setPassword(v);
+                setPwError(false);
+              }}
+              type={showPw ? "text" : "password"}
+              autoComplete="current-password"
+              icon={<IconLock />}
+              error={pwError}
+              disabled={working}
+              onEnter={() => {
+                if (!busy) void finishOnline();
+              }}
+              trailing={
+                <button
+                  type="button"
+                  className="lg-trailing lg-focusable"
+                  aria-label={showPw ? "Hide password" : "Show password"}
+                  onClick={() => setShowPw((s) => !s)}
+                  tabIndex={0}
+                >
+                  {showPw ? <IconEyeOff /> : <IconEye />}
+                </button>
+              }
+            />
+
+            <button
+              type="button"
+              className="lg-link lg-focusable"
+              onClick={() => void sendPasswordReset()}
+              disabled={resetBusy || working}
             >
-              {hintText()}
-            </span>
+              {resetBusy ? "Sending reset email…" : "Forgot password?"}
+            </button>
+
+            <button
+              type="button"
+              className="lg-btn lg-btn-filled lg-focusable"
+              onClick={() => void finishOnline()}
+              disabled={working}
+            >
+              {busy ? (
+                <>
+                  <span className="lg-spinner" aria-hidden="true" />
+                  Signing in…
+                </>
+              ) : (
+                <>
+                  Sign in
+                  <IconArrowRight />
+                </>
+              )}
+            </button>
+
+            <div className="lg-divider-row">or</div>
+
+            <button
+              type="button"
+              className="lg-btn lg-btn-tonal lg-focusable"
+              onClick={() => void finishOffline(false)}
+              disabled={working}
+              title="Use the account saved on this device — no internet needed"
+            >
+              {offlineBusy ? (
+                <>
+                  <span className="lg-spinner" aria-hidden="true" />
+                  Opening offline mode…
+                </>
+              ) : (
+                <>
+                  <IconCloudOff />
+                  Continue offline
+                </>
+              )}
+            </button>
+
+            <p className="lg-footer">
+              Offline mode uses the last account saved on this device.
+              <br />
+              Data syncs automatically the next time you're online.
+            </p>
           </div>
-
-          <div style={S.fieldWrap}>
-            <label style={S.label} htmlFor="lgs-username">
-              Username
-            </label>
-            <div className="lgs-field" style={S.field}>
-              <LgsIcon path={LGS_ICONS.person} size={20} />
-              <input
-                id="lgs-username"
-                style={S.input}
-                value={username}
-                onChange={(event) => setUsername(event.target.value)}
-                placeholder="Your username"
-                autoComplete="username"
-                autoCapitalize="none"
-              />
-            </div>
-          </div>
-
-          <div style={S.fieldWrap}>
-            <label style={S.label} htmlFor="lgs-password">
-              Password
-            </label>
-            <div className="lgs-field" style={S.field}>
-              <LgsIcon path={LGS_ICONS.lock} size={20} />
-              <input
-                id="lgs-password"
-                style={S.input}
-                type={showPassword ? "text" : "password"}
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                placeholder="Your password"
-                autoComplete="current-password"
-              />
-              <button
-                type="button"
-                className="lgs-iconbtn"
-                onClick={() => setShowPassword((prev) => !prev)}
-                title={showPassword ? "Hide password" : "Show password"}
-                aria-label={showPassword ? "Hide password" : "Show password"}
-              >
-                <LgsIcon path={showPassword ? LGS_ICONS.visibilityOff : LGS_ICONS.visibility} size={20} />
-              </button>
-            </div>
-            <span style={S.hint}>Passwords are case-sensitive.</span>
-          </div>
-
-          <button className="lgs-btn" style={S.button} type="submit" disabled={busy}>
-            {busy ? "Signing in…" : "Sign in"}
-          </button>
-        </form>
-
-        <div style={S.footer}>
-          Works from any device, anywhere — sign-in goes straight to the cloud, and this device
-          keeps a secure copy so you can always get back in, even offline.
-        </div>
+        </main>
       </div>
     </div>
   );
