@@ -42,6 +42,7 @@ import {
   pushUserAssignmentsMirror,
 } from "../database/enrollmentDB";
 import { fetchCoursesFromSupabase } from "../database/supabaseCourseSync";
+import { syncNow, totalPending, useSyncStatus } from "../database/sync";
 
 /* ============================================================================
    MATERIAL DESIGN 3 (MD3) DESIGN SYSTEM — Material You, light scheme
@@ -1263,6 +1264,12 @@ export default function CourseManagement({ initialCourseId }: { initialCourseId?
   const draftDirtyRef = useRef(false);
   const loadSeqRef = useRef(0);
 
+  // ✅ LIVE SYNC STATE — from the database/sync engine: phase, connectivity
+  //    and queued-change counts (users/courses/enrollments/deletes). When the
+  //    pending chip clears, the per-row "待同步" badges clear with it.
+  const sync = useSyncStatus();
+  const syncPendingTotal = totalPending(sync);
+
   /* ------------------------------------------------------------------------
      SNACKBAR
   -------------------------------------------------------------------------- */
@@ -1903,8 +1910,22 @@ export default function CourseManagement({ initialCourseId }: { initialCourseId?
           </div>
 
           <div style={{ display: "inline-flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-            {merging && <Chip label="Syncing…" bg={C.blueBg} fg={C.blue} />}
+            {(merging || sync.phase === "syncing") && <Chip label="Syncing…" bg={C.blueBg} fg={C.blue} />}
             {!online && <Chip label="Offline" bg={C.orangeBg} fg={C.orange} />}
+            {online && sync.offlineLogin && <Chip label="Offline sign-in" bg={C.orangeBg} fg={C.orange} />}
+            {sync.phase === "error" && <Chip label="Sync problem" bg={C.redBg} fg={C.red} />}
+            {syncPendingTotal > 0 && sync.phase !== "syncing" && (
+              <Chip
+                label={`${syncPendingTotal} pending`}
+                bg={C.orangeBg}
+                fg={C.orange}
+              />
+            )}
+            <MiniTextButton
+              label={sync.phase === "syncing" ? "Syncing…" : "Sync now"}
+              disabled={!sync.online || sync.phase === "syncing" || sync.offlineLogin}
+              onClick={() => void syncNow()}
+            />
             <MiniTextButton label="Refresh" onClick={() => void loadData()} />
             <FilledButton
               label="+ New course"

@@ -125,6 +125,19 @@ const T = {
 
 type SyncTable = (typeof T)[keyof typeof T];
 
+/** Offline sign-in placeholder token (database/sync.ts). While it is the
+ *  stored authToken there is NO valid Supabase session — every REST call can
+ *  only answer 401. The helpers below fail fast instead of hammering the
+ *  API; queued work syncs after the first real online login. */
+function isOfflineLoginSession(): boolean {
+  try {
+    return typeof localStorage !== "undefined" &&
+      localStorage.getItem("authToken") === "offline-mode-pending-sync";
+  } catch {
+    return false;
+  }
+}
+
 /* ── 3. Supabase client — self-contained ──────────────────────────────────── */
 
 /** ③ Fallback credentials — fill ONLY if no env var is found (see header). */
@@ -221,6 +234,9 @@ function toPayload(_table: SyncTable, row: any, tenantId: string) {
 }
 
 async function pushDoc(table: SyncTable, row: any, tenantId: string): Promise<SyncResult> {
+  if (isOfflineLoginSession()) {
+    return { ok: false, error: "Signed in offline — the change is saved locally and will sync after a real online login" };
+  }
   if (!tenantId) return { ok: false, error: "No tenant id" };
   if (!row?.id) return { ok: false, error: `[${table}] row has no id` };
   if (!isUuid(String(row.id))) {
@@ -239,6 +255,9 @@ async function pushDoc(table: SyncTable, row: any, tenantId: string): Promise<Sy
 }
 
 async function deleteDoc(table: SyncTable, id: string, tenantId: string): Promise<SyncResult> {
+  if (isOfflineLoginSession()) {
+    return { ok: false, error: "Signed in offline — the delete is tombstoned locally and will sync after a real online login" };
+  }
   if (!tenantId) return { ok: false, error: "No tenant id" };
   // A non-UUID id can never exist in the cloud (uuid PK) → nothing to delete.
   if (!isUuid(id)) return { ok: true };
@@ -396,6 +415,10 @@ export async function pushCourseToSupabase(course: Course, tenantId: string): Pr
   //    just die, and a queued row syncs via retryPendingCoursePushes later.
   if (typeof navigator !== "undefined" && navigator.onLine === false) {
     throw new Error("Offline — course queued locally and will sync when you reconnect");
+  }
+  // Offline sign-in (placeholder token) → no valid session; same treatment.
+  if (isOfflineLoginSession()) {
+    throw new Error("Signed in offline — course queued locally and will sync after a real online login");
   }
   const c: any = course;
   const id = String(c?.id ?? "").trim();
@@ -570,6 +593,7 @@ function mapCloudCourseToLocal(raw: any, src: any, tenantId: string): Course {
 export async function fetchCoursesFromSupabase(tenantId: string): Promise<Course[] | null> {
   if (!tenantId) return null;
   if (typeof navigator !== "undefined" && navigator.onLine === false) return null; // ✅ offline — local data stays authoritative
+  if (isOfflineLoginSession()) return null; // no valid session — skip the doomed 401
   try {
     const client = getClient();
     const { data, error } = await client.from(T.courses).select("*").eq("tenant_id", tenantId);
@@ -704,18 +728,49 @@ export async function fetchCourseMaterialsFromSupabase(
   courseId: string,
   tenantId: string
 ): Promise<CourseMaterial[] | null> {
+  if (isOfflineLoginSession()) return null; // no valid session — skip the doomed 401
   try {
     const client = getClient();
-    const { data, error } = await client
+    // Doc-store first: the material lives in row.data (local camelCase shape).
+    const first = await client
       .from(T.materials)
       .select("data")
       .eq("tenant_id", tenantId)
       .eq("course_id", courseId);
-    if (error) {
-      console.error("[supabaseCourseSync] fetch course_materials failed:", error.message);
+    if (!first.error) {
+      return ((first.data ?? []) as any[])
+        .map((r: any) => r?.data as CourseMaterial)
+        .filter(Boolean);
+    }
+    // Fallback: a RELATIONAL course_materials table has no `data` column
+    // (PGRST204/42703) — read the columns and map to the local shape.
+    console.warn(
+      `[supabaseCourseSync] course_materials "data" fetch failed (${first.error.message}) — trying relational columns`
+    );
+    const second = await client
+      .from(T.materials)
+      .select("*")
+      .eq("tenant_id", tenantId)
+      .eq("course_id", courseId);
+    if (second.error) {
+      console.error("[supabaseCourseSync] fetch course_materials failed:", second.error.message);
       return null;
     }
-    return (data ?? []).map((r: any) => r?.data as CourseMaterial).filter(Boolean);
+    return ((second.data ?? []) as any[]).map((r: any): CourseMaterial => ({
+      id: String(r.id ?? ""),
+      courseId: String(r.courseId ?? r.course_id ?? ""),
+      tenantId: String(r.tenantId ?? r.tenant_id ?? tenantId),
+      title: String(r.title ?? "Untitled"),
+      description: String(r.description ?? ""),
+      fileUrl: String(r.fileUrl ?? r.file_data ?? r.file_url ?? ""),
+      fileName: String(r.fileName ?? r.file_name ?? r.title ?? "Untitled"),
+      fileType: String(r.fileType ?? r.file_type ?? "application/octet-stream"),
+      allowDownload: (r.allowDownload ?? r.allow_download) ?? true,
+      uploadedBy: String(r.uploadedBy ?? r.uploaded_by ?? ""),
+      uploadedAt: String(r.uploadedAt ?? r.uploaded_at ?? r.created_at ?? ""),
+      isPresentation: (r.isPresentation ?? r.is_presentation) ?? false,
+      presentationOrder: Number(r.presentationOrder ?? r.presentation_order ?? 0) || 0,
+    }));
   } catch (e: any) {
     console.error("[supabaseCourseSync] fetch course_materials threw:", e?.message ?? e);
     return null;

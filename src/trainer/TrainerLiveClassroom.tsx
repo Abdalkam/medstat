@@ -29,6 +29,9 @@ function getFileMeta(fileType: string) {
   if (fileType.includes("video")) return { icon: "🎬", color: C.purple, bg: C.purpleBg, label: "Video" };
   if (fileType.includes("audio")) return { icon: "🎵", color: C.purple, bg: C.purpleBg, label: "Audio" };
   if (fileType.includes("image")) return { icon: "🖼️", color: C.green, bg: C.greenBg, label: "Image" };
+  if (fileType.includes("presentation") || fileType.includes("powerpoint") || fileType.includes("ppt")) return { icon: "📊", color: C.orange, bg: C.orangeBg, label: "Slides" };
+  if (fileType.includes("word") || fileType.includes("document")) return { icon: "📝", color: C.medBlue, bg: C.medBlueBg, label: "Document" };
+  if (fileType.includes("spreadsheet") || fileType.includes("excel")) return { icon: "📈", color: C.green, bg: C.greenBg, label: "Sheet" };
   return { icon: "📁", color: C.textTertiary, bg: C.bg, label: "File" };
 }
 
@@ -52,7 +55,90 @@ declare global { interface Window { activeTrainerCourse: string | undefined; } }
 window.activeTrainerCourse = window.activeTrainerCourse || undefined;
 
 function mapMaterial(m: Record<string, unknown>): CourseMaterial {
-  return { id: m.id as string, courseId: m.course_id as string, tenantId: m.tenant_id as string, title: (m.title as string) || "Untitled", description: (m.description as string) || "", fileUrl: (m.file_data as string) || (m.file_url as string) || "", fileName: (m.file_name as string) || (m.title as string) || "Untitled", fileType: (m.file_type as string) || "application/octet-stream", allowDownload: (m.allow_download as boolean) ?? true, uploadedBy: (m.uploaded_by as string) || "", uploadedAt: (m.uploaded_at as string) || (m.created_at as string) || "", isPresentation: (m.is_presentation as boolean) ?? false, presentationOrder: (m.presentation_order as number) ?? 0 };
+  /* course_materials is the DOC-STORE shape ({ id, tenant_id, course_id,
+     data jsonb, updated_at }) — the material itself lives in row.data (written
+     by supabaseCourseSync.toPayload as the local camelCase shape). Legacy
+     relational columns are still tolerated. The old mapper read only
+     relational columns, so every doc-store row mapped to "Untitled" with no
+     file URL — the live classroom could not display cloud-fetched pages. */
+  const row = m as any;
+  const src: any =
+    row && typeof row === "object" && row.data && typeof row.data === "object" && !row.title
+      ? row.data
+      : row;
+  return {
+    id: String(src.id ?? row.id ?? ""),
+    courseId: String(src.courseId ?? src.course_id ?? row.course_id ?? ""),
+    tenantId: String(src.tenantId ?? src.tenant_id ?? row.tenant_id ?? ""),
+    title: String(src.title ?? "Untitled"),
+    description: String(src.description ?? ""),
+    fileUrl: String(src.fileUrl ?? src.file_data ?? src.file_url ?? ""),
+    fileName: String(src.fileName ?? src.file_name ?? src.title ?? "Untitled"),
+    fileType: String(src.fileType ?? src.file_type ?? "application/octet-stream"),
+    allowDownload: (src.allowDownload ?? src.allow_download) ?? true,
+    uploadedBy: String(src.uploadedBy ?? src.uploaded_by ?? ""),
+    uploadedAt: String(src.uploadedAt ?? src.uploaded_at ?? src.created_at ?? ""),
+    isPresentation: (src.isPresentation ?? src.is_presentation) ?? false,
+    presentationOrder: Number(src.presentationOrder ?? src.presentation_order ?? 0) || 0,
+  };
+}
+
+/* ── Offline sign-in guard ────────────────────────────────────────────────
+   The offline sign-in placeholder token (database/sync.ts) means there is NO
+   valid Supabase session — every direct REST call can only answer 401. The
+   classroom keeps running from Dexie; the cloud section is skipped until a
+   real online login lands (then authStateChanged/reconnect re-syncs). */
+const OFFLINE_LOGIN_TOKEN = "offline-mode-pending-sync";
+function offlineLoginSession(): boolean {
+  try { return localStorage.getItem("authToken") === OFFLINE_LOGIN_TOKEN; } catch { return false; }
+}
+
+/* ── Office document display (Word / PowerPoint / Excel) ──────────────────
+   Browsers render PDF, images, video and audio natively — Word/PPT/Excel
+   they do not. Office pages are displayed through Microsoft's Office web
+   viewer, which fetches the file from its public URL (the 1-year signed
+   Storage URLs written by UploadMaterials qualify). Inline base64 copies
+   (the offline fallback) cannot be fetched by the viewer, so those show a
+   download card instead of a blank frame. */
+const OFFICE_TYPE_RE = /(powerpoint|presentation|msword|wordprocessing|spreadsheet|excel|officedocument)/i;
+const OFFICE_NAME_RE = /\.(pptx?|docx?|xlsx?)$/i;
+
+function isOfficeMaterial(m?: CourseMaterial | null): boolean {
+  if (!m) return false;
+  return OFFICE_TYPE_RE.test(String(m.fileType || "")) || OFFICE_NAME_RE.test(String(m.fileName || ""));
+}
+
+function isHttpUrl(u?: string | null): boolean {
+  return !!u && /^https?:\/\//i.test(u);
+}
+
+function OfficeDocViewer({ material }: { material: CourseMaterial }) {
+  const src = String(material.fileUrl || "");
+  const title = material.title || material.fileName || "Document";
+
+  if (!isHttpUrl(src)) {
+    return (
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 14, padding: 24, background: C.card }}>
+        <div style={{ width: 64, height: 64, borderRadius: 16, background: C.orangeBg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 30 }}>📊</div>
+        <div style={{ fontSize: 16, fontWeight: 700, color: C.textPrimary, textAlign: "center" }}>{title}</div>
+        <div style={{ fontSize: 13, color: C.textTertiary, textAlign: "center", maxWidth: 440, lineHeight: 1.55 }}>
+          Word, PowerPoint and Excel pages are displayed by the Office web viewer, which needs the file's cloud URL. This copy is offline-embedded or has no URL yet — reconnect and reopen this page, or download the file.
+        </div>
+        <a href={src} download={material.fileName || "material"} style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "10px 20px", borderRadius: 10, background: C.medBlue, color: "#FFFFFF", fontSize: 14, fontWeight: 600, textDecoration: "none" }}>Download file</a>
+      </div>
+    );
+  }
+
+  const embed = `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(src)}`;
+  return (
+    <div style={{ flex: 1, display: "flex", flexDirection: "column", background: C.card, overflow: "hidden" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 14px", borderBottom: `1px solid ${C.separator}`, background: C.card, flexShrink: 0, minWidth: 0 }}>
+        <span style={{ fontSize: 13, fontWeight: 600, color: C.textPrimary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, minWidth: 0 }}>{title}</span>
+        <a href={src} target="_blank" rel="noreferrer" style={{ fontSize: 12, fontWeight: 600, color: C.medBlue, textDecoration: "none", flexShrink: 0 }}>Open original</a>
+      </div>
+      <iframe key={material.id} src={embed} title={title} style={{ flex: 1, width: "100%", border: "none", background: "#FFFFFF" }} allowFullScreen />
+    </div>
+  );
 }
 
 /* Static blackboard font settings (no UI to change them yet). */
@@ -196,6 +282,9 @@ export default function TrainerLiveClassroom() {
   useEffect(() => {
     const fetchInitial = async () => {
       if (!tenantId) return;
+      // Offline sign-in: no valid session — skip the 401-bound settings
+      // fetches and use the cached user directly.
+      if (offlineLoginSession()) { setTrainer(currentUser); return; }
       const { data: s } = await supabase.from("business_settings").select("*").eq("tenant_id", tenantId).maybeSingle();
       if (s) setSettings({ id: s.id, businessName: s.business_name || "", address: s.address || "", phone: s.phone || "", email: s.email || "", website: s.website || "", logo: s.logo || "", header: s.header || "", adminProfile: s.admin_profile || "", loginBackground: s.login_background || "", themeColor: s.theme_color || "", appBarItems: s.app_bar_items || [], tenantId: s.tenant_id, createdAt: s.created_at });
       const { data: u } = await supabase.from("profile_settings").select("*").eq("user_id", currentUser.id).maybeSingle();
@@ -232,6 +321,11 @@ export default function TrainerLiveClassroom() {
       setMaterials((prev) => (sameMaterials(prev, sorted) ? prev : sorted));
     }
 
+    // ✅ OFFLINE SIGN-IN: skip the cloud section entirely — with the offline
+    //    placeholder token every query below can only answer 401, and the
+    //    local Dexie data just painted is authoritative until a real login.
+    if (offlineLoginSession()) return;
+
     try {
       const { data: liveSess, error: liveSessErr } = await supabase.from("live_session").select("*").eq("course_id", courseId).maybeSingle();
       if (liveSessErr) console.error("[live] live_session fetch failed:", liveSessErr.message);
@@ -266,10 +360,16 @@ export default function TrainerLiveClassroom() {
         setPresentation(null);
       }
 
-      const { data: mats, error: matsErr } = await supabase.from("course_materials").select("*").eq("course_id", courseId).eq("tenant_id", tenantId).order("presentation_order", { ascending: true });
+      // ⚠ presentation_order is NOT a real column of the doc-store
+      // course_materials table — ordering by it made every classroom fetch
+      // answer 400 ("column course_materials.presentation_order does not
+      // exist"). Fetch unsorted and sort LOCALLY by the order inside data.
+      const { data: mats, error: matsErr } = await supabase.from("course_materials").select("*").eq("course_id", courseId).eq("tenant_id", tenantId);
       if (matsErr) console.error("[live] course_materials fetch failed:", matsErr.message);
       if (mats && mats.length > 0) {
-        const mappedMats = mats.map(mapMaterial);
+        const mappedMats = mats
+          .map(mapMaterial)
+          .sort((a, b) => (a.presentationOrder ?? 0) - (b.presentationOrder ?? 0) || String(a.uploadedAt || "").localeCompare(String(b.uploadedAt || "")));
         setMaterials((prev) => (sameMaterials(prev, mappedMats) ? prev : mappedMats));
         await db.materials.bulkPut(mappedMats);
       }
@@ -400,20 +500,25 @@ export default function TrainerLiveClassroom() {
   async function createLivePresentationRow(materialId: string, isBlackboard: boolean) {
     if (!courseId || !tenantId) return;
     await startPresentation(courseId, materialId, currentUser.id);
-    await supabase.from("live_presentations").delete().eq("course_id", courseId);
-    await supabase.from("live_presentations").insert({
-      id: crypto.randomUUID(),
-      tenant_id: tenantId,
-      course_id: courseId,
-      started_by: currentUser.id,
-      material_id: materialId,
-      current_page: 1,
-      is_blackboard: isBlackboard,
-      blackboard_strokes: [],
-      blackboard_lines: [],
-      blackboard_labels: [],
-      updated_at: new Date().toISOString(),
-    });
+    // Cloud write is BEST-EFFORT: an offline sign-in (401) or a network error
+    // must never block the trainer — the local row drives this device and the
+    // cloud row lands on the next successful start.
+    try {
+      await supabase.from("live_presentations").delete().eq("course_id", courseId);
+      await supabase.from("live_presentations").insert({
+        id: crypto.randomUUID(),
+        tenant_id: tenantId,
+        course_id: courseId,
+        started_by: currentUser.id,
+        material_id: materialId,
+        current_page: 1,
+        is_blackboard: isBlackboard,
+        blackboard_strokes: [],
+        blackboard_lines: [],
+        blackboard_labels: [],
+        updated_at: new Date().toISOString(),
+      });
+    } catch (e) { console.warn("[live] cloud presentation write failed (offline?) — local copy only:", e); }
   }
 
   async function toggleBlackboard() {
@@ -519,9 +624,11 @@ export default function TrainerLiveClassroom() {
   async function startSession() {
     if (!courseId || !tenantId) return;
     await startLiveSession(courseId, currentUser.id);
-    const { data: existing } = await supabase.from("live_session").select("id").eq("course_id", courseId).maybeSingle();
-    if (existing) { await supabase.from("live_session").update({ active: true, updated_at: new Date().toISOString() }).eq("id", existing.id); }
-    else { await supabase.from("live_session").insert({ id: crypto.randomUUID(), tenant_id: tenantId, course_id: courseId, trainer_id: currentUser.id, active: true, started_at: new Date().toISOString(), updated_at: new Date().toISOString(), created_at: new Date().toISOString() }); }
+    try {
+      const { data: existing } = await supabase.from("live_session").select("id").eq("course_id", courseId).maybeSingle();
+      if (existing) { await supabase.from("live_session").update({ active: true, updated_at: new Date().toISOString() }).eq("id", existing.id); }
+      else { await supabase.from("live_session").insert({ id: crypto.randomUUID(), tenant_id: tenantId, course_id: courseId, trainer_id: currentUser.id, active: true, started_at: new Date().toISOString(), updated_at: new Date().toISOString(), created_at: new Date().toISOString() }); }
+    } catch (e) { console.warn("[live] cloud session write failed (offline?) — local session only:", e); }
     setSessionActive(true);
     if (materials.length > 0 && !presentation) {
       const firstMat = materials[0];
@@ -879,7 +986,13 @@ export default function TrainerLiveClassroom() {
         <div style={{ flex: "1 1 auto", minWidth: 0, background: C.bg, display: "flex", flexDirection: "column", overflow: "hidden", position: "relative" }}>
           <div style={{ flex: 1, display: "flex", width: "200%", height: "100%", transition: "transform 0.3s cubic-bezier(0.4, 0, 0.2, 1)", transform: isBlackboardMode ? "translateX(-50%)" : "translateX(0%)" }}>
             <div style={{ width: "50%", height: "100%", flexShrink: 0, display: "flex", flexDirection: "column", background: C.card, overflow: "hidden", position: "relative" }}>
-              {presentation ? <LiveClassView material={presentation} page={liveState?.currentPage ?? 1} /> : <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}><p style={{ color: C.textTertiary, fontSize: "15px" }}>{materials.length > 0 ? "Select a page from the sidebar." : "Upload pages first."}</p></div>}
+              {presentation ? (
+                isOfficeMaterial(presentation) ? (
+                  <OfficeDocViewer material={presentation} />
+                ) : (
+                  <LiveClassView material={presentation} page={liveState?.currentPage ?? 1} />
+                )
+              ) : <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}><p style={{ color: C.textTertiary, fontSize: "15px" }}>{materials.length > 0 ? "Select a page from the sidebar." : "Upload pages first."}</p></div>}
             </div>
             <div style={{ width: "50%", height: "100%", flexShrink: 0, display: "flex", flexDirection: "column", overflow: "hidden", background: "#1A1A1A" }}>
               <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>

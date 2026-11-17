@@ -109,6 +109,26 @@ function readFileWithProgress(file: File, onProgress: (p: number) => void): Prom
 const STORAGE_BUCKET = "materials";
 const BASE64_FALLBACK_MAX = 10 * 1024 * 1024; // 10 MB — safe ceiling for base64-over-REST
 
+/* Offline sign-in placeholder token (database/sync.ts): while it is in
+   localStorage there is NO valid Supabase session, so direct REST calls can
+   only answer 401 — skip them and work from Dexie. */
+const OFFLINE_LOGIN_TOKEN = "offline-mode-pending-sync";
+function isOfflineLogin(): boolean {
+  try { return localStorage.getItem("authToken") === OFFLINE_LOGIN_TOKEN; } catch { return false; }
+}
+
+/* Exact Office MIME types — the old code collapsed .pptx into the legacy
+   .ppt type, which broke type detection downstream (live classroom viewer,
+   file icons, Office web viewer). */
+const OFFICE_MIME: Record<string, string> = {
+  ".ppt": "application/vnd.ms-powerpoint",
+  ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  ".doc": "application/msword",
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".xls": "application/vnd.ms-excel",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+};
+
 async function compressImageBlob(file: File): Promise<Blob> {
   const dataUrl = await compressImage(file);
   const res = await fetch(dataUrl);
@@ -176,8 +196,11 @@ export default function UploadMaterials() {
           const parsed = JSON.parse(localSettings);
           setBusiness({ business_name: parsed.businessName || null, phone: parsed.phone || null, logo: parsed.logo || null });
         }
-        const { data } = await supabase.from("business_settings").select("business_name, phone, logo").eq("tenant_id", currentUser.tenantId).maybeSingle();
-        if (!cancelled && data) setBusiness(data as any);
+        // Skip the cloud read on an offline sign-in (401 noise).
+        if (!isOfflineLogin()) {
+          const { data } = await supabase.from("business_settings").select("business_name, phone, logo").eq("tenant_id", currentUser.tenantId).maybeSingle();
+          if (!cancelled && data) setBusiness(data as any);
+        }
       } catch (err: unknown) { console.error("Business fetch failed:", err); }
     };
     fetchBusiness();
@@ -203,7 +226,10 @@ export default function UploadMaterials() {
     //    NEVER wipe local rows that are still queued for push. The old code
     //    deleted every local row missing from Supabase, which destroyed
     //    just-added / offline materials.
-    if (tenantId) {
+    // 2. Merge the cloud in SAFELY — but only with a real session: on an
+    //    offline sign-in every Supabase read can only answer 401, and the
+    //    local data painted above stays authoritative until a real login.
+    if (tenantId && !isOfflineLogin()) {
       try {
         const merged = await reconcileCourseMaterials(courseId, tenantId);
         setMaterials(merged);
@@ -236,8 +262,10 @@ export default function UploadMaterials() {
     setUploading(true); setUploadProgress(0); setError("");
     try {
       let storedFileType = file.type || "application/octet-stream";
-      if (file.name.endsWith(".ppt") || file.name.endsWith(".pptx")) {
-        storedFileType = "application/vnd.ms-powerpoint";
+      // Exact Office MIME per extension (the old code collapsed .pptx into
+      // the legacy .ppt type — broke icons and the Office web viewer).
+      for (const [ext, mime] of Object.entries(OFFICE_MIME)) {
+        if (file.name.toLowerCase().endsWith(ext)) { storedFileType = mime; break; }
       }
       if (file.type.startsWith("image/")) storedFileType = "image/jpeg";
 
@@ -312,14 +340,25 @@ export default function UploadMaterials() {
     setStartingLive(true);
     try {
       const firstMaterial = materials[0];
+      // 1. LOCAL FIRST — the classroom opens instantly from Dexie, offline
+      //    included; startLiveSession/startPresentation write the local rows.
       await startLiveSession(courseId, currentUser.id);
       await startPresentation(courseId, firstMaterial.id, currentUser.id);
-      await supabase.from('live_session').delete().eq('course_id', courseId);
-      const { error: sessionError } = await supabase.from('live_session').insert({ id: crypto.randomUUID(), tenant_id: tenantId, course_id: courseId, trainer_id: currentUser.id, active: true, started_at: new Date().toISOString(), created_at: new Date().toISOString(), updated_at: new Date().toISOString() });
-      if (sessionError) throw sessionError;
-      await supabase.from('live_presentations').delete().eq('course_id', courseId);
-      const { error: presError } = await supabase.from('live_presentations').insert({ id: crypto.randomUUID(), tenant_id: tenantId, course_id: courseId, started_by: currentUser.id, material_id: firstMaterial.id, current_page: 1, is_blackboard: false, blackboard_strokes: [], blackboard_lines: [], blackboard_labels: [], updated_at: new Date().toISOString() });
-      if (presError) throw presError;
+      // 2. CLOUD — BEST-EFFORT: an offline sign-in (401) or a network error
+      //    must never block the trainer from presenting. Other devices pick
+      //    the session up as soon as a real login/cloud is reachable.
+      try {
+        await supabase.from('live_session').delete().eq('course_id', courseId);
+        const { error: sessionError } = await supabase.from('live_session').insert({ id: crypto.randomUUID(), tenant_id: tenantId, course_id: courseId, trainer_id: currentUser.id, active: true, started_at: new Date().toISOString(), created_at: new Date().toISOString(), updated_at: new Date().toISOString() });
+        if (sessionError) throw sessionError;
+        await supabase.from('live_presentations').delete().eq('course_id', courseId);
+        const { error: presError } = await supabase.from('live_presentations').insert({ id: crypto.randomUUID(), tenant_id: tenantId, course_id: courseId, started_by: currentUser.id, material_id: firstMaterial.id, current_page: 1, is_blackboard: false, blackboard_strokes: [], blackboard_lines: [], blackboard_labels: [], updated_at: new Date().toISOString() });
+        if (presError) throw presError;
+        setSyncWarning("");
+      } catch (cloudErr: any) {
+        console.warn("[lesson] Cloud live-session write failed (offline sign-in or network) — presenting from this device only:", cloudErr);
+        setSyncWarning("Live session started on this device only — learners on other devices will see it once you are signed in online.");
+      }
       navigate(`/trainer/live/${courseId}`);
     } catch (err: any) { console.error("Failed to start lesson:", err); alert("Something went wrong while trying to start the live session: " + (err.message || "Unknown error")); } finally { setStartingLive(false); }
   }
@@ -378,7 +417,7 @@ export default function UploadMaterials() {
             <input style={{ ...TS.input, flex: 1, border: "none", outline: "none", background: "transparent" }} placeholder="Page Title (e.g. Introduction Video)" value={title} onChange={e => setTitle(e.target.value)} disabled={uploading} />
           </div>
           <div onDrop={handleDrop} onDragOver={handleDragOver} onDragLeave={handleDragLeave} onClick={() => !uploading && fileInputRef.current?.click()} style={{ display: "flex", padding: 24, gap: 14, cursor: uploading ? "not-allowed" : "pointer", background: dragOver ? C.medBlueBg : "transparent", transition: "background 0.2s", flexDirection: "column", alignItems: "stretch" }}>
-            <input ref={fileInputRef} type="file" style={{ display: "none" }} onChange={handleFileInputChange} accept=".pdf,.mp4,.mov,.webm,.mp3,.wav,.png,.jpg,.jpeg,.gif,.webp,.ppt,.pptx" disabled={uploading} />
+            <input ref={fileInputRef} type="file" style={{ display: "none" }} onChange={handleFileInputChange} accept=".pdf,.mp4,.mov,.webm,.mp3,.wav,.png,.jpg,.jpeg,.gif,.webp,.ppt,.pptx,.doc,.docx,.xls,.xlsx" disabled={uploading} />
             {file ? (
               <div style={{ display: "flex", alignItems: "center", gap: 14, width: "100%" }}>
                 {imagePreview ? (<img src={imagePreview} alt="Preview" style={{ width: 48, height: 48, borderRadius: 10, objectFit: "cover" }} />) : (<div style={{ width: 48, height: 48, borderRadius: 10, background: getFileMeta(file.type).bg, color: getFileMeta(file.type).color, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24 }}>{getFileMeta(file.type).icon}</div>)}
@@ -389,7 +428,7 @@ export default function UploadMaterials() {
               <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 16, textAlign: "center" }}>
                 <div style={{ width: 48, height: 48, borderRadius: 12, background: dragOver ? C.medBlue : C.medBlueBg, color: dragOver ? "#fff" : C.medBlue, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 12, transition: "background 0.2s" }}><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></div>
                 <div style={{ ...TS.body, fontWeight: 600, color: dragOver ? C.medBlue : C.textPrimary }}>{dragOver ? "Drop file here" : "Tap to browse or drag a file"}</div>
-                <div style={{ ...TS.label, fontSize: 12, marginTop: 4, color: C.textTertiary }}>PDF, Video, Audio, Image, or PPT • Max {formatBytes(MAX_FILE_SIZE)}</div>
+                <div style={{ ...TS.label, fontSize: 12, marginTop: 4, color: C.textTertiary }}>PDF, Video, Audio, Image, PPT or Word • Max {formatBytes(MAX_FILE_SIZE)}</div>
               </div>
             )}
           </div>
