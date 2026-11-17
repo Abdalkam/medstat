@@ -1,15 +1,26 @@
-// src/database/trainerDB.ts — v4: cloud-synced, tombstone-aware trainer CRUD
+// src/database/trainerDB.ts — v5: cloud-synced, tombstone-aware trainer CRUD
 //
-// Changes vs v3:
-//  • Cloud pushes and soft-deletes now go through supabaseUserSync — the
+// Changes vs v4 (behavior hardening only — the API surface is identical):
+//  • deleteTrainer reads the row BEFORE the local cascade. When the trainer
+//    was never confirmed in the cloud (synced === false — created offline
+//    with every push failing, or no institution linked), the cloud delete is
+//    skipped and the tombstone lifted immediately: deleteUserRowFromSupabase
+//    throws "Cloud delete matched no user row" for rows that never existed,
+//    which used to strand an immortal "failed" tombstone that
+//    retryFailedCloudDeletes chased on every sync tick.
+//  • getTrainers filters tombstoned ids (defense in depth — the canonical
+//    filter lives in getUsersDetailed; direct Dexie reads stay clean too).
+//  Everything else (tombstone-first delete, guarded cascade, username
+//  uniqueness, idempotent put, syncedAt stamping) is unchanged from v4.
+//
+// Changes vs v3 (preserved):
+//  • Cloud pushes and soft-deletes go through supabaseUserSync — the
 //    schema-exact helper for public.users (explicit column whitelist,
 //    camelCase "assignedDepartments" column, snake_case remuneration jsonb,
 //    CHECK-safe role). The old pushUserToSupabase from supabaseCourseSync
 //    is no longer used here; its behavior is otherwise identical.
 //  • Successful pushes also stamp syncedAt (local-only metadata, never
 //    uploaded — the users table has no such column).
-//  Everything else (tombstone-first delete, guarded cascade, username
-//  uniqueness, idempotent put) is unchanged from v3.
 
 import { db } from "./db";
 import type { User } from "../types";
@@ -17,7 +28,12 @@ import {
   deleteUserRowFromSupabase,
   pushUserRowToSupabase,
 } from "./supabaseUserSync";
-import { markDeleted, unmarkDeleted, isDeleted } from "./deletedIdsTracker";
+import {
+  getDeletedIds,
+  markDeleted,
+  unmarkDeleted,
+  isDeleted,
+} from "./deletedIdsTracker";
 import { noteUserPushed } from "./userDB";
 
 // ============================= HELPERS =============================
@@ -46,12 +62,20 @@ function tenantOf(u: any): string {
 // GET ALL TRAINERS
 // Pass tenantId to scope to one institution (recommended — the local DB can
 // hold users from more than one tenant after multi-tenant logins).
+// v5: also filters tombstoned ids, so a deleted trainer that snuck back
+// into Dexie between purge passes can never appear in a trainer list.
 // =============================
 export async function getTrainers(tenantId?: string): Promise<User[]> {
+  let dead = new Set<string>();
+  try {
+    dead = new Set(await getDeletedIds("user"));
+  } catch {
+    // Tracker unavailable — filtering is skipped.
+  }
   const all = await db.users
     .filter((user) => user.role === "trainer")
     .toArray();
-  return all.filter((u: any) => sameTenant(u, tenantId));
+  return all.filter((u: any) => !dead.has(u.id) && sameTenant(u, tenantId));
 }
 
 // =============================
@@ -161,12 +185,24 @@ export async function updateTrainer(trainer: User): Promise<void> {
 // =============================
 // DELETE TRAINER
 // =============================
-// Mirrors userDB.deleteUser: tombstone FIRST, then the full local cascade,
-// then the cloud delete (unmark on success, keep tombstone on failure).
-// v1 left no tombstone, so the next pull re-inserted the trainer; v2 left
-// submission/chat orphans behind — both fixed here.
+// Tombstone FIRST, then the full local cascade, then the cloud delete.
+// v5 adds the never-synced guard: the row's synced flag is read BEFORE the
+// cascade. Rows that never reached the cloud (synced === false) skip the
+// cloud delete and lift the tombstone — deleteUserRowFromSupabase throws
+// "matched no user row" for cloud-absent rows, which previously left an
+// immortal "failed" tombstone behind. Unmark on success, keep tombstone on
+// failure (the retry loop picks it up). v1 left no tombstone, so the next
+// pull re-inserted the trainer; v2 left submission/chat orphans behind —
+// both fixed in earlier versions and preserved here.
 export async function deleteTrainer(id: string): Promise<void> {
   const tenantId = getTenantId();
+
+  // Read BEFORE the local cascade — whether this row was ever pushed decides
+  // whether a cloud delete is meaningful at all (see header). Rows with no
+  // synced flag (legacy rows) are presumed cloud-known and keep the old
+  // cloud-delete behavior.
+  const local: any = await db.users.get(id).catch(() => null);
+  const everSynced = !local || local.synced !== false;
 
   // Tombstone FIRST — closes the resurrection race window
   await markDeleted("user", id, tenantId, "pending");
@@ -178,7 +214,7 @@ export async function deleteTrainer(id: string): Promise<void> {
   try { await db.schedules.where("trainerId").equals(id).delete(); } catch { /* table may not exist */ }
   await db.users.delete(id);
 
-  if (tenantId) {
+  if (tenantId && everSynced) {
     try {
       // deleteUserRowFromSupabase verifies the row actually went away
       // (0-rows RLS no-op throws — see supabaseUserSync) — an RLS-swallowed
@@ -192,5 +228,11 @@ export async function deleteTrainer(id: string): Promise<void> {
       await markDeleted("user", id, tenantId, "failed", msg);
       throw new Error(`Trainer deleted locally but cloud delete failed: ${msg}. The cloud delete will be retried automatically.`);
     }
+  } else {
+    // No institution linked, or the row never reached the cloud — there is
+    // nothing to delete there. Lift the tombstone so the retry loop never
+    // chases a row that cannot exist.
+    await unmarkDeleted("user", id);
+    console.log(`Trainer ${id} deleted locally (never synced — no cloud row to remove)`);
   }
 }

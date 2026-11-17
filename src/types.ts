@@ -293,3 +293,4 @@ export interface ChatMessage {
   text: string;
   createdAt: string;
 }
+

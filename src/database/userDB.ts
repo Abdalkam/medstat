@@ -1,4 +1,4 @@
-// src/database/userDB.ts
+// src/database/userDB.ts — v2: deleteUser's tombstone is now tenant-scoped
 // MedStat user accounts, authentication and offline-first user storage.
 // REVISED (direct-to-Supabase + multi-device): login, deleteUser() and
 // getUser() no longer call the localhost:3001 / Render backend — they talk
@@ -1015,7 +1015,20 @@ export async function deleteUser(id: string): Promise<void> {
       tracker.noteDeletedId ??
       tracker.markDeleted;
     if (typeof mark === "function") {
-      await mark("user", id);
+      // v2: record the tenant so retryFailedCloudDeletes re-deletes with the
+      // same tenant scope the original delete used (markDeleted signature:
+      // entityType, entityId, tenantId, status?, errorMessage?).
+      let tenantId = "";
+      try {
+        tenantId = localStorage.getItem("activeTenantId") || "";
+        if (!tenantId) {
+          const cached = JSON.parse(localStorage.getItem("currentUser") || "{}");
+          tenantId = String(cached?.tenantId || cached?.tenant_id || "");
+        }
+      } catch {
+        tenantId = "";
+      }
+      await mark("user", id, tenantId);
     }
   } catch {
     // The tracker may expose a different marker or be unavailable — the

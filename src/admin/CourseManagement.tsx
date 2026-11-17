@@ -1,7 +1,18 @@
-
-// src/admin/AssignCourses.tsx
+// src/admin/AssignCourses.tsx — v3: merge-safe roster editing
 // Medstat — Material Design 3 (Android) redesign — master/detail assignment layout
 // Course Assignment Manager
+//
+// Changes vs v2 (the MD3 redesign — nothing visual regressed):
+//  • Save is gated while the background cloud merge runs ("Syncing…" chip),
+//    and the draft is rebuilt from the MERGED rows whenever the admin has
+//    not ticked anything yet. A cold deep-link can no longer start from a
+//    local-only roster and wipe cloud-only members with one Save.
+//  • The enrollment merge now also skips rows whose user or course is
+//    tombstoned — deleting a user/course no longer resurrects their
+//    enrollments as phantom roster members on the next pull.
+//  • Local paint (STEP 1 and the post-merge repaint) is tenant-scoped, so a
+//    device used with more than one institution never lists another
+//    institution's users or courses.
 //
 // Features:
 // - Assign trainers and trainees by course.
@@ -241,6 +252,18 @@ function mapEnrollmentFromSupabase(
     createdAt: e.created_at || "",
     synced: true,
   };
+}
+
+/** Tenant match tolerant of camelCase (local writes) and snake_case (rows
+ *  mirrored straight from Supabase). Rows with NO tenant at all count as
+ *  this tenant's legacy rows — same policy as enrollmentDB.sameTenant. */
+function sameTenantLoose(row: any, tenantId: string): boolean {
+  if (!tenantId) return true;
+  return (
+    row?.tenantId === tenantId ||
+    row?.tenant_id === tenantId ||
+    (!row?.tenantId && !row?.tenant_id)
+  );
 }
 
 /* ============================================================================
@@ -1011,6 +1034,9 @@ export default function AssignCourses({
 
   const [isLoading, setIsLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  // v3: true while the background Supabase merge is running — the save
+  // button is gated on it so a stale diff baseline can't be saved mid-merge.
+  const [merging, setMerging] = useState(false);
 
   const [snackbar, setSnackbar] = useState<{
     message: string;
@@ -1019,6 +1045,14 @@ export default function AssignCourses({
 
   const loadSeqRef = useRef(0);
   const bootstrappedRef = useRef(false);
+  // v3: the current selection and a "has the admin ticked anything" flag.
+  // Refs because loadData closes over the FIRST render's state (it is called
+  // once from a mount-only effect) — plain closure variables would go stale.
+  const selectionRef = useRef<{ mode: "course" | "user"; id: string | null }>({
+    mode: initialMode,
+    id: (initialMode === "course" ? initialCourseId : initialUserId) ?? null,
+  });
+  const draftDirtyRef = useRef(false);
 
   /* --------------------------------------------------------------------------
      SNACKBAR
@@ -1071,13 +1105,18 @@ export default function AssignCourses({
     try {
       localUsers = (
         await db.users.toArray()
-      ).filter((u: any) => u.role !== "admin");
+      ).filter(
+        (u: any) =>
+          u.role !== "admin" && sameTenantLoose(u, tenantId)
+      );
     } catch {
       // Continue with available data.
     }
 
     try {
-      localCourses = await db.courses.toArray();
+      localCourses = (
+        await db.courses.toArray()
+      ).filter((c: any) => sameTenantLoose(c, tenantId));
     } catch {
       // Continue with available data.
     }
@@ -1098,6 +1137,7 @@ export default function AssignCourses({
     // STEP 2: Background synchronization.
 
     if (tenantId && navigator.onLine) {
+      setMerging(true);
       try {
         await syncPendingEnrollments(tenantId);
 
@@ -1157,7 +1197,9 @@ export default function AssignCourses({
           if (
             e.deleted_at ||
             deadEnroll.has(e.id) ||
-            deadEnroll.has(`${e.user_id}:${e.course_id}`)
+            deadEnroll.has(`${e.user_id}:${e.course_id}`) ||
+            deadUsers.has(e.user_id) ||
+            deadCourses.has(e.course_id)
           ) {
             continue;
           }
@@ -1172,9 +1214,14 @@ export default function AssignCourses({
         if (!stale()) {
           const freshUsers = (
             await db.users.toArray()
-          ).filter((u: any) => u.role !== "admin");
+          ).filter(
+            (u: any) =>
+              u.role !== "admin" && sameTenantLoose(u, tenantId)
+          );
 
-          const freshCourses = await db.courses.toArray();
+          const freshCourses = (
+            await db.courses.toArray()
+          ).filter((c: any) => sameTenantLoose(c, tenantId));
 
           const freshRows =
             (await getEnrollments(tenantId)) as any[];
@@ -1182,12 +1229,33 @@ export default function AssignCourses({
           setUsers(freshUsers);
           setCourses(freshCourses);
           setEnrollRows(freshRows);
+
+          // v3: rebuild the draft from the MERGED rows while the admin has
+          // not ticked anything. A cold deep-link starts from local-only
+          // enrollments — saving that stale draft would remove every
+          // cloud-only member of the course (or course of the user).
+          const sel = selectionRef.current;
+          if (!draftDirtyRef.current && sel.id) {
+            const baseIds: string[] =
+              sel.mode === "course"
+                ? freshRows
+                    .filter((r: any) => r.courseId === sel.id)
+                    .map((r: any) => r.userId)
+                : freshRows
+                    .filter((r: any) => r.userId === sel.id)
+                    .map((r: any) => r.courseId);
+            setDraft(new Set(baseIds));
+          }
         }
       } catch (e) {
         console.warn(
           "AssignCourses: remote merge failed, using local DB",
           e
         );
+      } finally {
+        if (!stale()) {
+          setMerging(false);
+        }
       }
     }
   }
@@ -1209,6 +1277,7 @@ export default function AssignCourses({
     if (isLoading || bootstrappedRef.current) return;
 
     bootstrappedRef.current = true;
+    draftDirtyRef.current = false;
 
     if (mode === "course" && selectedCourseId) {
       setDraft(
@@ -1413,6 +1482,8 @@ export default function AssignCourses({
 
   function selectCourse(id: string) {
     setSelectedCourseId(id);
+    selectionRef.current = { mode: "course", id };
+    draftDirtyRef.current = false;
 
     setDraft(
       new Set(membersByCourse.get(id) || [])
@@ -1423,6 +1494,8 @@ export default function AssignCourses({
 
   function selectUser(id: string) {
     setSelectedUserId(id);
+    selectionRef.current = { mode: "user", id };
+    draftDirtyRef.current = false;
 
     setDraft(
       new Set(coursesByUser.get(id) || [])
@@ -1432,6 +1505,7 @@ export default function AssignCourses({
   }
 
   function toggleDraft(id: string) {
+    draftDirtyRef.current = true;
     setDraft((prev) => {
       const next = new Set(prev);
 
@@ -1446,6 +1520,7 @@ export default function AssignCourses({
   }
 
   function setSectionAll(ids: string[], on: boolean) {
+    draftDirtyRef.current = true;
     setDraft((prev) => {
       const next = new Set(prev);
 
@@ -1503,6 +1578,7 @@ export default function AssignCourses({
             .map((r) => r.userId)
         )
       );
+      draftDirtyRef.current = false;
     } catch (e: any) {
       showSnack(
         e?.message || "Could not save the roster.",
@@ -1554,6 +1630,7 @@ export default function AssignCourses({
             .map((r) => r.courseId)
         )
       );
+      draftDirtyRef.current = false;
     } catch (e: any) {
       showSnack(
         e?.message || "Could not save the courses.",
@@ -1818,6 +1895,8 @@ export default function AssignCourses({
                       setSelectedUserId(null);
                       setDraft(new Set());
                       setDetailSearch("");
+                      selectionRef.current = { mode: key, id: null };
+                      draftDirtyRef.current = false;
                     }
                   }}
                   style={{
@@ -2778,6 +2857,14 @@ export default function AssignCourses({
                     )}
                   </div>
 
+                  {merging && (
+                    <Chip
+                      label="Syncing…"
+                      bg={C.orangeBg}
+                      fg={C.orange}
+                    />
+                  )}
+
                   <button
                     type="button"
                     className="acSaveButton"
@@ -2786,7 +2873,7 @@ export default function AssignCourses({
                         ? saveRoster
                         : saveUserCourses
                     }
-                    disabled={!hasChanges || saving}
+                    disabled={!hasChanges || saving || merging}
                     style={{
                       minHeight: 48,
                       borderRadius: R.xl,
@@ -2796,11 +2883,11 @@ export default function AssignCourses({
                       alignItems: "center",
                       justifyContent: "center",
                       background:
-                        !hasChanges || saving
+                        !hasChanges || saving || merging
                           ? C.secondaryContainer
                           : C.primary,
                       color:
-                        !hasChanges || saving
+                        !hasChanges || saving || merging
                           ? C.onSurfaceVariant
                           : C.onPrimary,
                       fontSize: 14,
@@ -2808,7 +2895,7 @@ export default function AssignCourses({
                       letterSpacing: "0.01em",
                       fontFamily: font,
                       cursor:
-                        !hasChanges || saving
+                        !hasChanges || saving || merging
                           ? "default"
                           : "pointer",
                       transition: motion,
@@ -2816,13 +2903,13 @@ export default function AssignCourses({
                       flexShrink: 0,
                     }}
                     onMouseEnter={(e) => {
-                      if (hasChanges && !saving) {
+                      if (hasChanges && !saving && !merging) {
                         e.currentTarget.style.background =
                           "#1F64D4";
                       }
                     }}
                     onMouseLeave={(e) => {
-                      if (hasChanges && !saving) {
+                      if (hasChanges && !saving && !merging) {
                         e.currentTarget.style.background =
                           C.primary;
                       }

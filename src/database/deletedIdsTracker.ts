@@ -200,6 +200,9 @@ export async function retryFailedCloudDeletes(): Promise<void> {
           // Schema-exact + row-count-verified cloud soft-delete: throws on
           // RLS-silenced no-ops and counts already-deleted rows as success,
           // so a stale tombstone can never fake a successful retry.
+          // (Trainer/user delete flows lift tombstones for rows that were
+          // never synced, so "failed" tombstones here mean the row really
+          // exists in the cloud and the delete must keep being retried.)
           await deleteUserRowFromSupabase(tombstone.entityId, tombstone.tenantId);
           break;
         case "course": {

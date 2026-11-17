@@ -1,4 +1,12 @@
-// src/database/supabaseUserSync.ts — v1: SCHEMA-EXACT cloud sync for public.users
+// src/database/supabaseUserSync.ts — v2: SCHEMA-EXACT cloud sync for public.users
+//
+// v2 change: mapLocalUserToCloud now prefers the camelCase assignedCourses
+// copy (row?.assignedCourses ?? row?.assigned_courses). types.ts documents
+// that new local writes always use the camelCase key; rows that only carry
+// the snake_case copy are untouched cloud mirrors, so nothing regresses —
+// but a locally refreshed camelCase list can no longer be shadowed by a
+// stale snake_case mirror (which let UserManagement re-save superseded
+// assignments after AssignCourses changed them).
 //
 // Why this file exists — the actual Supabase table has three traps that a
 // naive "push the whole Dexie row" approach trips over:
@@ -139,7 +147,10 @@ export function mapLocalUserToCloud(row: any, fallbackTenantId?: string): Record
     // NOT NULL column — an empty string is legal, null is not.
     password: String(row?.password ?? ""),
     role,
-    assigned_courses: toUuidList(row?.assigned_courses ?? row?.assignedCourses),
+    // v2: camelCase FIRST. New local writes always use assignedCourses
+    // (types.ts); the snake_case copy is only authoritative on rows that
+    // were mirrored straight from the cloud and never edited locally.
+    assigned_courses: toUuidList(row?.assignedCourses ?? row?.assigned_courses),
     // Exact column name from the DDL — camelCase, quoted.
     assignedDepartments: toUuidList(row?.assignedDepartments ?? row?.assigned_departments),
     profile_pic: toText(row?.profile_pic ?? row?.profilePic),
@@ -182,6 +193,9 @@ export async function pushUserRowToSupabase(
  * the tombstone stays and the sync job retries — silent success here would
  * let the pull resurrect the user forever.
  * Already-deleted rows count as success (idempotent retry).
+ * NOTE: a row that NEVER reached the cloud also throws here ("matched no
+ * user row") — deleteTrainer / UserManagement.handleDelete guard against
+ * that by checking the local synced flag BEFORE calling this.
  */
 export async function deleteUserRowFromSupabase(
   id: string,

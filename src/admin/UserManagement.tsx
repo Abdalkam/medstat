@@ -1,5 +1,13 @@
-// src/admin/UserManagement.tsx — v4: Material Android UI + schema-exact CRUD
+// src/admin/UserManagement.tsx — v5: Material Android UI + schema-exact CRUD
 //
+// Changes vs v4 (the full v4 list below is preserved — nothing regressed):
+//  • handleDelete reads the row BEFORE the local cascade: a user that was
+//    never confirmed in the cloud (synced === false — created offline with
+//    every push failing, or no institution linked) skips the cloud delete
+//    and the tombstone is lifted immediately. deleteUserRowFromSupabase
+//    throws "Cloud delete matched no user row" for cloud-absent rows, which
+//    used to strand an immortal "failed" tombstone that the retry loop
+//    chased on every sync tick.
 // Changes vs v3 (the v3 fix list is preserved — nothing regressed):
 //  UI — professional Android (Material) look:
 //   • sticky top app bar with icon actions (refresh, export CSV)
@@ -1275,6 +1283,11 @@ export default function UserManagement() {
     try {
       if (!id) throw new Error("Missing user id.");
 
+      // Read the row BEFORE the local cascade — whether it was ever pushed
+      // decides whether a cloud delete is meaningful at all (see header).
+      const localRow: any = await db.users.get(id).catch(() => null);
+      const everSynced = !localRow || localRow.synced !== false;
+
       // Tombstone FIRST — closes the resurrection race window (same as trainerDB).
       await markDeleted("user", id, tenantId, "pending");
 
@@ -1289,7 +1302,7 @@ export default function UserManagement() {
       try { await db.schedules.where("traineeId").equals(id).delete(); } catch { /* traineeId may not be indexed */ }
       await db.users.delete(id);
 
-      if (tenantId) {
+      if (tenantId && everSynced) {
         try {
           await deleteUserRowFromSupabase(id, tenantId);
           await unmarkDeleted("user", id);
@@ -1300,6 +1313,11 @@ export default function UserManagement() {
             `Deleted on this device, but the cloud delete failed: ${message}. The sync job will retry it automatically.`,
           );
         }
+      } else {
+        // No institution linked, or the row never reached the cloud — there
+        // is nothing to delete there. Lift the tombstone so the retry loop
+        // never chases a row that cannot exist.
+        await unmarkDeleted("user", id);
       }
 
       setConfirmTarget(null);

@@ -1,4 +1,14 @@
-// src/database/enrollmentDB.ts — v2: single source of truth for course assignment
+// src/database/enrollmentDB.ts — v3: single source of truth for course assignment
+//
+// v3 changes (audit fixes — the v2 diff engine below is untouched):
+//  • applyUserAssignmentsCore now writes BOTH mirror spellings
+//    (assignedCourses AND assigned_courses). Local rows cached from the
+//    cloud carry the snake_case copy, legacy readers (UserManagement's
+//    readIdField/formFromRow) prefer it, and updating only the camelCase
+//    key left a stale mirror that let the user form show — and re-save —
+//    superseded course assignments.
+//  • API_BASE_URL honors VITE_API_URL, exactly like userDB.ts, so
+//    deployments on a different backend host no longer need a code change.
 //
 // v2 changes (trainer-not-seeing-assigned-courses fix):
 //  • applyUserAssignmentsCore no longer skips every course on a fresh device
@@ -39,7 +49,12 @@ import type { Enrollment } from "../types";
 import { supabase } from "../auth/supabase";
 import { markDeleted, unmarkDeleted, isDeleted, getDeletedIds } from "./deletedIdsTracker";
 
-const API_BASE_URL = import.meta.env.PROD ? "https://medstat-3rxl.onrender.com" : "";
+// v3: honor VITE_API_URL like userDB.ts does — one source of truth for the
+// backend host per environment instead of a hardcoded Render URL.
+const API_BASE_URL = (
+  import.meta.env.VITE_API_URL ||
+  (import.meta.env.PROD ? "https://medstat-3rxl.onrender.com" : "")
+).replace(/\/+$/, "");
 const PENDING_DELETES_KEY = "enrollmentPendingDeletes";
 const PENDING_DELETES_MAX = 500;
 
@@ -482,7 +497,16 @@ async function applyUserAssignmentsCore(
       if (norm(cur) !== norm(finalDesired)) {
         // ✅ FIX v2: flag the user unsynced so the normal user push carries the
         // refreshed assigned_courses to the cloud automatically.
-        await db.users.update(userId, { assignedCourses: finalDesired, synced: false } as any);
+        // ✅ FIX v3: write BOTH key spellings. The snake_case copy is what
+        // the pull mapper and getUsersDetailed leave in Dexie and legacy
+        // readers prefer it — updating only the camelCase key left a stale
+        // mirror that let the user form show (and re-save) superseded
+        // assignments.
+        await db.users.update(userId, {
+          assignedCourses: finalDesired,
+          assigned_courses: finalDesired,
+          synced: false,
+        } as any);
       }
     }
   } catch { /* mirror is best-effort */ }

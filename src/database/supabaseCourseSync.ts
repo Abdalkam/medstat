@@ -1,12 +1,56 @@
 /* ================================================================
-   COURSE-CONTENT SYNC (v2) — the complete course-content section
-   for src/database/supabaseCourseSync.ts
+   src/database/supabaseCourseSync.ts — v3: schema-exact courses +
+   doc-store course-content sync
    ================================================================
-   WHAT CHANGED IN v2 (fixes TS2304 "Cannot find name 'supabase'"):
-   v1 ended with `const SUPABASE_CLIENT = supabase;` and assumed your
-   file already declared a client named `supabase`. Yours doesn't, so
-   v2 is SELF-CONTAINED: it builds its own client lazily on the first
-   sync call, resolving credentials in this order:
+   WHAT CHANGED IN v3 (P1 fix from the integration audit):
+
+   public.courses is a REAL relational table — AssignCourses pulls it with
+   .select("*") and maps name, tuition_type, amount, start_date, logo, and
+   filters .is("deleted_at", null). v2/v2.1 pushed courses through the
+   doc-store jsonb shape ({ id, tenant_id, course_id, assignment_id, data }),
+   which on a relational table fails with PGRST204 "Could not find the
+   column" — and because courseDB catches push failures, every course push
+   silently died and courses never reached the cloud.
+
+   • Courses are now SCHEMA-EXACT, mirroring how supabaseUserSync treats
+     public.users: an explicit column whitelist, camelCase fields mapped to
+     the snake_case DDL columns, UUID/tenant/username-style validation up
+     front. Adjust COURSE payload columns to your DDL if they differ —
+     PostgREST names the offending column in the error either way.
+   • deleteCourseFromSupabase is now a count-verified SOFT delete
+     (deleted_at = now). A hard delete could never propagate: every device
+     only ever UPSERTS on pull, so a vanished row left all other devices
+     holding the course forever. Soft-deleted rows flow through the
+     existing is:deleted_at:null pull filter instead, exactly like users.
+   • deleteScheduleFromSupabase / deleteAssignmentFieldsFromSupabase accept
+     an optional tenantId and scope the delete when given (backward
+     compatible — existing single-argument call sites keep compiling).
+   • No-row cloud deletes THROW (same verify-or-throw contract as
+     deleteUserRowFromSupabase); courseDB.deleteCourse guards the legitimate
+     never-synced case by checking the local synced flag first.
+
+   UNCHANGED from v2/v2.1 — the doc-store pattern still drives
+   assignments / assignment_fields / assignment_submissions /
+   course_materials / schedules (jsonb `data` column + real id/tenant_id/
+   course_id/assignment_id columns), the self-contained lazy Supabase
+   client, and the per-table failure styles:
+     course/assignment/submission → THROW on failure (callers use try/catch)
+     materials                    → return SyncResult (materialDB reads res.ok)
+     fetchCourseMaterials         → return null on failure (materialDB keeps local)
+     schedules                    → log only, never throw (scheduleDB has no catch)
+
+   Exports (all 15 members courseDB/assignmentDB/materialDB/scheduleDB use):
+     • courseDB.ts      → pushCourseToSupabase, deleteCourseFromSupabase
+     • assignmentDB.ts  → pushAssignmentToSupabase, deleteAssignmentFromSupabase,
+                          pushAssignmentFieldsToSupabase,
+                          deleteAssignmentFieldsFromSupabase, pushSubmissionToSupabase
+     • materialDB.ts    → pushMaterialToSupabase, pushMaterialsToSupabase,
+                          deleteMaterialFromSupabase, fetchCourseMaterialsFromSupabase,
+                          isUuid, SyncResult
+     • scheduleDB.ts    → pushScheduleToSupabase, deleteScheduleFromSupabase
+
+   CREDENTIALS (unchanged from v2): the client builds lazily on the first
+   sync call, resolving in this order:
      ① process.env      → CRA: REACT_APP_SUPABASE_URL + …ANON_KEY
                           Expo: EXPO_PUBLIC_…, Next: NEXT_PUBLIC_…
      ② import.meta.env  → Vite: VITE_SUPABASE_URL + VITE_SUPABASE_ANON_KEY
@@ -18,31 +62,6 @@
    Running next to any other client in this file is safe: supabase-js
    v2 stores the login session under the same localStorage key for the
    same project URL, so all clients of one project share the user.
-
-   v2.1 — TS2345 fix at line 265: AssignmentField.id is optional in
-   ../types, so the field-row filter now guards `r.id != null` before
-   calling isUuid(id: string). The materials filter got the same guard.
-
-   You may APPEND this whole file to the end of your existing
-   supabaseCourseSync.ts (keeping your user-row sync) or REPLACE that
-   file's content with it — both compile, because nothing below
-   depends on the rest of the file.
-
-   Exports added (all 15 missing members):
-     • courseDB.ts      → pushCourseToSupabase, deleteCourseFromSupabase
-     • assignmentDB.ts  → pushAssignmentToSupabase, deleteAssignmentFromSupabase,
-                          pushAssignmentFieldsToSupabase,
-                          deleteAssignmentFieldsFromSupabase, pushSubmissionToSupabase
-     • materialDB.ts    → pushMaterialToSupabase, pushMaterialsToSupabase,
-                          deleteMaterialFromSupabase, fetchCourseMaterialsFromSupabase,
-                          isUuid, SyncResult
-     • scheduleDB.ts    → pushScheduleToSupabase, deleteScheduleFromSupabase
-
-   Failure styles match each call site's error handling (see FIXES.md):
-     course/assignment/submission → THROW on failure (callers use try/catch)
-     materials                    → return SyncResult (materialDB reads res.ok)
-     fetchCourseMaterials         → return null on failure (materialDB keeps local)
-     schedules                    → log only, never throw (scheduleDB has no catch)
    ================================================================ */
 
 import type {
@@ -86,7 +105,7 @@ const T = {
 
 type SyncTable = (typeof T)[keyof typeof T];
 
-/* ── 3. Supabase client — self-contained (v2) ─────────────────────────────── */
+/* ── 3. Supabase client — self-contained ──────────────────────────────────── */
 
 /** ③ Fallback credentials — fill ONLY if no env var is found (see header). */
 const SUPABASE_URL_FALLBACK = ""; // e.g. "https://abcdefghijk.supabase.co"
@@ -157,7 +176,8 @@ function getClient(): SbClient {
   return cachedClient;
 }
 
-/* ── 4. Generic doc-store helpers ─────────────────────────────────────────── */
+/* ── 4. Generic doc-store helpers (assignments, fields, submissions,
+        materials, schedules — NOT courses, see section 5) ─────────────────── */
 
 /** Dexie-only bookkeeping keys that must never be written to the cloud. */
 const LOCAL_ONLY_KEYS = new Set(["pendingSync", "synced"]);
@@ -228,16 +248,98 @@ async function deleteDocOrThrow(table: SyncTable, id: string, tenantId: string):
   if (!res.ok) throw new Error(res.error);
 }
 
-/* ── 5. Courses ───────────────────────────────────────────────────────────── */
+/* ── 5. Courses — SCHEMA-EXACT (v3) ─────────────────────────────────────────
+ * public.courses is relational: AssignCourses maps name, tuition_type,
+ * amount, start_date, logo, tenant_id and filters deleted_at on pull.
+ * The column list below mirrors that shape. ADAPT to your DDL: if your
+ * table lacks an optional column (description / created_by / created_at),
+ * delete that payload line — PGRST204 names any column you get wrong.     */
 
-/** courseDB.addCourse/updateCourse call this via .catch() → REJECTS on failure. */
+/** courseDB.addCourse/updateCourse call this via try/catch → REJECTS on
+ *  failure. Local-only bookkeeping keys (synced, syncedAt, pendingSync) are
+ *  never sent. */
 export async function pushCourseToSupabase(course: Course, tenantId: string): Promise<void> {
-  await pushDocOrThrow(T.courses, course, tenantId);
+  if (!tenantId) throw new Error("[courses] No tenant id");
+  const c: any = course;
+  const id = String(c?.id ?? "").trim();
+  if (!id) throw new Error("[courses] row has no id");
+  if (!isUuid(id)) {
+    throw new Error(`[courses] non-UUID id "${id}" — migrate the local id first`);
+  }
+  const name = String(c?.name || c?.title || "").trim();
+  if (!name) throw new Error("[courses] row has no name/title");
+
+  const payload: Record<string, unknown> = {
+    id,
+    tenant_id: String(c?.tenantId || c?.tenant_id || tenantId),
+    name,
+    tuition_type: c?.tuitionType === "paid" ? "paid" : "free",
+    amount: Number(c?.amount) || 0,
+    start_date: c?.startDate ? String(c.startDate) : null,
+    logo: c?.logo ? String(c.logo) : null,
+  };
+
+  // Optional columns — remove any line your courses table does not have.
+  const description = String(c?.description ?? "").trim();
+  if (description) payload.description = description;
+  if (c?.createdBy) payload.created_by = String(c.createdBy);
+  if (c?.createdAt || c?.created_at) {
+    payload.created_at = String(c.createdAt || c.created_at);
+  }
+
+  try {
+    const client = getClient();
+    const { error } = await client
+      .from(T.courses)
+      .upsert([payload], { onConflict: "id" });
+    if (error) throw new Error(`[courses] upsert: ${error.message}`);
+  } catch (e: any) {
+    throw new Error(e?.message ?? String(e));
+  }
 }
 
-/** courseDB.deleteCourse keeps the tombstone (status "failed") on rejection → REJECTS. */
+/** courseDB.deleteCourse keeps the tombstone (status "failed") on rejection
+ *  → REJECTS. v3: count-verified SOFT delete (deleted_at = now) so other
+ *  devices learn about the deletion through their existing
+ *  is:deleted_at:null pull filter — a hard delete could never propagate
+ *  because pulls only ever upsert. Same verify-or-throw contract as
+ *  deleteUserRowFromSupabase; courseDB checks the local synced flag first,
+ *  so a course that never reached the cloud never gets here. */
 export async function deleteCourseFromSupabase(id: string, tenantId: string): Promise<void> {
-  await deleteDocOrThrow(T.courses, id, tenantId);
+  // A non-UUID id can never exist in the cloud (uuid PK) → nothing to delete.
+  if (!isUuid(id)) return;
+  const now = new Date().toISOString();
+  try {
+    const client = getClient();
+    const { error, count } = await client
+      .from(T.courses)
+      .update({ deleted_at: now }, { count: "exact" })
+      .eq("id", id)
+      .eq("tenant_id", tenantId);
+
+    if (error) throw new Error(error.message);
+    if ((count ?? 0) > 0) return;
+
+    // 0 rows updated — was it already deleted, or did RLS swallow the update?
+    const { data: existing, error: selectError } = await client
+      .from(T.courses)
+      .select("deleted_at")
+      .eq("id", id)
+      .maybeSingle();
+    if (selectError) throw new Error(selectError.message);
+    if (!existing) {
+      throw new Error(
+        "Cloud course delete matched no row (never synced, or hidden by RLS).",
+      );
+    }
+    if (existing?.deleted_at) return; // already soft-deleted — success
+
+    throw new Error(
+      "Cloud course delete was silently skipped — check the RLS policies on public.courses.",
+    );
+  } catch (e: any) {
+    throw new Error(e?.message ?? String(e));
+  }
 }
 
 /* ── 6. Assignments, fields, submissions ──────────────────────────────────── */
@@ -284,14 +386,21 @@ export async function pushAssignmentFieldsToSupabase(
   }
 }
 
-/** Deletes ALL cloud field rows of an assignment (tenant scoping via RLS). */
-export async function deleteAssignmentFieldsFromSupabase(assignmentId: string): Promise<void> {
+/** Deletes ALL cloud field rows of an assignment. v3: optional tenantId
+ *  scopes the delete explicitly when given; without it, tenant scoping
+ *  relies on RLS (as before). */
+export async function deleteAssignmentFieldsFromSupabase(
+  assignmentId: string,
+  tenantId?: string
+): Promise<void> {
   try {
     const client = getClient();
-    const { error } = await client
+    let query: any = client
       .from(T.assignmentFields)
       .delete()
       .eq("assignment_id", assignmentId);
+    if (tenantId) query = query.eq("tenant_id", tenantId);
+    const { error } = await query;
     if (error) throw new Error(`[assignment_fields] delete: ${error.message}`);
   } catch (e: any) {
     throw new Error(e?.message ?? String(e));
@@ -368,10 +477,15 @@ export async function pushScheduleToSupabase(schedule: Schedule, tenantId: strin
   if (!res.ok) console.warn("[supabaseCourseSync] schedule push failed (kept locally):", res.error);
 }
 
-export async function deleteScheduleFromSupabase(scheduleId: string): Promise<void> {
+/** v3: optional tenantId scopes the delete explicitly when given; without
+ *  it, tenant scoping relies on RLS (as before). Never throws — scheduleDB
+ *  has no catch around this call. */
+export async function deleteScheduleFromSupabase(scheduleId: string, tenantId?: string): Promise<void> {
   try {
     const client = getClient();
-    const { error } = await client.from(T.schedules).delete().eq("id", scheduleId);
+    let query: any = client.from(T.schedules).delete().eq("id", scheduleId);
+    if (tenantId) query = query.eq("tenant_id", tenantId);
+    const { error } = await query;
     if (error) console.warn("[supabaseCourseSync] schedule cloud delete failed:", error.message);
   } catch (e: any) {
     console.warn("[supabaseCourseSync] schedule cloud delete threw:", e?.message ?? e);

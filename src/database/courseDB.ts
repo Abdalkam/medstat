@@ -1,15 +1,21 @@
-// src/database/courseDB.ts — v3: tombstone-first deletes, guarded cascades, typed callbacks
+// src/database/courseDB.ts — v4: honest synced flag + never-synced delete guard
 //
-// Changes vs v2 (tsc fixes only — behavior and flow unchanged):
-//   1. pushCourseToSupabase / deleteCourseFromSupabase now exist in
-//      supabaseCourseSync — see supabaseCourseSync_additions.ts (append it to
-//      supabaseCourseSync.ts). Fixes TS2724 at line 16 (the compiler's
-//      "Did you mean pushUserRowToSupabase" hint proves those course functions
-//      never existed — the file only had user-row sync).
-//   2. The three .catch((e) => …) callbacks are now typed (e: unknown) —
-//      fixes TS7006 "Parameter 'e' implicitly has an 'any' type" at 47/52/60.
-//   3. deleteCourse() cascade skips Assignment rows without an id
-//      (Assignment.id is optional — fixes TS2345 at 75/76).
+// Changes vs v3 (behavior additions — the v3 tsc fix list is preserved):
+//  • addCourse/updateCourse now stamp synced:true ONLY when the cloud
+//    confirms (trainerDB semantics). Courses previously carried no synced
+//    flag at all, so nothing could ever tell whether a course had reached
+//    Supabase — and deleteCourse could not distinguish "in the cloud" from
+//    "created offline, never pushed".
+//  • deleteCourse reads the row BEFORE the cascade: a course that was never
+//    confirmed in the cloud (synced === false) skips the cloud soft-delete
+//    and lifts the tombstone. deleteCourseFromSupabase is count-verified
+//    and throws "matched no row" for cloud-absent courses, which would
+//    otherwise strand an immortal "failed" tombstone. Rows with no synced
+//    flag (pre-v4 rows) are presumed cloud-known and keep the old behavior.
+//  (v3 recap) pushCourseToSupabase / deleteCourseFromSupabase come from
+//  supabaseCourseSync — v3 of that file pushes courses SCHEMA-EXACT to the
+//  relational public.courses table and soft-deletes (deleted_at = now), so
+//  deletions finally propagate to other devices through their pull filter.
 
 import { db } from "./db";
 import type { Course } from "../types";
@@ -28,6 +34,18 @@ function getTenantId(): string {
 export async function getCourses(): Promise<Course[]> { return await db.courses.toArray(); }
 export async function getCourseById(id: string): Promise<Course | undefined> { return await db.courses.get(id); }
 
+/** Push + stamp: synced:true only when the cloud confirms; failures keep the
+ *  row as synced:false so deleteCourse's never-synced guard knows the row
+ *  may be cloud-absent (mirrors trainerDB's push handling). */
+async function pushCourseRow(course: Course, tenantId: string): Promise<void> {
+  try {
+    await pushCourseToSupabase(course, tenantId);
+    await db.courses.update(course.id as string, { synced: true } as any);
+  } catch (e: unknown) {
+    console.warn("Supabase push failed (kept as pending, will retry):", e);
+  }
+}
+
 export async function addCourse(course: Course): Promise<string> {
   if (!course.id) {
     course.id = crypto.randomUUID?.() || "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => { const r = (Math.random() * 16) | 0; const v = c === "x" ? r : (r & 0x3) | 0x8; return v.toString(16); });
@@ -44,12 +62,12 @@ export async function addCourse(course: Course): Promise<string> {
   if (existing) {
     const merged = { ...existing, ...course, id: course.id };
     await db.courses.put(merged);
-    if (tenantId) await pushCourseToSupabase(merged, tenantId).catch((e: unknown) => console.warn("Supabase push failed:", e));
+    if (tenantId) await pushCourseRow(merged, tenantId);
     return course.id;
   }
   if (!course.createdAt) course.createdAt = new Date().toISOString();
   await db.courses.add(course);
-  if (tenantId) await pushCourseToSupabase(course, tenantId).catch((e: unknown) => console.warn("Supabase push failed:", e));
+  if (tenantId) await pushCourseRow(course, tenantId);
   return course.id;
 }
 
@@ -57,11 +75,16 @@ export async function updateCourse(course: Course): Promise<void> {
   if (!course.createdAt) course.createdAt = new Date().toISOString();
   await db.courses.put(course);
   const tenantId = getTenantId();
-  if (tenantId) await pushCourseToSupabase(course, tenantId).catch((e: unknown) => console.warn("Supabase push failed:", e));
+  if (tenantId) await pushCourseRow(course, tenantId);
 }
 
 export async function deleteCourse(id: string): Promise<void> {
   const tenantId = getTenantId();
+
+  // Read BEFORE the cascade — whether this course was ever pushed decides
+  // whether a cloud delete is meaningful at all (see header).
+  const local: any = await db.courses.get(id).catch(() => null);
+  const everSynced = !local || local.synced !== false;
 
   // Tombstone FIRST — same ordering as userDB.deleteUser. Writing it after
   // the local delete left a resurrection window on every pull/realtime event.
@@ -86,7 +109,7 @@ export async function deleteCourse(id: string): Promise<void> {
 
   await db.courses.delete(id);
 
-  if (tenantId) {
+  if (tenantId && everSynced) {
     try {
       await deleteCourseFromSupabase(id, tenantId);
       await unmarkDeleted("course", id);
@@ -97,6 +120,12 @@ export async function deleteCourse(id: string): Promise<void> {
       await markDeleted("course", id, tenantId, "failed", msg);
       throw new Error(`Course deleted locally but cloud delete failed: ${msg}`);
     }
+  } else {
+    // No institution linked, or the course never reached the cloud — there
+    // is nothing to delete there. Lift the tombstone so the retry loop
+    // never chases a row that cannot exist.
+    await unmarkDeleted("course", id);
+    console.log(`Course ${id} deleted locally (never synced — no cloud row to remove)`);
   }
 }
 
