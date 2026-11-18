@@ -1,43 +1,52 @@
 /* ============================================================================
-   src/auth/startup.tsx — v1: BOOT SPLASH + SESSION GATE + SYNC BOOTSTRAP
+   src/auth/startup.tsx — v2: HANG-PROOF BOOT SPLASH + SESSION GATE (MD3 UI)
    ============================================================================
 
    WHAT THIS FILE IS
 
-   The professional Android (MD3) splash screen the app shows for the instant
-   between launch and the first real screen. It is built in the same Material
-   Design 3 language as CourseManagement.tsx / login.tsx (same palette,
-   shadows, motion) and adapts to ANY device screen size:
+   The professional Android (MD3) splash screen shown between launch and the
+   first real screen. Same Material Design 3 language as Login.tsx and it
+   adapts to ANY device screen size (phones, tablets, landscape, notches).
 
-     • phones / tablets / desktops → centered brand column, clamp() sizing
-     • landscape phones            → compact layout via @media (max-height)
-     • notched devices             → env(safe-area-inset-*) padding
-     • prefers-reduced-motion      → animations disabled
+   WHY v2 — "STUCK ON THE SPLASH FOREVER" IS NOW IMPOSSIBLE
+
+   The old boot could wait indefinitely on the local database or the network.
+   v2 guarantees the user ALWAYS reaches a screen:
+
+     1. HARD DEADLINE registered BEFORE any async work (default 5 s, override
+        with <Startup timeoutMs={...} />). When it fires, the session snapshot
+        is re-read and the user is routed — no matter what is still pending.
+     2. db.open() is raced against a 2.5 s cap, so a blocked IndexedDB
+        (another tab, private mode, old version) can never stall the boot.
+     3. Every await is wrapped; nothing in the boot sequence can throw.
+     4. A visible "Skip" escape button appears after 3 s and routes instantly.
 
    BOOT SEQUENCE (offline-first):
 
-     1. Open the local Dexie database (the app's source of truth).
-     2. Restore the session from localStorage:
-          authToken + currentUser  → start the sync engine (startPeriodicPull),
-          drain queued work (syncNow) for real sessions, then route to the
-          role home (admin → /admin, trainer → /trainer, others → /).
-          "offline-mode-pending-sync" token → same routing, but cloud work is
-          skipped (database/sync.ts already guards that token).
-        no session → clean stale keys and route to /login.
-     3. Safety net: even if a step hangs, the splash NEVER traps the user —
-        after a few seconds it routes anyway.
+     1. Brand: "SmartPages" — or the institution name saved by the login
+        screen (localStorage.localBusinessSettings). A legacy "MedStat" value
+        is ignored so the brand is always SmartPages until a real institution
+        name is created.
+     2. Open the local Dexie database (capped at 2.5 s).
+     3. Restore the session from localStorage:
+          authToken + currentUser → startPeriodicPull() starts the always-
+          draining sync engine; real sessions also fire syncNow(tenantId);
+          then route by role (admin/owner → /admin, trainer → /trainer,
+          everyone else → /).
+          "offline-mode-pending-sync" token → same routing, cloud work is
+          skipped by database/sync.ts automatically.
+        no session → clear stale keys and route to /login.
      4. If another tab logs out while the splash is up (authStateChanged),
         the destination re-evaluates to /login.
 
    ROUTING / INTEGRATION
 
-     • Default export <Startup /> (named export Startup too) — make it the
-       first route so every launch passes through it:
-           <Route path="/" element={<Startup />} />
+     • Default export <Startup /> (named export Startup too):
            <Route path="/startup" element={<Startup />} />
+       Point "/" at it too if you want the splash on every launch.
      • Optional overrides:
            <Startup routes={{ admin: "/admin", trainer: "/trainer", member: "/" }} />
-           <Startup minSplashMs={700} />
+           <Startup minSplashMs={600} timeoutMs={5000} />
      • Exported helpers: routeForRole(), readCurrentUser().
    ============================================================================ */
 
@@ -52,9 +61,29 @@ import { startPeriodicPull, syncNow } from "../database/sync";
 /* ------------------------------------------------------------------ */
 
 const OFFLINE_LOGIN_TOKEN = "offline-mode-pending-sync";
+const FALLBACK_BRAND = "SmartPages";
+
+/**
+ * Institution name saved by Login.tsx ("Create institution" / sign-in).
+ * Returns null when nothing (or only the legacy "MedStat" default) is saved,
+ * so the brand always reads SmartPages until a real name exists.
+ */
+export function brandFromSettings(): string | null {
+  try {
+    const parsed = JSON.parse(
+      localStorage.getItem("localBusinessSettings") || "null"
+    );
+    const name = parsed?.businessName ? String(parsed.businessName).trim() : "";
+    if (!name) return null;
+    if (name.toLowerCase() === "medstat") return null; // legacy default
+    return name;
+  } catch {
+    return null;
+  }
+}
 
 /* ============================================================================
-   MD3 DESIGN TOKENS — identical to CourseManagement.tsx / login.tsx
+   MD3 DESIGN TOKENS — identical to CourseManagement.tsx / Login.tsx
 ============================================================================ */
 
 const C = {
@@ -96,7 +125,7 @@ export interface StartupProps {
   routes?: HomeRoutes;
   /** Minimum time the splash stays visible (ms) — keeps the boot from flashing. */
   minSplashMs?: number;
-  /** Give up waiting on the boot sequence after this many ms and route anyway. */
+  /** HARD deadline: route anyway after this many ms, whatever is pending. */
   timeoutMs?: number;
 }
 
@@ -236,6 +265,22 @@ const CSS = `
   min-height: 20px;
   transition: all 0.25s cubic-bezier(0.2, 0, 0, 1);
 }
+.st-skip {
+  margin-top: 10px;
+  border: none;
+  background: transparent;
+  font-family: ${FONT};
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  color: ${C.primaryDeep};
+  padding: 10px 18px;
+  border-radius: 999px;
+  cursor: pointer;
+  min-height: 44px;
+  transition: background 0.2s cubic-bezier(0.2, 0, 0, 1);
+}
+.st-skip:hover { background: ${C.primaryContainer}; }
 .st-chip {
   display: inline-flex; align-items: center; gap: 6px;
   height: 30px; padding: 0 14px 0 10px;
@@ -259,6 +304,7 @@ const CSS = `
   .st-logo { width: 52px; height: 52px; border-radius: 18px; margin-bottom: 12px; }
   .st-progress-track { margin-top: 16px; }
   .st-status { margin-top: 8px; }
+  .st-skip { margin-top: 4px; min-height: 36px; }
   .st-chip { margin-top: 12px; }
   .st-footer { display: none; }
 }
@@ -278,18 +324,27 @@ const CSS = `
 export default function Startup(props: StartupProps) {
   const navigate = useNavigate();
 
-  const [appName, setAppName] = useState("MedStat");
-  const [status, setStatus] = useState("Preparing your workspace…");
+  const [appName, setAppName] = useState(FALLBACK_BRAND);
+  const [status, setStatus] = useState("Checking for a saved session…");
   const [offline, setOffline] = useState(
     typeof navigator !== "undefined" ? !navigator.onLine : false
   );
+  const [skipReady, setSkipReady] = useState(false);
   const routed = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
     const startedAt = Date.now();
-    const minSplash = props.minSplashMs ?? 700;
-    const timeoutMs = props.timeoutMs ?? 6000;
+    const minSplash = props.minSplashMs ?? 600;
+    const timeoutMs = props.timeoutMs ?? 5000;
+
+    /** Where should the user go, judging by what is saved right now? */
+    const routeBySession = (): string => {
+      const token = localStorage.getItem("authToken");
+      const cu = readCurrentUser();
+      if (!token || !cu?.id) return "/login";
+      return routeForRole(cu.role, props.routes);
+    };
 
     const finish = (path: string) => {
       if (routed.current || cancelled) return;
@@ -299,6 +354,19 @@ export default function Startup(props: StartupProps) {
         if (!cancelled) navigate(path, { replace: true });
       }, wait);
     };
+
+    /* ---- 1. HARD DEADLINE — registered BEFORE any async work. ----------
+       Whatever hangs (IndexedDB blocked, dead network, anything), the user
+       is routed after timeoutMs using the freshest session snapshot. ---- */
+    const hardDeadline = window.setTimeout(() => {
+      if (cancelled || routed.current) return;
+      routed.current = true;
+      setStatus("Taking you to the app…");
+      navigate(routeBySession(), { replace: true });
+    }, timeoutMs);
+
+    /* ---- 2. Skip escape hatch, visible after 3 s. --------------------- */
+    const skipTimer = window.setTimeout(() => setSkipReady(true), 3000);
 
     const markOnline = () => setOffline(false);
     const markOffline = () => setOffline(true);
@@ -314,26 +382,24 @@ export default function Startup(props: StartupProps) {
     window.addEventListener("authStateChanged", onAuthChanged);
 
     (async () => {
-      try {
-        const settings = localStorage.getItem("localBusinessSettings");
-        if (settings) {
-          const parsed = JSON.parse(settings);
-          if (parsed?.businessName) setAppName(String(parsed.businessName));
-        }
-      } catch {
-        /* ignore */
-      }
+      // Brand: SmartPages, or the institution created on the login screen.
+      const brand = brandFromSettings();
+      if (brand) setAppName(brand);
 
-      // 1. Local database first — the app's source of truth.
+      // 3. Local database first — but NEVER wait more than 2.5 s on it.
       setStatus("Opening local database…");
       try {
-        await db.open();
+        await Promise.race([
+          db.open().catch(() => {}),
+          new Promise((res) => window.setTimeout(res, 2500)),
+        ]);
       } catch {
-        /* Dexie already open (or blocked) — the screens handle their own reads */
+        /* screens handle their own reads */
       }
       if (cancelled) return;
 
-      // 2. Session gate.
+      // 4. Session gate.
+      setStatus("Checking for a saved session…");
       const token = localStorage.getItem("authToken");
       const cu = readCurrentUser();
       if (!token || !cu?.id) {
@@ -343,42 +409,54 @@ export default function Startup(props: StartupProps) {
         } catch {
           /* ignore */
         }
-        setStatus("Checking for a saved session…");
         finish("/login");
         return;
       }
 
-      // 3. Start the always-draining engine (idempotent — safe to re-call).
-      startPeriodicPull();
+      // 5. Start the always-draining engine (idempotent — safe to re-call).
+      try {
+        startPeriodicPull();
+      } catch {
+        /* sync chips surface engine errors later */
+      }
       const offlineSession = token === OFFLINE_LOGIN_TOKEN;
       if (offlineSession) {
         setStatus("Offline mode — your data is safe on this device");
       } else if (typeof navigator !== "undefined" && navigator.onLine && cu.tenantId) {
         setStatus("Syncing your data…");
-        void syncNow(cu.tenantId).catch(() => {
-          /* sync errors surface in the dashboard status chips */
-        });
+        try {
+          void syncNow(cu.tenantId).catch(() => {});
+        } catch {
+          /* ignore */
+        }
       }
 
       finish(routeForRole(cu.role, props.routes));
-
-      // 4. Safety net — the splash must never trap anyone.
-      window.setTimeout(() => {
-        if (!cancelled && !routed.current) {
-          routed.current = true;
-          navigate(routeForRole(cu.role, props.routes), { replace: true });
-        }
-      }, timeoutMs);
     })();
 
     return () => {
       cancelled = true;
+      window.clearTimeout(hardDeadline);
+      window.clearTimeout(skipTimer);
       window.removeEventListener("online", markOnline);
       window.removeEventListener("offline", markOffline);
       window.removeEventListener("authStateChanged", onAuthChanged);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const skip = () => {
+    if (routed.current) return;
+    routed.current = true;
+    navigate(routeBySessionPublic(), { replace: true });
+  };
+  // routeBySession lives inside the effect; re-derive it here (pure function).
+  function routeBySessionPublic(): string {
+    const token = localStorage.getItem("authToken");
+    const cu = readCurrentUser();
+    if (!token || !cu?.id) return "/login";
+    return routeForRole(cu.role, props.routes);
+  }
 
   return (
     <div className="st-root">
@@ -392,6 +470,12 @@ export default function Startup(props: StartupProps) {
           <div className="st-progress-bar" />
         </div>
         <div className="st-status">{status}</div>
+
+        {skipReady && (
+          <button type="button" className="st-skip" onClick={skip}>
+            Skip
+          </button>
+        )}
 
         {offline ? (
           <span className="st-chip" style={{ background: C.orangeBg, color: C.orange }}>

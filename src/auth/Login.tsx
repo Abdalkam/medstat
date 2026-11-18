@@ -68,6 +68,26 @@ import { startPeriodicPull, syncNow } from "../database/sync";
 
 const OFFLINE_LOGIN_TOKEN = "offline-mode-pending-sync";
 const LAST_USER_KEY = "medstat_last_user";
+const FALLBACK_BRAND = "SmartPages";
+
+/**
+ * Institution name saved by "Create institution" / sign-in.
+ * Returns null when nothing (or only the legacy "MedStat" default) is saved,
+ * so the brand always reads SmartPages until a real institution name exists.
+ */
+function brandFromSettings(): string | null {
+  try {
+    const parsed = JSON.parse(
+      localStorage.getItem("localBusinessSettings") || "null"
+    );
+    const name = parsed?.businessName ? String(parsed.businessName).trim() : "";
+    if (!name) return null;
+    if (name.toLowerCase() === "medstat") return null; // legacy default
+    return name;
+  } catch {
+    return null;
+  }
+}
 
 /* ============================================================================
    MD3 DESIGN TOKENS — identical to CourseManagement.tsx
@@ -652,7 +672,7 @@ function friendlyAuthError(raw: string): string {
 export default function Login(props: LoginProps) {
   const navigate = useNavigate();
 
-  const [appName, setAppName] = useState("SmartPages");
+  const [appName, setAppName] = useState(FALLBACK_BRAND);
   const [institution, setInstitution] = useState("");
   const [instError, setInstError] = useState(false);
   const [createBusy, setCreateBusy] = useState(false);
@@ -684,10 +704,14 @@ export default function Login(props: LoginProps) {
       if (settings) {
         const parsed = JSON.parse(settings);
         if (parsed?.businessName) {
+          // The field keeps whatever was saved (so a legacy "MedStat" can be
+          // overwritten by typing the real institution), but the BRAND falls
+          // back to SmartPages until a real institution name is created.
           setInstitution(String(parsed.businessName));
-          setAppName(String(parsed.businessName));
         }
       }
+      const brand = brandFromSettings();
+      if (brand) setAppName(brand);
       const last = JSON.parse(localStorage.getItem(LAST_USER_KEY) || "null");
       if (last?.email) setEmail(String(last.email));
     } catch {
@@ -704,7 +728,11 @@ export default function Login(props: LoginProps) {
         return;
       }
       try {
-        const count = await db.users.count();
+        // Capped at 2 s so a blocked IndexedDB can never stall the login card.
+        const count = await Promise.race([
+          db.users.count(),
+          new Promise<number>((res) => window.setTimeout(() => res(0), 2000)),
+        ]);
         setHasLocalAccount(count > 0 || !!localStorage.getItem(LAST_USER_KEY));
       } catch {
         setHasLocalAccount(!!localStorage.getItem(LAST_USER_KEY));
