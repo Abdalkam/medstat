@@ -1,5 +1,5 @@
 /* ============================================================================
-   src/auth/Login.tsx — v1: OFFLINE-FIRST SIGN-IN + PROFESSIONAL ANDROID (MD3) UI
+   src/auth/Login.tsx — v2: INSTITUTION SETUP + OFFLINE-FIRST SIGN-IN (MD3 UI)
    ============================================================================
 
    WHAT THIS FILE IS
@@ -37,6 +37,21 @@
        at it:  <Route path="/login" element={<Login />} />
      • Optional overrides:  <Login routes={{ admin: "/admin", trainer: "/trainer", member: "/" }} />
      • If a session already exists the screen forwards to the role home.
+
+   WHAT CHANGED IN v2 (institution setup — the app is "SmartPages"):
+
+     • Fallback brand name is now "SmartPages" (not MedStat), and the brand
+       spots show the INSTITUTION name you type — live, in its place.
+     • An "Institution name" field plus an ALWAYS-VISIBLE "Create institution"
+       button sit at the top of the sign-in card. Creating:
+         1. Saves the name to localStorage.localBusinessSettings (the same
+            key UploadMaterials and the rest of the app already read),
+         2. Reuses the device's tenant id when one exists, mints a fresh one
+            ("sp-…") for a brand-new institution,
+         3. Best-effort writes business_settings.business_name to the cloud
+            when a connection + session allow (silent local-only fallback
+            with a clear notice).
+       Signing in also persists the typed name, so it survives logouts.
    ============================================================================ */
 
 import { useEffect, useState } from "react";
@@ -242,6 +257,16 @@ function IconArrowRight({ size = 18 }: { size?: number }) {
   );
 }
 
+function IconBuilding({ size = 20 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" {...iconProps}>
+      <rect x="4.5" y="3.5" width="15" height="17" rx="2" />
+      <path d="M9 7.5h2M13 7.5h2M9 11h2M13 11h2M9 14.5h2M13 14.5h2" />
+      <path d="M10.5 20.5v-3h3v3" />
+    </svg>
+  );
+}
+
 /* ============================================================================
    MD3 STYLE SHEET (class-based so media queries can restructure the layout)
    lg- = login namespace — cannot collide with other screens.
@@ -428,6 +453,20 @@ const CSS = `
 @keyframes lgSpin { to { transform: rotate(360deg); } }
 .lg-footer { font-size: 12px; color: ${C.onSurfaceVariant}; text-align: center; line-height: 1.5; margin-top: 6px; }
 .lg-focusable:focus-visible { outline: 2px solid ${C.primary}; outline-offset: 2px; }
+/* ---------- institution setup panel (always visible) ---------- */
+.lg-inst {
+  box-sizing: border-box;
+  background: ${C.surfaceVariant};
+  border: 1px solid ${C.outlineVariant};
+  border-radius: 16px;
+  padding: 12px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.lg-inst-title {
+  font-size: 11.5px; font-weight: 700; letter-spacing: 0.8px;
+  text-transform: uppercase; color: ${C.onSurfaceVariant};
+}
+.lg-inst .lg-field { background: ${C.surface}; }
 
 /* ---------- responsive structure ---------- */
 @media (min-width: 940px) {
@@ -613,7 +652,10 @@ function friendlyAuthError(raw: string): string {
 export default function Login(props: LoginProps) {
   const navigate = useNavigate();
 
-  const [appName, setAppName] = useState("MedStat");
+  const [appName, setAppName] = useState("SmartPages");
+  const [institution, setInstitution] = useState("");
+  const [instError, setInstError] = useState(false);
+  const [createBusy, setCreateBusy] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPw, setShowPw] = useState(false);
@@ -641,7 +683,10 @@ export default function Login(props: LoginProps) {
       const settings = localStorage.getItem("localBusinessSettings");
       if (settings) {
         const parsed = JSON.parse(settings);
-        if (parsed?.businessName) setAppName(String(parsed.businessName));
+        if (parsed?.businessName) {
+          setInstitution(String(parsed.businessName));
+          setAppName(String(parsed.businessName));
+        }
       }
       const last = JSON.parse(localStorage.getItem(LAST_USER_KEY) || "null");
       if (last?.email) setEmail(String(last.email));
@@ -680,6 +725,16 @@ export default function Login(props: LoginProps) {
       localStorage.setItem("authToken", token);
       localStorage.setItem("currentUser", JSON.stringify(user));
       if (user.tenantId) localStorage.setItem("activeTenantId", user.tenantId);
+      // The institution typed on this screen outlives the session — persist it
+      // with the same key every other screen reads.
+      if (institution.trim()) {
+        let prevSettings: any = {};
+        try { prevSettings = JSON.parse(localStorage.getItem("localBusinessSettings") || "{}") || {}; } catch {}
+        localStorage.setItem(
+          "localBusinessSettings",
+          JSON.stringify({ ...prevSettings, businessName: institution.trim() })
+        );
+      }
       localStorage.setItem(
         LAST_USER_KEY,
         JSON.stringify({
@@ -818,6 +873,86 @@ export default function Login(props: LoginProps) {
     }
   }
 
+  /* ------------------------ CREATE INSTITUTION (v2) ---------------------- */
+
+  async function createInstitution() {
+    const name = institution.trim();
+    if (!name) {
+      setInstError(true);
+      setErrorMsg("Type the institution name first, then tap “Create institution”.");
+      return;
+    }
+    setCreateBusy(true);
+    setErrorMsg("");
+    setNotice("");
+    try {
+      // 1) Persist locally — localBusinessSettings is the key the rest of the
+      //    app (UploadMaterials, startup splash) already reads for branding.
+      let prevSettings: any = {};
+      try { prevSettings = JSON.parse(localStorage.getItem("localBusinessSettings") || "{}") || {}; } catch {}
+      localStorage.setItem(
+        "localBusinessSettings",
+        JSON.stringify({ ...prevSettings, businessName: name })
+      );
+      setAppName(name);
+
+      // 2) Tenant context: reuse the signed-in account's tenant when present;
+      //    otherwise mint a fresh id for the brand-new institution.
+      let tenantId = "";
+      try {
+        tenantId = String(
+          JSON.parse(localStorage.getItem("currentUser") || "{}")?.tenantId ||
+            localStorage.getItem("activeTenantId") ||
+            ""
+        );
+      } catch { tenantId = ""; }
+      if (!tenantId) {
+        tenantId =
+          typeof crypto !== "undefined" && "randomUUID" in crypto
+            ? `sp-${crypto.randomUUID()}`
+            : `sp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+        try { localStorage.setItem("activeTenantId", tenantId); } catch {}
+      }
+
+      // 3) Best-effort cloud write — never blocks the button: offline or RLS
+      //    failures degrade to "saved on this device" with a clear notice.
+      let cloudNote = "It will sync to the cloud once you're signed in online.";
+      if (
+        typeof navigator !== "undefined" &&
+        navigator.onLine &&
+        localStorage.getItem("authToken") &&
+        localStorage.getItem("authToken") !== OFFLINE_LOGIN_TOKEN
+      ) {
+        try {
+          const { data: updated, error: updErr } = await supabase
+            .from("business_settings")
+            .update({ business_name: name })
+            .eq("tenant_id", tenantId)
+            .select("tenant_id");
+          if (updErr || !updated || updated.length === 0) {
+            const { error: insErr } = await supabase
+              .from("business_settings")
+              .insert({ tenant_id: tenantId, business_name: name });
+            if (insErr) {
+              cloudNote = "Saved on this device — the cloud copy will follow once you sign in.";
+            } else {
+              cloudNote = "Saved to the cloud.";
+            }
+          } else {
+            cloudNote = "Saved to the cloud.";
+          }
+        } catch {
+          /* keep the local-only note */
+        }
+      }
+
+      setNoticeKind("success");
+      setNotice(`Institution “${name}” is ready on this device. ${cloudNote}`);
+    } finally {
+      setCreateBusy(false);
+    }
+  }
+
   /* --------------------------- password reset ---------------------------- */
 
   async function sendPasswordReset() {
@@ -850,7 +985,7 @@ export default function Login(props: LoginProps) {
     }
   }
 
-  const working = busy || offlineBusy;
+  const working = busy || offlineBusy || createBusy;
 
   /* -------------------------------- view -------------------------------- */
 
@@ -866,7 +1001,7 @@ export default function Login(props: LoginProps) {
                 <IconSchool size={26} />
               </div>
               <div>
-                <div className="lg-brand-name">{appName}</div>
+                <div className="lg-brand-name">{institution.trim() || appName}</div>
                 <div className="lg-brand-sub">Attendance · Courses · Live classes</div>
               </div>
             </div>
@@ -899,7 +1034,7 @@ export default function Login(props: LoginProps) {
           <div className="lg-mobile-brand">
             <div className="lg-logo-tile"><IconSchool size={32} /></div>
             <div>
-              <div className="lg-app-name">{appName}</div>
+              <div className="lg-app-name">{institution.trim() || appName}</div>
               <div className="lg-app-tag">Attendance · Courses · Live classes</div>
             </div>
           </div>
@@ -907,12 +1042,49 @@ export default function Login(props: LoginProps) {
           <div className="lg-card">
             <div className="lg-chip-row">
               <ConnectionChip online={online} />
-              <span style={{ fontSize: 12, color: C.onSurfaceVariant }}>v1 · offline-first</span>
+              <span style={{ fontSize: 12, color: C.onSurfaceVariant }}>SmartPages · offline-first</span>
             </div>
 
             <div>
               <h1 className="lg-card-title">Welcome back</h1>
               <p className="lg-card-sub">Sign in to manage courses, members and live classes.</p>
+            </div>
+
+            {/* ---------- INSTITUTION SETUP — always visible ---------- */}
+            <div className="lg-inst">
+              <div className="lg-inst-title">Institution</div>
+              <TextField
+                label="Institution name"
+                value={institution}
+                onChange={(v) => {
+                  setInstitution(v);
+                  setInstError(false);
+                }}
+                autoComplete="organization"
+                icon={<IconBuilding />}
+                error={instError}
+                disabled={busy || offlineBusy}
+                onEnter={() => void createInstitution()}
+              />
+              <button
+                type="button"
+                className="lg-btn lg-btn-tonal lg-focusable"
+                onClick={() => void createInstitution()}
+                disabled={working}
+                title="Save this institution as the app's name on this device"
+              >
+                {createBusy ? (
+                  <>
+                    <span className="lg-spinner" aria-hidden="true" />
+                    Creating institution…
+                  </>
+                ) : (
+                  <>
+                    <IconBuilding size={18} />
+                    Create institution
+                  </>
+                )}
+              </button>
             </div>
 
             {errorMsg && <Banner kind="error">{errorMsg}</Banner>}
