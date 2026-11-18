@@ -919,7 +919,6 @@ export default function Login(props: LoginProps) {
     }
   }
 
-  const working = busy || offlineBusy || createBusy;
   const displayName = savedName || institution.trim();
 
   /* -------------------------------- view -------------------------------- */
