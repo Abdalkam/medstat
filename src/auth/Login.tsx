@@ -1,5 +1,5 @@
 /* ============================================================================
-   src/auth/Login.tsx — v4: INSTITUTION-FIRST SETUP + SIGN-IN (Material Design 3)
+   src/auth/Login.tsx — v5: ENTER-INSTITUTION FLOW + SIGN-IN (Material Design 3)
    ============================================================================
 
    WHAT THIS FILE IS
@@ -8,20 +8,25 @@
    There is no product logo and no product brand anywhere on this screen —
    the institution name the user types becomes the app's identity.
 
-   THE FLOW (professional Android onboarding, two clean steps)
+   THE FLOW (the login algorithm, three clean screens)
 
-     Step 1 — "Set up your institution" (shown until an institution exists):
-        • One MD3 card: title, one outlined text field, one primary button
-          ("Create institution"). Saving stores the name in
-          localStorage.localBusinessSettings (the key every other screen
-          already reads), reuses the device tenant id or mints a fresh one
-          ("sp-…"), and best-effort writes business_settings.business_name
-          to the cloud (never blocks — offline degrades gracefully).
-        • Then it auto-advances to sign-in.
+     Screen 1 — "Enter institution name" (the front door):
+        • One MD3 card: institution name field + "Continue". Continue saves
+          the name on this device (localStorage.localBusinessSettings — the
+          key every other screen reads) and opens sign-in.
+        • A "Create institution" button sits in the CORNER (top-right) and
+          opens screen 2.
 
-     Step 2 — "Sign in" (shown once an institution exists, or via "Change"):
+     Screen 2 — "Create institution" (its own page):
+        • A back arrow in the corner returns to screen 1.
+        • Name field + "Create institution": stores the name, reuses the
+          device tenant id or mints a fresh one ("sp-…"), best-effort writes
+          business_settings.business_name to the cloud (never blocks), then
+          opens sign-in.
+
+     Screen 3 — "Sign in" (shown once a name is set, or via "Change"):
         • The INSTITUTION NAME is the card title. A small "Change" text
-          button reopens step 1 to rename it.
+          button reopens screen 1 to rename it.
         • Email + password sign-in (Supabase auth), forgot-password email,
           and "Continue offline" (uses the account cached on this device).
 
@@ -301,6 +306,15 @@ function IconArrowRight({ size = 18 }: { size?: number }) {
   );
 }
 
+function IconArrowBack({ size = 20 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" {...iconProps}>
+      <line x1="19" y1="12" x2="5" y2="12" />
+      <polyline points="12 5 5 12 12 19" />
+    </svg>
+  );
+}
+
 function IconBuilding({ size = 20 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" {...iconProps}>
@@ -351,6 +365,23 @@ const CSS = `
 .lg-card-sub { font-size: 14px; color: ${C.onSurfaceVariant}; margin: 0 0 4px; line-height: 1.5; }
 .lg-title-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
 .lg-title-row .lg-link { flex-shrink: 0; margin-top: 4px; }
+.lg-topbar {
+  width: 100%; min-height: 40px;
+  display: flex; align-items: center;
+  padding: 0 4px; margin-bottom: 4px;
+}
+.lg-topbar-right { justify-content: flex-end; }
+.lg-topbar-left { justify-content: flex-start; }
+.lg-topbar .lg-link { margin-top: 0; align-self: center; }
+.lg-topbar-spacer { width: 40px; height: 40px; }
+.lg-iconbtn {
+  width: 40px; height: 40px;
+  border: none; border-radius: 50%;
+  background: transparent; color: ${C.onSurface};
+  display: inline-flex; align-items: center; justify-content: center;
+  cursor: pointer; transition: ${MOTION};
+}
+.lg-iconbtn:hover { background: ${C.surfaceVariant}; }
 .lg-banner {
   display: flex; align-items: flex-start; gap: 10px;
   border-radius: 12px; padding: 11px 13px;
@@ -595,7 +626,7 @@ function friendlyAuthError(raw: string): string {
 export default function Login(props: LoginProps) {
   const navigate = useNavigate();
 
-  const [step, setStep] = useState<"institution" | "signin">("institution");
+  const [step, setStep] = useState<"enter" | "create" | "signin">("enter");
   const [savedName, setSavedName] = useState("");
   const [institution, setInstitution] = useState("");
   const [instError, setInstError] = useState(false);
@@ -806,13 +837,57 @@ export default function Login(props: LoginProps) {
     }
   }
 
+  /* --------------------- SCREEN 1 → save + continue ---------------------- */
+
+  /** Screen 1 ("Enter institution name"): remember the name on this device
+   *  and continue to sign-in. The tenant id is NOT touched here — it comes
+   *  from the signed-in account. */
+  function enterInstitution() {
+    const name = institution.trim();
+    if (!name) {
+      setInstError(true);
+      setErrorMsg("Enter your institution name to continue.");
+      return;
+    }
+    try {
+      let prevSettings: any = {};
+      try { prevSettings = JSON.parse(localStorage.getItem("localBusinessSettings") || "{}") || {}; } catch {}
+      localStorage.setItem(
+        "localBusinessSettings",
+        JSON.stringify({ ...prevSettings, businessName: name })
+      );
+    } catch {
+      /* storage blocked — continue with the in-memory name */
+    }
+    setSavedName(name);
+    setErrorMsg("");
+    setNotice("");
+    setStep("signin");
+  }
+
+  /* ---------------------- corner navigation helpers ---------------------- */
+
+  /** Corner button on screen 1 → the create-institution page. */
+  function goCreate() {
+    setStep("create");
+    setErrorMsg("");
+    setNotice("");
+  }
+
+  /** Back arrow on screen 2 → back to screen 1. */
+  function goEnter() {
+    setStep("enter");
+    setErrorMsg("");
+    setNotice("");
+  }
+
   /* ------------------------ CREATE INSTITUTION --------------------------- */
 
   async function createInstitution() {
     const name = institution.trim();
     if (!name) {
       setInstError(true);
-      setErrorMsg("Type the institution name first, then tap the button below.");
+      setErrorMsg("Enter a name for the new institution first.");
       return;
     }
     setCreateBusy(true);
@@ -927,17 +1002,80 @@ export default function Login(props: LoginProps) {
     <div className="lg-root">
       <style>{CSS}</style>
       <main className="lg-panel">
+        {/* Corner row: "Create institution" (screen 1) / back arrow (screen 2). */}
+        <div
+          className={
+            step === "create" ? "lg-topbar lg-topbar-left" : "lg-topbar lg-topbar-right"
+          }
+        >
+          {step === "enter" ? (
+            <button
+              type="button"
+              className="lg-link lg-focusable"
+              onClick={goCreate}
+              title="New institution? Create it here"
+            >
+              Create institution
+            </button>
+          ) : step === "create" ? (
+            <button
+              type="button"
+              className="lg-iconbtn lg-focusable"
+              aria-label="Back to institution name"
+              onClick={goEnter}
+            >
+              <IconArrowBack />
+            </button>
+          ) : (
+            <span className="lg-topbar-spacer" aria-hidden="true" />
+          )}
+        </div>
+
         <div className="lg-card">
-          {step === "institution" ? (
-            /* ================= STEP 1 — INSTITUTION SETUP ================= */
+          {step === "enter" ? (
+            /* ========== SCREEN 1 — ENTER INSTITUTION NAME ============== */
             <>
               <div>
-                <h1 className="lg-card-title">
-                  {displayName ? "Institution name" : "Welcome"}
-                </h1>
+                <h1 className="lg-card-title">Enter institution name</h1>
                 <p className="lg-card-sub">
-                  Enter your institution name — it becomes the app's name on this
-                  device. You can change it anytime.
+                  Type your institution's name to continue. New institution?
+                  Use “Create institution” in the corner.
+                </p>
+              </div>
+
+              {errorMsg && <Banner kind="error">{errorMsg}</Banner>}
+              {notice && <Banner kind={noticeKind}>{notice}</Banner>}
+
+              <TextField
+                label="Institution name"
+                value={institution}
+                onChange={(v) => {
+                  setInstitution(v);
+                  setInstError(false);
+                }}
+                autoComplete="organization"
+                icon={<IconBuilding />}
+                error={instError}
+                onEnter={() => void enterInstitution()}
+              />
+
+              <button
+                type="button"
+                className="lg-btn lg-btn-filled lg-focusable"
+                onClick={() => void enterInstitution()}
+              >
+                Continue
+                <IconArrowRight />
+              </button>
+            </>
+          ) : step === "create" ? (
+            /* ========== SCREEN 2 — CREATE INSTITUTION (own page) ======= */
+            <>
+              <div>
+                <h1 className="lg-card-title">Create institution</h1>
+                <p className="lg-card-sub">
+                  Register a new institution on this device — its name becomes
+                  the app's name here. You'll sign in right after.
                 </p>
               </div>
 
@@ -968,18 +1106,18 @@ export default function Login(props: LoginProps) {
                 {createBusy ? (
                   <>
                     <span className="lg-spinner" aria-hidden="true" />
-                    Saving…
+                    Creating…
                   </>
                 ) : (
                   <>
                     <IconBuilding size={18} />
-                    {displayName ? "Save changes" : "Create institution"}
+                    Create institution
                   </>
                 )}
               </button>
             </>
           ) : (
-            /* ================== STEP 2 — SIGN IN ========================== */
+            /* ================= SCREEN 3 — SIGN IN ====================== */
             <>
               <div className="lg-title-row">
                 <div>
@@ -994,7 +1132,7 @@ export default function Login(props: LoginProps) {
                   type="button"
                   className="lg-link lg-focusable"
                   onClick={() => {
-                    setStep("institution");
+                    setStep("enter");
                     setErrorMsg("");
                     setNotice("");
                   }}
