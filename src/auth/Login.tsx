@@ -1,57 +1,45 @@
 /* ============================================================================
-   src/auth/Login.tsx — v2: INSTITUTION SETUP + OFFLINE-FIRST SIGN-IN (MD3 UI)
+   src/auth/Login.tsx — v4: INSTITUTION-FIRST SETUP + SIGN-IN (Material Design 3)
    ============================================================================
 
    WHAT THIS FILE IS
 
-   The app's sign-in screen, rebuilt in the same Material Design 3 language
-   as CourseManagement.tsx (same palette, radii, shadows, motion) and laid
-   out to fit ANY device screen size:
+   The app's front door, rebuilt around ONE idea: the institution is the app.
+   There is no product logo and no product brand anywhere on this screen —
+   the institution name the user types becomes the app's identity.
 
-     • phones (360px+)     → single centered card, compact brand header
-     • tablets / desktops  → two-panel layout (brand panel + form card)
-     • landscape phones    → compact spacing via @media (max-height: 500px)
-     • notched devices     → env(safe-area-inset-*) padding
-     • text never smaller  → clamp() type scale, 16px inputs (no iOS zoom)
-     • touch targets       → 48px buttons, 40px+ icon buttons (Material a11y)
+   THE FLOW (professional Android onboarding, two clean steps)
 
-   AUTH FLOW (offline-first, mirrors database/sync.ts):
+     Step 1 — "Set up your institution" (shown until an institution exists):
+        • One MD3 card: title, one outlined text field, one primary button
+          ("Create institution"). Saving stores the name in
+          localStorage.localBusinessSettings (the key every other screen
+          already reads), reuses the device tenant id or mints a fresh one
+          ("sp-…"), and best-effort writes business_settings.business_name
+          to the cloud (never blocks — offline degrades gracefully).
+        • Then it auto-advances to sign-in.
 
-     1. Online sign-in  → supabase.auth.signInWithPassword, then the app
-        profile is read from public.users (by email; falls back to the local
-        Dexie copy). Session token → localStorage "authToken", profile →
-        "currentUser", then the sync engine is started (startPeriodicPull +
-        syncNow) and the user is routed by role (admin → /admin,
-        trainer → /trainer, anything else → /).
-     2. Network failure → automatic OFFLINE SIGN-IN: the account is looked
-        up in the local Dexie cache and the session is marked with the
-        "offline-mode-pending-sync" token that database/sync.ts already
-        understands (cloud pulls/pushes are skipped, local Dexie stays
-        authoritative, everything queues for later).
-     3. "Continue offline" button → the same offline path, on demand —
-        for when you simply don't want to wait on a slow network.
+     Step 2 — "Sign in" (shown once an institution exists, or via "Change"):
+        • The INSTITUTION NAME is the card title. A small "Change" text
+          button reopens step 1 to rename it.
+        • Email + password sign-in (Supabase auth), forgot-password email,
+          and "Continue offline" (uses the account cached on this device).
+
+   AUTH (unchanged logic)
+
+     1. Online  → signInWithPassword → profile from public.users (or the
+        local Dexie copy) → session to localStorage ("authToken" +
+        "currentUser") → sync engine started → routed by role.
+     2. Network failure → automatic offline sign-in with the
+        "offline-mode-pending-sync" token database/sync.ts understands.
+     3. "Continue offline" → the same path on demand.
 
    ROUTING / INTEGRATION
 
-     • Default export <Login /> (named export Login too) — point your router
-       at it:  <Route path="/login" element={<Login />} />
-     • Optional overrides:  <Login routes={{ admin: "/admin", trainer: "/trainer", member: "/" }} />
-     • If a session already exists the screen forwards to the role home.
-
-   WHAT CHANGED IN v2 (institution setup — the app is "SmartPages"):
-
-     • Fallback brand name is now "SmartPages" (not MedStat), and the brand
-       spots show the INSTITUTION name you type — live, in its place.
-     • An "Institution name" field plus an ALWAYS-VISIBLE "Create institution"
-       button sit at the top of the sign-in card. Creating:
-         1. Saves the name to localStorage.localBusinessSettings (the same
-            key UploadMaterials and the rest of the app already read),
-         2. Reuses the device's tenant id when one exists, mints a fresh one
-            ("sp-…") for a brand-new institution,
-         3. Best-effort writes business_settings.business_name to the cloud
-            when a connection + session allow (silent local-only fallback
-            with a clear notice).
-       Signing in also persists the typed name, so it survives logouts.
+     • Default export <Login /> (named export Login too):
+           <Route path="/login" element={<Login />} />
+     • Optional overrides: <Login routes={{ admin: "/admin", ... }} />
+     • Exported helpers: routeForRole(), readCurrentUser(), brandFromSettings().
    ============================================================================ */
 
 import { useEffect, useState } from "react";
@@ -67,19 +55,17 @@ const startPeriodicPull = (SyncEngine as any).startPeriodicPull ?? (() => {});
 const syncNow = (SyncEngine as any).syncNow ?? (async () => {});
 
 /* ------------------------------------------------------------------ */
-/* Shared constants (same values as database/sync.ts / UploadMaterials) */
+/* Shared constants (same values as database/sync.ts)                  */
 /* ------------------------------------------------------------------ */
 
 const OFFLINE_LOGIN_TOKEN = "offline-mode-pending-sync";
 const LAST_USER_KEY = "medstat_last_user";
-const FALLBACK_BRAND = "SmartPages";
+/** One full-page redirect per target per 10 s — shared with startup.tsx so a
+ *  broken router can never cause a reload loop. */
+const REDIRECT_GUARD_KEY = "sp_last_redirect";
 
-/**
- * Institution name saved by "Create institution" / sign-in.
- * Returns null when nothing (or only the legacy "MedStat" default) is saved,
- * so the brand always reads SmartPages until a real institution name exists.
- */
-function brandFromSettings(): string | null {
+/** Institution name saved by this screen; legacy "MedStat" → treated as none. */
+export function brandFromSettings(): string | null {
   try {
     const parsed = JSON.parse(
       localStorage.getItem("localBusinessSettings") || "null"
@@ -94,7 +80,7 @@ function brandFromSettings(): string | null {
 }
 
 /* ============================================================================
-   MD3 DESIGN TOKENS — identical to CourseManagement.tsx
+   MD3 DESIGN TOKENS
 ============================================================================ */
 
 const C = {
@@ -132,7 +118,6 @@ const FONT =
 const SHADOW = {
   level1: "0 1px 2px 0 rgba(0,0,0,0.10), 0 1px 3px 1px rgba(0,0,0,0.07)",
   level2: "0 1px 2px 0 rgba(0,0,0,0.12), 0 2px 6px 2px rgba(0,0,0,0.08)",
-  level3: "0 4px 8px 3px rgba(0,0,0,0.10), 0 1px 3px 0 rgba(0,0,0,0.20)",
 };
 
 const MOTION = "all 0.2s cubic-bezier(0.2, 0, 0, 1)";
@@ -163,7 +148,7 @@ export function routeForRole(role: string | undefined | null, routes?: HomeRoute
   return routes?.member ?? "/";
 }
 
-function readCurrentUser(): AnyUser | null {
+export function readCurrentUser(): AnyUser | null {
   try {
     const raw = localStorage.getItem("currentUser");
     if (!raw) return null;
@@ -172,6 +157,51 @@ function readCurrentUser(): AnyUser | null {
   } catch {
     return null;
   }
+}
+
+/** Last-resort full-page redirect. Guarded: the same target is only followed
+ *  ONCE per 10 s, so even completely broken routing can never loop. */
+function fullPageRedirect(target: string): void {
+  try {
+    const last = JSON.parse(
+      sessionStorage.getItem(REDIRECT_GUARD_KEY) || "null"
+    );
+    if (last && last.target === target && Date.now() - last.ts < 10000) return;
+  } catch {
+    /* ignore */
+  }
+  try {
+    sessionStorage.setItem(
+      REDIRECT_GUARD_KEY,
+      JSON.stringify({ target, ts: Date.now() })
+    );
+  } catch {
+    /* ignore */
+  }
+  window.location.assign(target);
+}
+
+/** SPA navigation first; if the router never applied it (bad wiring), ONE
+ *  guarded full-page redirect follows 1.2 s later. */
+function navigateWithFallback(
+  target: string,
+  navigate: (path: string, opts?: { replace?: boolean }) => void
+): void {
+  try {
+    navigate(target, { replace: true });
+  } catch {
+    fullPageRedirect(target);
+    return;
+  }
+  window.setTimeout(() => {
+    try {
+      const here = window.location.pathname + window.location.hash;
+      if (here.endsWith(target)) return; // navigation worked
+    } catch {
+      /* ignore */
+    }
+    fullPageRedirect(target);
+  }, 1200);
 }
 
 /* ============================================================================
@@ -220,16 +250,6 @@ function IconEyeOff({ size = 20 }: { size?: number }) {
       <path d="M6.5 6.7A16.7 16.7 0 0 0 2.5 12S6 18.5 12 18.5a9.9 9.9 0 0 0 3.9-.8" />
       <path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" />
       <line x1="3" y1="3" x2="21" y2="21" />
-    </svg>
-  );
-}
-
-function IconSchool({ size = 28 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" {...iconProps}>
-      <path d="m2.5 9.5 9.5-5 9.5 5-9.5 5z" />
-      <path d="M6.5 11.8V16c0 1.6 2.9 3 5.5 3s5.5-1.4 5.5-3v-4.2" />
-      <path d="M21.5 9.5v5.5" />
     </svg>
   );
 }
@@ -292,94 +312,45 @@ function IconBuilding({ size = 20 }: { size?: number }) {
 }
 
 /* ============================================================================
-   MD3 STYLE SHEET (class-based so media queries can restructure the layout)
-   lg- = login namespace — cannot collide with other screens.
+   MD3 STYLE SHEET (lg- = login namespace — cannot collide with other screens)
+   One centered card at every size; media queries only tighten spacing.
 ============================================================================ */
 
 const CSS = `
 .lg-root {
   min-height: 100vh; min-height: 100dvh;
   box-sizing: border-box;
-  display: flex; align-items: stretch; justify-content: center;
-  background: ${C.background};
+  display: flex; align-items: center; justify-content: center;
+  background: radial-gradient(120% 90% at 50% 0%, #FFFFFF 0%, ${C.background} 55%, #EEF3FB 100%);
   font-family: ${FONT};
   color: ${C.onSurface};
   padding: env(safe-area-inset-top) env(safe-area-inset-right)
            env(safe-area-inset-bottom) env(safe-area-inset-left);
   -webkit-tap-highlight-color: transparent;
 }
-.lg-shell {
-  box-sizing: border-box;
-  display: grid;
-  grid-template-columns: 1fr;
-  align-items: center;
-  justify-content: center;
-  gap: clamp(24px, 4vw, 56px);
-  width: 100%; max-width: 1080px;
-  margin: 0 auto;
-  padding: clamp(14px, 3vh, 36px) clamp(16px, 4vw, 40px);
+.lg-panel {
+  width: 100%; max-width: 460px;
+  display: flex; flex-direction: column; align-items: center;
+  padding: clamp(14px, 3vh, 32px) clamp(16px, 4vw, 28px);
 }
-/* ---------- brand panel (tablet / desktop only) ---------- */
-.lg-brand {
-  display: none;
-  flex-direction: column; justify-content: space-between;
-  border-radius: 28px;
-  padding: clamp(28px, 3.4vw, 44px);
-  min-height: 520px;
-  background: linear-gradient(150deg, ${C.primary} 0%, ${C.primaryDeep} 78%);
-  color: ${C.onPrimary};
-  box-shadow: ${SHADOW.level2};
-}
-.lg-brand-top { display: flex; align-items: center; gap: 14px; }
-.lg-brand-badge {
-  width: 52px; height: 52px; flex-shrink: 0;
-  border-radius: 16px;
-  background: rgba(255,255,255,0.16);
-  border: 1px solid rgba(255,255,255,0.28);
-  display: flex; align-items: center; justify-content: center;
-}
-.lg-brand-name { font-size: clamp(18px, 1.6vw, 21px); font-weight: 600; letter-spacing: 0.2px; }
-.lg-brand-sub { font-size: 13px; opacity: 0.82; margin-top: 2px; }
-.lg-brand-hero { font-size: clamp(26px, 2.6vw, 34px); line-height: 1.22; font-weight: 600; letter-spacing: 0.1px; margin: 0 0 10px; }
-.lg-brand-copy { font-size: clamp(14px, 1.25vw, 15.5px); line-height: 1.55; opacity: 0.88; margin: 0; max-width: 44ch; }
-.lg-features { display: flex; flex-direction: column; gap: 14px; margin: 26px 0 0; padding: 0; list-style: none; }
-.lg-feature { display: flex; align-items: flex-start; gap: 12px; font-size: 14px; line-height: 1.45; opacity: 0.95; }
-.lg-feature-icon {
-  width: 38px; height: 38px; flex-shrink: 0; border-radius: 12px;
-  background: rgba(255,255,255,0.14); border: 1px solid rgba(255,255,255,0.24);
-  display: flex; align-items: center; justify-content: center;
-}
-.lg-feature b { font-weight: 600; }
-/* ---------- form side ---------- */
-.lg-panel { display: flex; flex-direction: column; align-items: center; width: 100%; min-width: 0; }
-.lg-mobile-brand { display: flex; flex-direction: column; align-items: center; gap: 10px; margin-bottom: clamp(14px, 2.6vh, 26px); text-align: center; }
-.lg-logo-tile {
-  width: 64px; height: 64px; border-radius: 20px;
-  background: ${C.primaryContainer}; color: ${C.onPrimaryContainer};
-  display: flex; align-items: center; justify-content: center;
-  box-shadow: ${SHADOW.level1};
-}
-.lg-app-name { font-size: clamp(19px, 5vw, 23px); font-weight: 600; color: ${C.onSurface}; letter-spacing: 0.2px; }
-.lg-app-tag { font-size: 12.5px; color: ${C.onSurfaceVariant}; letter-spacing: 0.3px; }
 .lg-card {
   box-sizing: border-box;
-  width: 100%; max-width: 440px;
+  width: 100%;
   background: ${C.surface};
   border-radius: 28px;
   box-shadow: ${SHADOW.level2};
-  padding: clamp(22px, 5vw, 38px);
+  padding: clamp(22px, 5vw, 36px);
   display: flex; flex-direction: column; gap: 14px;
 }
-.lg-card-title { font-size: clamp(21px, 5.6vw, 26px); font-weight: 600; margin: 2px 0 0; letter-spacing: 0.1px; }
-.lg-card-sub { font-size: 14px; color: ${C.onSurfaceVariant}; margin: 0 0 4px; line-height: 1.5; }
-.lg-chip-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.lg-chip {
-  display: inline-flex; align-items: center; gap: 6px;
-  height: 28px; padding: 0 12px 0 8px;
-  border-radius: 999px; font-size: 12px; font-weight: 600; letter-spacing: 0.2px;
+.lg-card-title {
+  font-size: clamp(21px, 5.6vw, 26px);
+  font-weight: 600; margin: 2px 0 0;
+  letter-spacing: 0.1px; line-height: 1.25;
 }
-.lg-chip-dot { width: 7px; height: 7px; border-radius: 50%; }
-/* ---------- banners ---------- */
+.lg-inst-name { word-break: break-word; }
+.lg-card-sub { font-size: 14px; color: ${C.onSurfaceVariant}; margin: 0 0 4px; line-height: 1.5; }
+.lg-title-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.lg-title-row .lg-link { flex-shrink: 0; margin-top: 4px; }
 .lg-banner {
   display: flex; align-items: flex-start; gap: 10px;
   border-radius: 12px; padding: 11px 13px;
@@ -403,7 +374,7 @@ const CSS = `
 .lg-input {
   flex: 1; min-width: 0; height: 100%;
   border: none; outline: none; background: transparent;
-  padding: 0 46px 0 46px;
+  padding: 0 46px;
   font-family: inherit; font-size: 16px; color: ${C.onSurface};
 }
 .lg-input:disabled { opacity: 0.55; }
@@ -450,11 +421,6 @@ const CSS = `
 .lg-btn-filled:hover:not(:disabled) { box-shadow: ${SHADOW.level2}; }
 .lg-btn-tonal { background: ${C.secondaryContainer}; color: ${C.onSecondaryContainer}; }
 .lg-btn-tonal:hover:not(:disabled) { box-shadow: ${SHADOW.level1}; }
-.lg-btn-text {
-  background: transparent; color: ${C.primary};
-  height: 44px; width: auto; align-self: center; padding: 0 14px;
-}
-.lg-btn-text:hover:not(:disabled) { background: ${C.primaryContainer}; }
 .lg-link {
   background: none; border: none; padding: 6px 2px;
   font-family: inherit; font-size: 13.5px; font-weight: 600;
@@ -465,7 +431,6 @@ const CSS = `
 }
 .lg-link:hover:not(:disabled) { text-decoration: underline; }
 .lg-link:disabled { opacity: 0.5; cursor: default; }
-/* ---------- misc ---------- */
 .lg-divider-row { display: flex; align-items: center; gap: 14px; color: ${C.onSurfaceVariant}; font-size: 12px; letter-spacing: 0.6px; text-transform: uppercase; margin: 2px 0; }
 .lg-divider-row::before, .lg-divider-row::after { content: ""; flex: 1; height: 1px; background: ${C.outlineVariant}; }
 .lg-spinner {
@@ -475,41 +440,13 @@ const CSS = `
   animation: lgSpin 0.8s linear infinite;
 }
 @keyframes lgSpin { to { transform: rotate(360deg); } }
-.lg-footer { font-size: 12px; color: ${C.onSurfaceVariant}; text-align: center; line-height: 1.5; margin-top: 6px; }
 .lg-focusable:focus-visible { outline: 2px solid ${C.primary}; outline-offset: 2px; }
-/* ---------- institution setup panel (always visible) ---------- */
-.lg-inst {
-  box-sizing: border-box;
-  background: ${C.surfaceVariant};
-  border: 1px solid ${C.outlineVariant};
-  border-radius: 16px;
-  padding: 12px;
-  display: flex; flex-direction: column; gap: 10px;
-}
-.lg-inst-title {
-  font-size: 11.5px; font-weight: 700; letter-spacing: 0.8px;
-  text-transform: uppercase; color: ${C.onSurfaceVariant};
-}
-.lg-inst .lg-field { background: ${C.surface}; }
-
-/* ---------- responsive structure ---------- */
-@media (min-width: 940px) {
-  .lg-shell { grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); }
-  .lg-brand { display: flex; }
-  .lg-mobile-brand { display: none; }
-}
 @media (max-width: 374px) {
   .lg-field { height: 52px; }
   .lg-float { left: 42px; }
 }
-/* Landscape phones: keep everything above the fold */
 @media (max-height: 520px) and (orientation: landscape) {
-  .lg-shell { padding-top: 10px; padding-bottom: 10px; gap: 20px; }
-  .lg-brand { min-height: 0; padding: 18px 24px; }
-  .lg-brand-hero { font-size: 19px; }
-  .lg-features, .lg-brand-copy { display: none; }
-  .lg-mobile-brand { margin-bottom: 8px; }
-  .lg-logo-tile { width: 46px; height: 46px; border-radius: 14px; }
+  .lg-panel { padding-top: 10px; padding-bottom: 10px; }
   .lg-card { padding: 16px 22px; gap: 9px; border-radius: 20px; }
   .lg-field { height: 48px; }
   .lg-btn { height: 42px; }
@@ -539,13 +476,10 @@ function TextField(props: {
   const [focused, setFocused] = useState(false);
   const floated = focused || props.value.length > 0;
   return (
-    <div
-      className={`lg-field${props.error ? " lg-field-error" : ""}`}
-    >
+    <div className={`lg-field${props.error ? " lg-field-error" : ""}`}>
       <span className="lg-lead">{props.icon}</span>
       <input
         className="lg-input"
-        style={{ paddingLeft: 46, paddingRight: props.trailing ? 48 : 46 }}
         type={props.type ?? "text"}
         value={props.value}
         placeholder=" "
@@ -583,23 +517,8 @@ function Banner(props: {
   );
 }
 
-function ConnectionChip({ online }: { online: boolean }) {
-  return (
-    <span
-      className="lg-chip"
-      style={{
-        background: online ? C.greenBg : C.orangeBg,
-        color: online ? C.green : C.orange,
-      }}
-    >
-      <span className="lg-chip-dot" style={{ background: online ? C.green : C.orange }} />
-      {online ? "Online" : "Offline"}
-    </span>
-  );
-}
-
 /* ============================================================================
-   HELPERS — session + local account lookup
+   HELPERS — session + local account lookup (unchanged working logic)
 ============================================================================ */
 
 /** Cloud/row values (snake_case or camelCase) → the currentUser shape the
@@ -676,7 +595,8 @@ function friendlyAuthError(raw: string): string {
 export default function Login(props: LoginProps) {
   const navigate = useNavigate();
 
-  const [appName, setAppName] = useState(FALLBACK_BRAND);
+  const [step, setStep] = useState<"institution" | "signin">("institution");
+  const [savedName, setSavedName] = useState("");
   const [institution, setInstitution] = useState("");
   const [instError, setInstError] = useState(false);
   const [createBusy, setCreateBusy] = useState(false);
@@ -691,31 +611,27 @@ export default function Login(props: LoginProps) {
   const [noticeKind, setNoticeKind] = useState<"info" | "success">("info");
   const [emailError, setEmailError] = useState(false);
   const [pwError, setPwError] = useState(false);
-  const [online, setOnline] = useState(
-    typeof navigator !== "undefined" ? navigator.onLine : true
-  );
   const [hasLocalAccount, setHasLocalAccount] = useState(false);
 
-  /* ---- mount: connection chips, prefill, session forward, local check ---- */
+  /* ---- mount: prefill, session forward, local account check -------------- */
   useEffect(() => {
-    const markOnline = () => setOnline(true);
-    const markOffline = () => setOnline(false);
-    window.addEventListener("online", markOnline);
-    window.addEventListener("offline", markOffline);
-
     try {
       const settings = localStorage.getItem("localBusinessSettings");
       if (settings) {
         const parsed = JSON.parse(settings);
         if (parsed?.businessName) {
-          // The field keeps whatever was saved (so a legacy "MedStat" can be
-          // overwritten by typing the real institution), but the BRAND falls
-          // back to SmartPages until a real institution name is created.
+          // Prefill the field with whatever was saved (even a legacy value,
+          // so it can be corrected), but only advance to sign-in when a REAL
+          // institution name was created.
           setInstitution(String(parsed.businessName));
         }
       }
       const brand = brandFromSettings();
-      if (brand) setAppName(brand);
+      if (brand) {
+        setInstitution(brand);
+        setSavedName(brand);
+        setStep("signin");
+      }
       const last = JSON.parse(localStorage.getItem(LAST_USER_KEY) || "null");
       if (last?.email) setEmail(String(last.email));
     } catch {
@@ -728,7 +644,7 @@ export default function Login(props: LoginProps) {
       const cu = readCurrentUser();
       if (token && cu?.id) {
         startPeriodicPull();
-        navigate(routeForRole(cu.role, props.routes), { replace: true });
+        navigateWithFallback(routeForRole(cu.role, props.routes), navigate);
         return;
       }
       try {
@@ -742,11 +658,6 @@ export default function Login(props: LoginProps) {
         setHasLocalAccount(!!localStorage.getItem(LAST_USER_KEY));
       }
     })();
-
-    return () => {
-      window.removeEventListener("online", markOnline);
-      window.removeEventListener("offline", markOffline);
-    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -767,16 +678,6 @@ export default function Login(props: LoginProps) {
           JSON.stringify({ ...prevSettings, businessName: institution.trim() })
         );
       }
-      localStorage.setItem(
-        LAST_USER_KEY,
-        JSON.stringify({
-          id: user.id,
-          email: user.email,
-          name: user.name,
-          role: user.role,
-          tenantId: user.tenantId,
-        })
-      );
     } catch {
       /* storage full/blocked — session still lives in memory for this page */
     }
@@ -785,7 +686,7 @@ export default function Login(props: LoginProps) {
     // skips doomed cloud work by itself while the offline token is set.
     startPeriodicPull();
     if (!offline) void syncNow(user.tenantId);
-    navigate(routeForRole(user.role, props.routes), { replace: true });
+    navigateWithFallback(routeForRole(user.role, props.routes), navigate);
   }
 
   /* ------------------------- OFFLINE sign-in path ------------------------ */
@@ -851,8 +752,8 @@ export default function Login(props: LoginProps) {
       });
 
       if (error) {
-        // Offline-first: a dead network must never block the user — fall back
-        // to the local account automatically instead of showing an error.
+        // A dead network must never block the user — fall back to the local
+        // account automatically instead of showing an error.
         if (classifyAuthError(error) === "network") {
           await finishOffline(true);
           return;
@@ -905,13 +806,13 @@ export default function Login(props: LoginProps) {
     }
   }
 
-  /* ------------------------ CREATE INSTITUTION (v2) ---------------------- */
+  /* ------------------------ CREATE INSTITUTION --------------------------- */
 
   async function createInstitution() {
     const name = institution.trim();
     if (!name) {
       setInstError(true);
-      setErrorMsg("Type the institution name first, then tap “Create institution”.");
+      setErrorMsg("Type the institution name first, then tap the button below.");
       return;
     }
     setCreateBusy(true);
@@ -926,7 +827,7 @@ export default function Login(props: LoginProps) {
         "localBusinessSettings",
         JSON.stringify({ ...prevSettings, businessName: name })
       );
-      setAppName(name);
+      setSavedName(name);
 
       // 2) Tenant context: reuse the signed-in account's tenant when present;
       //    otherwise mint a fresh id for the brand-new institution.
@@ -980,6 +881,7 @@ export default function Login(props: LoginProps) {
 
       setNoticeKind("success");
       setNotice(`Institution “${name}” is ready on this device. ${cloudNote}`);
+      setStep("signin");
     } finally {
       setCreateBusy(false);
     }
@@ -1018,73 +920,31 @@ export default function Login(props: LoginProps) {
   }
 
   const working = busy || offlineBusy || createBusy;
+  const displayName = savedName || institution.trim();
 
   /* -------------------------------- view -------------------------------- */
 
   return (
     <div className="lg-root">
       <style>{CSS}</style>
-      <div className="lg-shell">
-        {/* ---------- brand panel (≥ 940px) ---------- */}
-        <aside className="lg-brand" aria-hidden="true">
-          <div>
-            <div className="lg-brand-top">
-              <div className="lg-brand-badge">
-                <IconSchool size={26} />
-              </div>
+      <main className="lg-panel">
+        <div className="lg-card">
+          {step === "institution" ? (
+            /* ================= STEP 1 — INSTITUTION SETUP ================= */
+            <>
               <div>
-                <div className="lg-brand-name">{institution.trim() || appName}</div>
-                <div className="lg-brand-sub">Attendance · Courses · Live classes</div>
+                <h1 className="lg-card-title">
+                  {displayName ? "Institution name" : "Welcome"}
+                </h1>
+                <p className="lg-card-sub">
+                  Enter your institution name — it becomes the app's name on this
+                  device. You can change it anytime.
+                </p>
               </div>
-            </div>
-            <h1 className="lg-brand-hero" style={{ marginTop: "clamp(26px, 5vh, 54px)" }}>
-              Teach, manage and sync — even without internet.
-            </h1>
-            <p className="lg-brand-copy">
-              Courses, members, materials and attendance live safely on this device
-              and reconcile with the cloud the moment you're back online.
-            </p>
-            <ul className="lg-features">
-              <li className="lg-feature">
-                <span className="lg-feature-icon"><IconCloudOff size={20} /></span>
-                <span><b>Offline-first.</b> Create courses and take attendance with zero network.</span>
-              </li>
-              <li className="lg-feature">
-                <span className="lg-feature-icon"><IconSchool size={20} /></span>
-                <span><b>Live classroom.</b> Present PDFs and slides to learners in real time.</span>
-              </li>
-              <li className="lg-feature">
-                <span className="lg-feature-icon"><IconCloudOn size={20} /></span>
-                <span><b>Auto sync.</b> Everything drains to the cloud on reconnect — nothing to remember.</span>
-              </li>
-            </ul>
-          </div>
-        </aside>
 
-        {/* ---------- form side ---------- */}
-        <main className="lg-panel">
-          <div className="lg-mobile-brand">
-            <div className="lg-logo-tile"><IconSchool size={32} /></div>
-            <div>
-              <div className="lg-app-name">{institution.trim() || appName}</div>
-              <div className="lg-app-tag">Attendance · Courses · Live classes</div>
-            </div>
-          </div>
+              {errorMsg && <Banner kind="error">{errorMsg}</Banner>}
+              {notice && <Banner kind={noticeKind}>{notice}</Banner>}
 
-          <div className="lg-card">
-            <div className="lg-chip-row">
-              <ConnectionChip online={online} />
-              <span style={{ fontSize: 12, color: C.onSurfaceVariant }}>SmartPages · offline-first</span>
-            </div>
-
-            <div>
-              <h1 className="lg-card-title">Welcome back</h1>
-              <p className="lg-card-sub">Sign in to manage courses, members and live classes.</p>
-            </div>
-
-            {/* ---------- INSTITUTION SETUP — always visible ---------- */}
-            <div className="lg-inst">
-              <div className="lg-inst-title">Institution</div>
               <TextField
                 label="Institution name"
                 value={institution}
@@ -1095,138 +955,160 @@ export default function Login(props: LoginProps) {
                 autoComplete="organization"
                 icon={<IconBuilding />}
                 error={instError}
-                disabled={busy || offlineBusy}
+                disabled={createBusy}
                 onEnter={() => void createInstitution()}
               />
+
               <button
                 type="button"
-                className="lg-btn lg-btn-tonal lg-focusable"
+                className="lg-btn lg-btn-filled lg-focusable"
                 onClick={() => void createInstitution()}
-                disabled={working}
+                disabled={createBusy}
                 title="Save this institution as the app's name on this device"
               >
                 {createBusy ? (
                   <>
                     <span className="lg-spinner" aria-hidden="true" />
-                    Creating institution…
+                    Saving…
                   </>
                 ) : (
                   <>
                     <IconBuilding size={18} />
-                    Create institution
+                    {displayName ? "Save changes" : "Create institution"}
                   </>
                 )}
               </button>
-            </div>
-
-            {errorMsg && <Banner kind="error">{errorMsg}</Banner>}
-            {notice && <Banner kind={noticeKind}>{notice}</Banner>}
-
-            <TextField
-              label="Email address"
-              value={email}
-              onChange={(v) => {
-                setEmail(v);
-                setEmailError(false);
-              }}
-              type="email"
-              inputMode="email"
-              autoComplete="email"
-              icon={<IconMail />}
-              error={emailError}
-              disabled={working}
-              onEnter={() => {
-                if (busy) return;
-                if (password) void finishOnline();
-              }}
-            />
-
-            <TextField
-              label="Password"
-              value={password}
-              onChange={(v) => {
-                setPassword(v);
-                setPwError(false);
-              }}
-              type={showPw ? "text" : "password"}
-              autoComplete="current-password"
-              icon={<IconLock />}
-              error={pwError}
-              disabled={working}
-              onEnter={() => {
-                if (!busy) void finishOnline();
-              }}
-              trailing={
+            </>
+          ) : (
+            /* ================== STEP 2 — SIGN IN ========================== */
+            <>
+              <div className="lg-title-row">
+                <div>
+                  <h1 className="lg-card-title lg-inst-name">
+                    {displayName || "Welcome back"}
+                  </h1>
+                  <p className="lg-card-sub">
+                    Sign in to manage courses, members and live classes.
+                  </p>
+                </div>
                 <button
                   type="button"
-                  className="lg-trailing lg-focusable"
-                  aria-label={showPw ? "Hide password" : "Show password"}
-                  onClick={() => setShowPw((s) => !s)}
-                  tabIndex={0}
+                  className="lg-link lg-focusable"
+                  onClick={() => {
+                    setStep("institution");
+                    setErrorMsg("");
+                    setNotice("");
+                  }}
                 >
-                  {showPw ? <IconEyeOff /> : <IconEye />}
+                  Change
                 </button>
-              }
-            />
+              </div>
 
-            <button
-              type="button"
-              className="lg-link lg-focusable"
-              onClick={() => void sendPasswordReset()}
-              disabled={resetBusy || working}
-            >
-              {resetBusy ? "Sending reset email…" : "Forgot password?"}
-            </button>
+              {errorMsg && <Banner kind="error">{errorMsg}</Banner>}
+              {notice && <Banner kind={noticeKind}>{notice}</Banner>}
 
-            <button
-              type="button"
-              className="lg-btn lg-btn-filled lg-focusable"
-              onClick={() => void finishOnline()}
-              disabled={working}
-            >
-              {busy ? (
-                <>
-                  <span className="lg-spinner" aria-hidden="true" />
-                  Signing in…
-                </>
-              ) : (
-                <>
-                  Sign in
-                  <IconArrowRight />
-                </>
-              )}
-            </button>
+              <TextField
+                label="Email address"
+                value={email}
+                onChange={(v) => {
+                  setEmail(v);
+                  setEmailError(false);
+                }}
+                type="email"
+                inputMode="email"
+                autoComplete="email"
+                icon={<IconMail />}
+                error={emailError}
+                disabled={busy}
+                onEnter={() => {
+                  if (busy) return;
+                  if (password) void finishOnline();
+                }}
+              />
 
-            <div className="lg-divider-row">or</div>
+              <TextField
+                label="Password"
+                value={password}
+                onChange={(v) => {
+                  setPassword(v);
+                  setPwError(false);
+                }}
+                type={showPw ? "text" : "password"}
+                autoComplete="current-password"
+                icon={<IconLock />}
+                error={pwError}
+                disabled={busy}
+                onEnter={() => {
+                  if (!busy) void finishOnline();
+                }}
+                trailing={
+                  <button
+                    type="button"
+                    className="lg-trailing lg-focusable"
+                    aria-label={showPw ? "Hide password" : "Show password"}
+                    onClick={() => setShowPw((s) => !s)}
+                    tabIndex={0}
+                  >
+                    {showPw ? <IconEyeOff /> : <IconEye />}
+                  </button>
+                }
+              />
 
-            <button
-              type="button"
-              className="lg-btn lg-btn-tonal lg-focusable"
-              onClick={() => void finishOffline(false)}
-              disabled={working}
-              title="Use the account saved on this device — no internet needed"
-            >
-              {offlineBusy ? (
-                <>
-                  <span className="lg-spinner" aria-hidden="true" />
-                  Opening offline mode…
-                </>
-              ) : (
-                <>
-                  <IconCloudOff />
-                  Continue offline
-                </>
-              )}
-            </button>
+              <button
+                type="button"
+                className="lg-link lg-focusable"
+                onClick={() => void sendPasswordReset()}
+                disabled={resetBusy || busy}
+              >
+                {resetBusy ? "Sending reset email…" : "Forgot password?"}
+              </button>
 
-            <p className="lg-footer">
-              Offline mode uses the last account saved on this device.
-              <br />
-              Data syncs automatically the next time you're online.
-            </p>
-          </div>
-        </main>
-      </div>
+              <button
+                type="button"
+                className="lg-btn lg-btn-filled lg-focusable"
+                onClick={() => void finishOnline()}
+                disabled={busy}
+              >
+                {busy ? (
+                  <>
+                    <span className="lg-spinner" aria-hidden="true" />
+                    Signing in…
+                  </>
+                ) : (
+                  <>
+                    Sign in
+                    <IconArrowRight />
+                  </>
+                )}
+              </button>
+
+              <div className="lg-divider-row">or</div>
+
+              <button
+                type="button"
+                className="lg-btn lg-btn-tonal lg-focusable"
+                onClick={() => void finishOffline(false)}
+                disabled={busy}
+                title="Use the account saved on this device — no internet needed"
+              >
+                {offlineBusy ? (
+                  <>
+                    <span className="lg-spinner" aria-hidden="true" />
+                    Opening offline mode…
+                  </>
+                ) : (
+                  <>
+                    <IconCloudOff />
+                    Continue offline
+                  </>
+                )}
+              </button>
+            </>
+          )}
+        </div>
+      </main>
     </div>
   );
 }
+
+export { Login };

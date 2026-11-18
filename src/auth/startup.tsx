@@ -1,34 +1,36 @@
 /* ============================================================================
-   src/auth/startup.tsx — v2.1: CANNOT-FAIL BOOT SPLASH + SESSION GATE (MD3)
+   src/auth/startup.tsx — v4: ONE LOADING PAGE + SESSION GATE (Material Design 3)
    ============================================================================
 
    WHAT THIS FILE IS
 
-   The Material Design 3 splash screen between launch and the first screen.
-   v2.1 exists for one reason: the user must NEVER be trapped here.
+   The ONE loading page of the app. A quiet progress bar, then a hand-over
+   that happens IN PLACE — no second loading screen, no reload bounce:
 
-   HOW v2.1 GUARANTEES YOU ALWAYS REACH A SCREEN
+     • Signed out → the login card (Login.tsx) replaces this splash directly
+       in the component tree. Zero navigation, zero reload — the boot ever
+       shows this single loading page.
+     • Signed in  → the sync engine starts and the splash routes to the
+       role's home (admin/owner → /admin, trainer → /trainer, else /).
 
-     1. HARD DEADLINE (6 s) — registered before any async work. If we are
-        somehow still mounted, it does a FULL-PAGE redirect (window.location,
-        not SPA navigation — SPA navigate() can silently fail when a route
-        is missing).
-     2. db.open() is raced against a 2.5 s cap (blocked IndexedDB cannot
+   NO BRANDING
+
+   No product logo, no product name, no slogans. The only title ever shown
+   is the INSTITUTION name the user set on the login screen (if one exists).
+
+   WHY IT CANNOT HANG
+
+     1. The session check is a plain localStorage read done BEFORE any
+        database work — the login card appears in milliseconds.
+     2. db.open() is raced against a 2.5 s cap (a blocked IndexedDB cannot
         stall the boot).
-     3. If the session gate finds no session and SPA navigation to /login
-        does not unmount us within 1.5 s, we force a full-page redirect to
-        the app root with a sessionStorage flag — and on the next boot the
-        flag renders the LOGIN CARD INLINE, so you reach the sign-in screen
-        (with the Institution name field) even if the router is wired wrong.
-     4. A visible version stamp ("boot v2.1") in the footer + a console log
-        make it obvious WHICH build is running. If the splash does not say
-        v2.1, the browser is still serving the old bundle: rebuild + hard
-        refresh.
-
-   BRAND
-
-     Always "SmartPages" unless a real institution name was created on the
-     login screen. A legacy "MedStat" value in localStorage is ignored.
+     3. HARD DEADLINE (6 s) — registered before any async work; a full-page
+        redirect follows if we are somehow still mounted.
+     4. Every full-page redirect is GUARDED (one per target per 10 s) — a
+        broken router can never turn the boot into a reload loop.
+     5. "Skip" escape button appears after 3 s.
+     6. Footer stamps the boot version ("boot v4") so a stale deployed
+        bundle is instantly recognizable.
 
    ROUTING / INTEGRATION (unchanged API)
 
@@ -53,11 +55,12 @@ import Login from "./Login";
 /* ------------------------------------------------------------------ */
 
 const OFFLINE_LOGIN_TOKEN = "offline-mode-pending-sync";
-const FALLBACK_BRAND = "SmartPages";
-const BOOT_VERSION = "v2.1";
-const FORCE_LOGIN_KEY = "sp_force_login";
+const BOOT_VERSION = "v4";
+/** One full-page redirect per target per 10 s — shared with Login.tsx so a
+ *  broken router can never cause a reload loop. */
+const REDIRECT_GUARD_KEY = "sp_last_redirect";
 
-/** Institution name saved by Login.tsx; legacy "MedStat" → SmartPages. */
+/** Institution name saved by Login.tsx; legacy "MedStat" → treated as none. */
 export function brandFromSettings(): string | null {
   try {
     const parsed = JSON.parse(
@@ -73,26 +76,35 @@ export function brandFromSettings(): string | null {
 }
 
 /**
- * Bulletproof way to reach the login card: remember the intent, then reload
- * the app at its root. On the next boot the flag makes Startup render the
- * login card INLINE — no router wiring can block it.
+ * Last-resort full-page redirect. Guarded: the same target is only followed
+ * ONCE per 10 s, so even completely broken routing can never loop.
  */
-function gotoLoginHard(): void {
+function fullPageRedirect(target: string): void {
   try {
-    sessionStorage.setItem(FORCE_LOGIN_KEY, "1");
+    const last = JSON.parse(
+      sessionStorage.getItem(REDIRECT_GUARD_KEY) || "null"
+    );
+    if (last && last.target === target && Date.now() - last.ts < 10000) return;
   } catch {
     /* ignore */
   }
-  window.location.assign("/");
+  try {
+    sessionStorage.setItem(
+      REDIRECT_GUARD_KEY,
+      JSON.stringify({ target, ts: Date.now() })
+    );
+  } catch {
+    /* ignore */
+  }
+  window.location.assign(target);
 }
 
 /* ============================================================================
-   MD3 DESIGN TOKENS — identical to CourseManagement.tsx / Login.tsx
+   MD3 DESIGN TOKENS
 ============================================================================ */
 
 const C = {
   primary: "#0B57D0",
-  onPrimaryContainer: "#041E49",
   primaryDeep: "#0842A0",
   primaryContainer: "#D3E3FD",
 
@@ -100,100 +112,10 @@ const C = {
   surfaceVariant: "#E9EEF6",
   onSurface: "#1F1F1F",
   onSurfaceVariant: "#444746",
-
-  green: "#146C2E",
-  greenBg: "#E6F4EA",
-  orange: "#B06000",
-  orangeBg: "#FEF7E0",
 };
 
 const FONT =
   "'Google Sans', 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif";
-
-const SHADOW = {
-  level1: "0 1px 2px 0 rgba(0,0,0,0.10), 0 1px 3px 1px rgba(0,0,0,0.07)",
-  level2: "0 1px 2px 0 rgba(0,0,0,0.12), 0 2px 6px 2px rgba(0,0,0,0.08)",
-};
-
-/* ============================================================================
-   TYPES + ROLE ROUTING (same rule as Login.tsx)
-============================================================================ */
-
-export interface HomeRoutes {
-  admin?: string;
-  trainer?: string;
-  member?: string;
-}
-
-export interface StartupProps {
-  routes?: HomeRoutes;
-  /** Minimum time the splash stays visible (ms). */
-  minSplashMs?: number;
-  /** HARD deadline: full-page redirect after this many ms, whatever is pending. */
-  timeoutMs?: number;
-}
-
-type AnyUser = Record<string, any> & { id?: string };
-
-export function routeForRole(role: string | undefined | null, routes?: HomeRoutes): string {
-  const r = String(role || "").toLowerCase();
-  if (r === "admin" || r === "owner" || r === "super_admin" || r === "superadmin") {
-    return routes?.admin ?? "/admin";
-  }
-  if (r === "trainer" || r === "teacher") return routes?.trainer ?? "/trainer";
-  return routes?.member ?? "/";
-}
-
-export function readCurrentUser(): AnyUser | null {
-  try {
-    const raw = localStorage.getItem("currentUser");
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-/* ============================================================================
-   INLINE SVG ICONS (no icon font dependency)
-============================================================================ */
-
-const iconProps = {
-  fill: "none",
-  stroke: "currentColor",
-  strokeWidth: 1.8,
-  strokeLinecap: "round" as const,
-  strokeLinejoin: "round" as const,
-};
-
-function IconSchool({ size = 34 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" {...iconProps}>
-      <path d="m2.5 9.5 9.5-5 9.5 5-9.5 5z" />
-      <path d="M6.5 11.8V16c0 1.6 2.9 3 5.5 3s5.5-1.4 5.5-3v-4.2" />
-      <path d="M21.5 9.5v5.5" />
-    </svg>
-  );
-}
-
-function IconCloudOn({ size = 16 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" {...iconProps}>
-      <path d="M17.5 18.5a4.5 4.5 0 0 0 .4-8.98A7 7 0 0 0 4.1 11.7 3.5 3.5 0 0 0 6.5 18.5z" />
-      <path d="m9 13 2.2 2.2L15.5 11" />
-    </svg>
-  );
-}
-
-function IconCloudOff({ size = 16 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" {...iconProps}>
-      <path d="M17.5 18.5a4.5 4.5 0 0 0 .4-8.98A7 7 0 0 0 4.1 11.7 3.5 3.5 0 0 0 6.5 18.5z" />
-      <line x1="3" y1="4" x2="21" y2="21" />
-    </svg>
-  );
-}
 
 /* ============================================================================
    MD3 STYLE SHEET — st- = startup namespace
@@ -219,25 +141,12 @@ const CSS = `
   width: 100%; max-width: 460px;
   padding: clamp(16px, 4vh, 40px) clamp(18px, 5vw, 32px);
 }
-.st-logo {
-  width: clamp(66px, 9vh, 84px); height: clamp(66px, 9vh, 84px);
-  border-radius: 26px;
-  background: ${C.primaryContainer};
-  color: ${C.onPrimaryContainer};
-  display: flex; align-items: center; justify-content: center;
-  box-shadow: ${SHADOW.level2};
-  margin-bottom: clamp(16px, 3vh, 26px);
-}
-.st-app-name {
+.st-title {
   font-size: clamp(22px, 6vw, 28px);
   font-weight: 600; letter-spacing: 0.2px;
   color: ${C.onSurface};
-}
-.st-app-tag {
-  font-size: clamp(12.5px, 3.4vw, 14px);
-  color: ${C.onSurfaceVariant};
-  letter-spacing: 0.3px;
-  margin-top: 5px;
+  word-break: break-word;
+  line-height: 1.25;
 }
 .st-progress-track {
   width: min(260px, 62vw);
@@ -284,14 +193,6 @@ const CSS = `
   transition: background 0.2s cubic-bezier(0.2, 0, 0, 1);
 }
 .st-skip:hover { background: ${C.primaryContainer}; }
-.st-chip {
-  display: inline-flex; align-items: center; gap: 6px;
-  height: 30px; padding: 0 14px 0 10px;
-  border-radius: 999px;
-  font-size: 12.5px; font-weight: 600; letter-spacing: 0.2px;
-  margin-top: clamp(16px, 3.4vh, 26px);
-  box-shadow: ${SHADOW.level1};
-}
 .st-footer {
   position: absolute;
   left: 0; right: 0;
@@ -303,11 +204,9 @@ const CSS = `
 }
 @media (max-height: 520px) and (orientation: landscape) {
   .st-col { padding-top: 10px; padding-bottom: 10px; }
-  .st-logo { width: 52px; height: 52px; border-radius: 18px; margin-bottom: 12px; }
   .st-progress-track { margin-top: 16px; }
   .st-status { margin-top: 8px; }
   .st-skip { margin-top: 4px; min-height: 36px; }
-  .st-chip { margin-top: 12px; }
   .st-footer { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -320,35 +219,70 @@ const CSS = `
 `;
 
 /* ============================================================================
+   TYPES + ROLE ROUTING (same rule as Login.tsx)
+============================================================================ */
+
+export interface HomeRoutes {
+  admin?: string;
+  trainer?: string;
+  member?: string;
+}
+
+export interface StartupProps {
+  routes?: HomeRoutes;
+  /** Minimum time the splash stays visible (ms). */
+  minSplashMs?: number;
+  /** HARD deadline: full-page redirect after this many ms, whatever is pending. */
+  timeoutMs?: number;
+}
+
+type AnyUser = Record<string, any> & { id?: string };
+
+export function routeForRole(role: string | undefined | null, routes?: HomeRoutes): string {
+  const r = String(role || "").toLowerCase();
+  if (r === "admin" || r === "owner" || r === "super_admin" || r === "superadmin") {
+    return routes?.admin ?? "/admin";
+  }
+  if (r === "trainer" || r === "teacher") return routes?.trainer ?? "/trainer";
+  return routes?.member ?? "/";
+}
+
+export function readCurrentUser(): AnyUser | null {
+  try {
+    const raw = localStorage.getItem("currentUser");
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/* ============================================================================
    <Startup /> — default export
 ============================================================================ */
 
-export default function Startup(props: StartupProps) {
+function Startup(props: StartupProps) {
   const navigate = useNavigate();
 
-  const [appName, setAppName] = useState(FALLBACK_BRAND);
-  const [status, setStatus] = useState("Checking for a saved session…");
-  const [offline, setOffline] = useState(
-    typeof navigator !== "undefined" ? !navigator.onLine : false
-  );
+  const [appName, setAppName] = useState(""); // institution name; empty = none
+  const [status, setStatus] = useState("Getting ready…");
   const [skipReady, setSkipReady] = useState(false);
   const routed = useRef(false);
 
-  // A previous boot decided router navigation is unreliable on this device —
-  // render the login card INLINE right away, no navigation involved.
+  // Already heading to the login card (e.g. opened on /login)? Render it
+  // immediately — no splash at all, exactly one screen.
   const [showLogin, setShowLogin] = useState<boolean>(() => {
     try {
-      if (sessionStorage.getItem(FORCE_LOGIN_KEY) === "1") {
-        sessionStorage.removeItem(FORCE_LOGIN_KEY);
-        return true;
-      }
+      return /login|signin|sign-in/i.test(window.location.pathname);
     } catch {
-      /* ignore */
+      return false;
     }
-    return false;
   });
 
   useEffect(() => {
+    console.info(`[Startup] boot ${BOOT_VERSION}`);
+
     // Show the login card directly? Then there is nothing to boot.
     if (showLogin) return;
 
@@ -356,8 +290,6 @@ export default function Startup(props: StartupProps) {
     const startedAt = Date.now();
     const minSplash = props.minSplashMs ?? 600;
     const timeoutMs = props.timeoutMs ?? 6000;
-
-    console.info(`[Startup] boot ${BOOT_VERSION}`);
 
     /** Where should the user go, judging by what is saved right now? */
     const routeBySession = (): string => {
@@ -376,38 +308,50 @@ export default function Startup(props: StartupProps) {
       }, wait);
     };
 
-    /* 1. HARD DEADLINE — registered BEFORE any async work. Full-page
-        redirect: works even when SPA navigation silently fails. -------- */
+    /* 1. HARD DEADLINE — registered BEFORE any async work. --------------- */
     const hardDeadline = window.setTimeout(() => {
       if (cancelled) return;
       const target = routeBySession();
       if (target === "/login") {
-        gotoLoginHard();
+        setShowLogin(true); // in-place, no reload
       } else {
-        window.location.assign(target);
+        fullPageRedirect(target);
       }
     }, timeoutMs);
 
     /* 2. Skip escape hatch, visible after 3 s. -------------------------- */
     const skipTimer = window.setTimeout(() => setSkipReady(true), 3000);
 
-    const markOnline = () => setOffline(false);
-    const markOffline = () => setOffline(true);
-    window.addEventListener("online", markOnline);
-    window.addEventListener("offline", markOffline);
-
     const onAuthChanged = () => {
       const token = localStorage.getItem("authToken");
       const cu = readCurrentUser();
-      if (!token || !cu?.id) finish("/login");
+      if (!token || !cu?.id) setShowLogin(true);
     };
     window.addEventListener("authStateChanged", onAuthChanged);
 
     (async () => {
+      // The institution name is the ONLY title this splash ever shows.
       const brand = brandFromSettings();
       if (brand) setAppName(brand);
 
-      // 3. Local database first — but NEVER wait more than 2.5 s on it.
+      // 3. Session gate FIRST — a plain localStorage read, instant. Signed
+      //    out? The login card replaces this splash IN PLACE: no navigation,
+      //    no reload, so the user only ever sees this one loading page.
+      const token = localStorage.getItem("authToken");
+      const cu = readCurrentUser();
+      if (!token || !cu?.id) {
+        try {
+          localStorage.removeItem("authToken");
+          localStorage.removeItem("currentUser");
+        } catch {
+          /* ignore */
+        }
+        setShowLogin(true);
+        return;
+      }
+
+      // 4. Signed in — open the local database, but NEVER wait more than
+      //    2.5 s on it (a blocked IndexedDB cannot stall the boot).
       setStatus("Opening local database…");
       try {
         await Promise.race([
@@ -419,44 +363,15 @@ export default function Startup(props: StartupProps) {
       }
       if (cancelled) return;
 
-      // 4. Session gate.
-      setStatus("Checking for a saved session…");
-      const token = localStorage.getItem("authToken");
-      const cu = readCurrentUser();
-      if (!token || !cu?.id) {
-        try {
-          localStorage.removeItem("authToken");
-          localStorage.removeItem("currentUser");
-        } catch {
-          /* ignore */
-        }
-
-        // Already on a login-ish URL? Just show the login card inline —
-        // no navigation, nothing that can fail.
-        const path = window.location.pathname;
-        if (/login|signin|sign-in/i.test(path)) {
-          setShowLogin(true);
-          return;
-        }
-
-        finish("/login");
-        // If SPA navigation did not unmount us in 1.5 s, force it.
-        window.setTimeout(() => {
-          if (!cancelled) gotoLoginHard();
-        }, 1500);
-        return;
-      }
-
-      // 5. Start the always-draining engine (idempotent — safe to re-call).
+      // 5. Start the always-draining engine (idempotent — safe to re-call)
+      //    and refresh online sessions once.
       try {
         startPeriodicPull();
       } catch {
-        /* sync chips surface engine errors later */
+        /* ignore */
       }
       const offlineSession = token === OFFLINE_LOGIN_TOKEN;
-      if (offlineSession) {
-        setStatus("Offline mode — your data is safe on this device");
-      } else if (typeof navigator !== "undefined" && navigator.onLine && cu.tenantId) {
+      if (!offlineSession && typeof navigator !== "undefined" && navigator.onLine && cu.tenantId) {
         setStatus("Syncing your data…");
         try {
           void syncNow(cu.tenantId).catch(() => {});
@@ -465,10 +380,19 @@ export default function Startup(props: StartupProps) {
         }
       }
 
-      finish(routeForRole(cu.role, props.routes));
-      // Same insurance for the signed-in path.
+      const target = routeForRole(cu.role, props.routes);
+      finish(target);
+      // Same insurance for the signed-in path: if SPA navigation did not
+      // happen, ONE guarded full-page redirect follows.
       window.setTimeout(() => {
-        if (!cancelled) window.location.assign(routeForRole(cu.role, props.routes));
+        if (cancelled) return;
+        try {
+          const here = window.location.pathname + window.location.hash;
+          if (here.endsWith(target)) return; // navigation worked
+        } catch {
+          /* ignore */
+        }
+        fullPageRedirect(target);
       }, 2000);
     })();
 
@@ -476,8 +400,6 @@ export default function Startup(props: StartupProps) {
       cancelled = true;
       window.clearTimeout(hardDeadline);
       window.clearTimeout(skipTimer);
-      window.removeEventListener("online", markOnline);
-      window.removeEventListener("offline", markOffline);
       window.removeEventListener("authStateChanged", onAuthChanged);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -485,8 +407,8 @@ export default function Startup(props: StartupProps) {
 
   const skip = () => {
     const target = routeBySessionPublic();
-    if (target === "/login") gotoLoginHard();
-    else window.location.assign(target);
+    if (target === "/login") setShowLogin(true);
+    else fullPageRedirect(target);
   };
   function routeBySessionPublic(): string {
     const token = localStorage.getItem("authToken");
@@ -495,7 +417,8 @@ export default function Startup(props: StartupProps) {
     return routeForRole(cu.role, props.routes);
   }
 
-  // The login card, rendered inline — reachable with ZERO navigation.
+  // The login card (institution setup + sign-in), rendered IN PLACE —
+  // the splash simply becomes the login screen. One page, no reload.
   if (showLogin) {
     return <Login routes={props.routes} />;
   }
@@ -504,9 +427,7 @@ export default function Startup(props: StartupProps) {
     <div className="st-root">
       <style>{CSS}</style>
       <div className="st-col">
-        <div className="st-logo"><IconSchool /></div>
-        <div className="st-app-name">{appName}</div>
-        <div className="st-app-tag">Attendance · Courses · Live classes</div>
+        {appName ? <div className="st-title">{appName}</div> : null}
 
         <div className="st-progress-track" role="progressbar" aria-label="Loading">
           <div className="st-progress-bar" />
@@ -518,20 +439,11 @@ export default function Startup(props: StartupProps) {
             Skip
           </button>
         )}
-
-        {offline ? (
-          <span className="st-chip" style={{ background: C.orangeBg, color: C.orange }}>
-            <IconCloudOff />
-            Offline — working from this device
-          </span>
-        ) : (
-          <span className="st-chip" style={{ background: C.greenBg, color: C.green }}>
-            <IconCloudOn />
-            Connected — data will sync
-          </span>
-        )}
       </div>
-      <div className="st-footer">SmartPages boot {BOOT_VERSION} · offline-first</div>
+      <div className="st-footer">boot {BOOT_VERSION}</div>
     </div>
   );
 }
+
+export default Startup;
+export { Startup };
