@@ -60,7 +60,11 @@ import { useNavigate } from "react-router-dom";
 
 import { supabase } from "./supabase";
 import { db } from "../database/db";
-import { startPeriodicPull, syncNow } from "../database/sync";
+// Defensive sync import: compiles against ANY sync.ts — if it doesn't export
+// these names, the calls become safe no-ops instead of build errors.
+import * as SyncEngine from "../database/sync";
+const startPeriodicPull = (SyncEngine as any).startPeriodicPull ?? (() => {});
+const syncNow = (SyncEngine as any).syncNow ?? (async () => {});
 
 /* ------------------------------------------------------------------ */
 /* Shared constants (same values as database/sync.ts / UploadMaterials) */

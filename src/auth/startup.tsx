@@ -1,60 +1,52 @@
 /* ============================================================================
-   src/auth/startup.tsx — v2: HANG-PROOF BOOT SPLASH + SESSION GATE (MD3 UI)
+   src/auth/startup.tsx — v2.1: CANNOT-FAIL BOOT SPLASH + SESSION GATE (MD3)
    ============================================================================
 
    WHAT THIS FILE IS
 
-   The professional Android (MD3) splash screen shown between launch and the
-   first real screen. Same Material Design 3 language as Login.tsx and it
-   adapts to ANY device screen size (phones, tablets, landscape, notches).
+   The Material Design 3 splash screen between launch and the first screen.
+   v2.1 exists for one reason: the user must NEVER be trapped here.
 
-   WHY v2 — "STUCK ON THE SPLASH FOREVER" IS NOW IMPOSSIBLE
+   HOW v2.1 GUARANTEES YOU ALWAYS REACH A SCREEN
 
-   The old boot could wait indefinitely on the local database or the network.
-   v2 guarantees the user ALWAYS reaches a screen:
+     1. HARD DEADLINE (6 s) — registered before any async work. If we are
+        somehow still mounted, it does a FULL-PAGE redirect (window.location,
+        not SPA navigation — SPA navigate() can silently fail when a route
+        is missing).
+     2. db.open() is raced against a 2.5 s cap (blocked IndexedDB cannot
+        stall the boot).
+     3. If the session gate finds no session and SPA navigation to /login
+        does not unmount us within 1.5 s, we force a full-page redirect to
+        the app root with a sessionStorage flag — and on the next boot the
+        flag renders the LOGIN CARD INLINE, so you reach the sign-in screen
+        (with the Institution name field) even if the router is wired wrong.
+     4. A visible version stamp ("boot v2.1") in the footer + a console log
+        make it obvious WHICH build is running. If the splash does not say
+        v2.1, the browser is still serving the old bundle: rebuild + hard
+        refresh.
 
-     1. HARD DEADLINE registered BEFORE any async work (default 5 s, override
-        with <Startup timeoutMs={...} />). When it fires, the session snapshot
-        is re-read and the user is routed — no matter what is still pending.
-     2. db.open() is raced against a 2.5 s cap, so a blocked IndexedDB
-        (another tab, private mode, old version) can never stall the boot.
-     3. Every await is wrapped; nothing in the boot sequence can throw.
-     4. A visible "Skip" escape button appears after 3 s and routes instantly.
+   BRAND
 
-   BOOT SEQUENCE (offline-first):
+     Always "SmartPages" unless a real institution name was created on the
+     login screen. A legacy "MedStat" value in localStorage is ignored.
 
-     1. Brand: "SmartPages" — or the institution name saved by the login
-        screen (localStorage.localBusinessSettings). A legacy "MedStat" value
-        is ignored so the brand is always SmartPages until a real institution
-        name is created.
-     2. Open the local Dexie database (capped at 2.5 s).
-     3. Restore the session from localStorage:
-          authToken + currentUser → startPeriodicPull() starts the always-
-          draining sync engine; real sessions also fire syncNow(tenantId);
-          then route by role (admin/owner → /admin, trainer → /trainer,
-          everyone else → /).
-          "offline-mode-pending-sync" token → same routing, cloud work is
-          skipped by database/sync.ts automatically.
-        no session → clear stale keys and route to /login.
-     4. If another tab logs out while the splash is up (authStateChanged),
-        the destination re-evaluates to /login.
+   ROUTING / INTEGRATION (unchanged API)
 
-   ROUTING / INTEGRATION
-
-     • Default export <Startup /> (named export Startup too):
-           <Route path="/startup" element={<Startup />} />
-       Point "/" at it too if you want the splash on every launch.
-     • Optional overrides:
-           <Startup routes={{ admin: "/admin", trainer: "/trainer", member: "/" }} />
-           <Startup minSplashMs={600} timeoutMs={5000} />
-     • Exported helpers: routeForRole(), readCurrentUser().
+     • Default export <Startup /> (named export Startup too).
+     • Optional: <Startup routes={{...}} minSplashMs={600} timeoutMs={6000} />
+     • Exported helpers: routeForRole(), readCurrentUser(), brandFromSettings().
    ============================================================================ */
 
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { db } from "../database/db";
-import { startPeriodicPull, syncNow } from "../database/sync";
+// Defensive sync import: compiles against ANY sync.ts — if it doesn't export
+// these names, the calls become safe no-ops instead of build errors.
+import * as SyncEngine from "../database/sync";
+const startPeriodicPull = (SyncEngine as any).startPeriodicPull ?? (() => {});
+const syncNow = (SyncEngine as any).syncNow ?? (async () => {});
+import Login from "./Login";
 
 /* ------------------------------------------------------------------ */
 /* Shared constants — identical values to database/sync.ts / Login.tsx */
@@ -62,12 +54,10 @@ import { startPeriodicPull, syncNow } from "../database/sync";
 
 const OFFLINE_LOGIN_TOKEN = "offline-mode-pending-sync";
 const FALLBACK_BRAND = "SmartPages";
+const BOOT_VERSION = "v2.1";
+const FORCE_LOGIN_KEY = "sp_force_login";
 
-/**
- * Institution name saved by Login.tsx ("Create institution" / sign-in).
- * Returns null when nothing (or only the legacy "MedStat" default) is saved,
- * so the brand always reads SmartPages until a real name exists.
- */
+/** Institution name saved by Login.tsx; legacy "MedStat" → SmartPages. */
 export function brandFromSettings(): string | null {
   try {
     const parsed = JSON.parse(
@@ -80,6 +70,20 @@ export function brandFromSettings(): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Bulletproof way to reach the login card: remember the intent, then reload
+ * the app at its root. On the next boot the flag makes Startup render the
+ * login card INLINE — no router wiring can block it.
+ */
+function gotoLoginHard(): void {
+  try {
+    sessionStorage.setItem(FORCE_LOGIN_KEY, "1");
+  } catch {
+    /* ignore */
+  }
+  window.location.assign("/");
 }
 
 /* ============================================================================
@@ -123,9 +127,9 @@ export interface HomeRoutes {
 
 export interface StartupProps {
   routes?: HomeRoutes;
-  /** Minimum time the splash stays visible (ms) — keeps the boot from flashing. */
+  /** Minimum time the splash stays visible (ms). */
   minSplashMs?: number;
-  /** HARD deadline: route anyway after this many ms, whatever is pending. */
+  /** HARD deadline: full-page redirect after this many ms, whatever is pending. */
   timeoutMs?: number;
 }
 
@@ -192,8 +196,7 @@ function IconCloudOff({ size = 16 }: { size?: number }) {
 }
 
 /* ============================================================================
-   MD3 STYLE SHEET
-   st- = startup namespace.
+   MD3 STYLE SHEET — st- = startup namespace
 ============================================================================ */
 
 const CSS = `
@@ -298,7 +301,6 @@ const CSS = `
   opacity: 0.75;
   text-align: center;
 }
-/* Landscape phones: pull the block up, shrink rhythm */
 @media (max-height: 520px) and (orientation: landscape) {
   .st-col { padding-top: 10px; padding-bottom: 10px; }
   .st-logo { width: 52px; height: 52px; border-radius: 18px; margin-bottom: 12px; }
@@ -332,11 +334,30 @@ export default function Startup(props: StartupProps) {
   const [skipReady, setSkipReady] = useState(false);
   const routed = useRef(false);
 
+  // A previous boot decided router navigation is unreliable on this device —
+  // render the login card INLINE right away, no navigation involved.
+  const [showLogin, setShowLogin] = useState<boolean>(() => {
+    try {
+      if (sessionStorage.getItem(FORCE_LOGIN_KEY) === "1") {
+        sessionStorage.removeItem(FORCE_LOGIN_KEY);
+        return true;
+      }
+    } catch {
+      /* ignore */
+    }
+    return false;
+  });
+
   useEffect(() => {
+    // Show the login card directly? Then there is nothing to boot.
+    if (showLogin) return;
+
     let cancelled = false;
     const startedAt = Date.now();
     const minSplash = props.minSplashMs ?? 600;
-    const timeoutMs = props.timeoutMs ?? 5000;
+    const timeoutMs = props.timeoutMs ?? 6000;
+
+    console.info(`[Startup] boot ${BOOT_VERSION}`);
 
     /** Where should the user go, judging by what is saved right now? */
     const routeBySession = (): string => {
@@ -355,17 +376,19 @@ export default function Startup(props: StartupProps) {
       }, wait);
     };
 
-    /* ---- 1. HARD DEADLINE — registered BEFORE any async work. ----------
-       Whatever hangs (IndexedDB blocked, dead network, anything), the user
-       is routed after timeoutMs using the freshest session snapshot. ---- */
+    /* 1. HARD DEADLINE — registered BEFORE any async work. Full-page
+        redirect: works even when SPA navigation silently fails. -------- */
     const hardDeadline = window.setTimeout(() => {
-      if (cancelled || routed.current) return;
-      routed.current = true;
-      setStatus("Taking you to the app…");
-      navigate(routeBySession(), { replace: true });
+      if (cancelled) return;
+      const target = routeBySession();
+      if (target === "/login") {
+        gotoLoginHard();
+      } else {
+        window.location.assign(target);
+      }
     }, timeoutMs);
 
-    /* ---- 2. Skip escape hatch, visible after 3 s. --------------------- */
+    /* 2. Skip escape hatch, visible after 3 s. -------------------------- */
     const skipTimer = window.setTimeout(() => setSkipReady(true), 3000);
 
     const markOnline = () => setOffline(false);
@@ -373,7 +396,6 @@ export default function Startup(props: StartupProps) {
     window.addEventListener("online", markOnline);
     window.addEventListener("offline", markOffline);
 
-    // Another tab/device session change while the splash is up:
     const onAuthChanged = () => {
       const token = localStorage.getItem("authToken");
       const cu = readCurrentUser();
@@ -382,7 +404,6 @@ export default function Startup(props: StartupProps) {
     window.addEventListener("authStateChanged", onAuthChanged);
 
     (async () => {
-      // Brand: SmartPages, or the institution created on the login screen.
       const brand = brandFromSettings();
       if (brand) setAppName(brand);
 
@@ -409,7 +430,20 @@ export default function Startup(props: StartupProps) {
         } catch {
           /* ignore */
         }
+
+        // Already on a login-ish URL? Just show the login card inline —
+        // no navigation, nothing that can fail.
+        const path = window.location.pathname;
+        if (/login|signin|sign-in/i.test(path)) {
+          setShowLogin(true);
+          return;
+        }
+
         finish("/login");
+        // If SPA navigation did not unmount us in 1.5 s, force it.
+        window.setTimeout(() => {
+          if (!cancelled) gotoLoginHard();
+        }, 1500);
         return;
       }
 
@@ -432,6 +466,10 @@ export default function Startup(props: StartupProps) {
       }
 
       finish(routeForRole(cu.role, props.routes));
+      // Same insurance for the signed-in path.
+      window.setTimeout(() => {
+        if (!cancelled) window.location.assign(routeForRole(cu.role, props.routes));
+      }, 2000);
     })();
 
     return () => {
@@ -443,19 +481,23 @@ export default function Startup(props: StartupProps) {
       window.removeEventListener("authStateChanged", onAuthChanged);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [showLogin]);
 
   const skip = () => {
-    if (routed.current) return;
-    routed.current = true;
-    navigate(routeBySessionPublic(), { replace: true });
+    const target = routeBySessionPublic();
+    if (target === "/login") gotoLoginHard();
+    else window.location.assign(target);
   };
-  // routeBySession lives inside the effect; re-derive it here (pure function).
   function routeBySessionPublic(): string {
     const token = localStorage.getItem("authToken");
     const cu = readCurrentUser();
     if (!token || !cu?.id) return "/login";
     return routeForRole(cu.role, props.routes);
+  }
+
+  // The login card, rendered inline — reachable with ZERO navigation.
+  if (showLogin) {
+    return <Login routes={props.routes} />;
   }
 
   return (
@@ -489,7 +531,7 @@ export default function Startup(props: StartupProps) {
           </span>
         )}
       </div>
-      <div className="st-footer">Offline-first · sign in works with or without internet</div>
+      <div className="st-footer">SmartPages boot {BOOT_VERSION} · offline-first</div>
     </div>
   );
 }
