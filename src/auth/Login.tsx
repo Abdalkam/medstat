@@ -1,5 +1,5 @@
 /* ============================================================================
-   src/login.tsx — v1: OFFLINE-FIRST SIGN-IN + PROFESSIONAL ANDROID (MD3) UI
+   src/auth/Login.tsx — v1: OFFLINE-FIRST SIGN-IN + PROFESSIONAL ANDROID (MD3) UI
    ============================================================================
 
    WHAT THIS FILE IS
@@ -43,9 +43,9 @@ import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 
-import { supabase } from "./auth/supabase";
-import { db } from "./database/db";
-import { startPeriodicPull, syncNow } from "./database/sync";
+import { supabase } from "./supabase";
+import { db } from "../database/db";
+import { startPeriodicPull, syncNow } from "../database/sync";
 
 /* ------------------------------------------------------------------ */
 /* Shared constants (same values as database/sync.ts / UploadMaterials) */
