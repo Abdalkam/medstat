@@ -1,5 +1,23 @@
+
 /* ============================================================================
-   src/auth/Login.tsx — v5: ENTER-INSTITUTION FLOW + SIGN-IN (Material Design 3)
+   src/auth/Login.tsx — v9: SIMPLE INSTITUTION-ENTRY FLOW (MD3)
+
+   v9 change: Screen 1's Continue no longer runs an existence check. The
+   user types any institution name, taps Continue, and is taken straight to
+   the sign-in screen. The actual validation happens at sign-in time via
+   userDB.loginWithIdentifier(), which scopes the lookup by this institution
+   name. This matches the original v7 behavior the user asked to restore.
+
+   v7 change: sign-in now uses USERNAME, not email. It goes through
+   database/userDB.loginWithIdentifier() — the app's real auth path, the
+   same call src/screens/LoginScreen.tsx makes. The email field, the
+   supabase.auth.signInWithPassword call and the forgot-password email are
+   gone (RegisterAdmin accounts are username accounts — they have no email).
+
+   v6 change: Screen 1 is now ALWAYS the first thing a signed-out user sees.
+   The sign-in page opens only AFTER the institution name is entered — a
+   name already saved on this device just prefills the field (one tap on
+   "Continue"). Previously a saved name skipped straight to sign-in.
    ============================================================================
 
    WHAT THIS FILE IS
@@ -11,9 +29,12 @@
    THE FLOW (the login algorithm, three clean screens)
 
      Screen 1 — "Enter institution name" (the front door):
+        • ALWAYS shown first. The login page is reached BY entering the
+          institution name — it is never shown before that.
         • One MD3 card: institution name field + "Continue". Continue saves
           the name on this device (localStorage.localBusinessSettings — the
-          key every other screen reads) and opens sign-in.
+          key every other screen reads) and routes to sign-in. No existence
+          check — the user just types a name and proceeds.
         • A "Create institution" button sits in the CORNER (top-right) and
           opens screen 2.
 
@@ -24,20 +45,22 @@
           business_settings.business_name to the cloud (never blocks), then
           opens sign-in.
 
-     Screen 3 — "Sign in" (shown once a name is set, or via "Change"):
+     Screen 3 — "Sign in" (opens after the name is entered, or via "Change"):
         • The INSTITUTION NAME is the card title. A small "Change" text
           button reopens screen 1 to rename it.
-        • Email + password sign-in (Supabase auth), forgot-password email,
-          and "Continue offline" (uses the account cached on this device).
+        • USERNAME + password sign-in via userDB.loginWithIdentifier, and
+          "Continue offline" (uses the account cached on this device).
 
-   AUTH (unchanged logic)
+   AUTH (USERNAME — the app's real path, not email)
 
-     1. Online  → signInWithPassword → profile from public.users (or the
-        local Dexie copy) → session to localStorage ("authToken" +
-        "currentUser") → sync engine started → routed by role.
-     2. Network failure → automatic offline sign-in with the
+     1. Sign-in calls userDB.loginWithIdentifier({ business, username,
+        password }): the institution name from screen 1 scopes the lookup,
+        then username + password are checked against public.users (bcrypt).
+        userDB itself persists the session ("authToken" + "currentUser")
+        and caches the credentials in Dexie for offline sign-ins.
+     2. "Continue offline" → finds the cached account (Dexie roster or the
+        last successful sign-in on this device) and signs in with the
         "offline-mode-pending-sync" token database/sync.ts understands.
-     3. "Continue offline" → the same path on demand.
 
    ROUTING / INTEGRATION
 
@@ -53,6 +76,10 @@ import { useNavigate } from "react-router-dom";
 
 import { supabase } from "./supabase";
 import { db } from "../database/db";
+// The app's REAL auth path — username + password checked against
+// public.users, scoped by the institution name, credentials cached in
+// Dexie for offline. Same call src/screens/LoginScreen.tsx makes.
+import { loginWithIdentifier } from "../database/userDB";
 // Defensive sync import: compiles against ANY sync.ts — if it doesn't export
 // these names, the calls become safe no-ops instead of build errors.
 import * as SyncEngine from "../database/sync";
@@ -64,6 +91,8 @@ const syncNow = (SyncEngine as any).syncNow ?? (async () => {});
 /* ------------------------------------------------------------------ */
 
 const OFFLINE_LOGIN_TOKEN = "offline-mode-pending-sync";
+/** Last successful sign-in on this device ({username, id, role, tenantId…})
+ *  — username prefill + the "Continue offline" fallback account. */
 const LAST_USER_KEY = "medstat_last_user";
 /** One full-page redirect per target per 10 s — shared with startup.tsx so a
  *  broken router can never cause a reload loop. */
@@ -221,11 +250,11 @@ const iconProps = {
   strokeLinejoin: "round" as const,
 };
 
-function IconMail({ size = 20 }: { size?: number }) {
+function IconPerson({ size = 20 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" {...iconProps}>
-      <rect x="3" y="5" width="18" height="14" rx="2.5" />
-      <path d="m3.5 7.5 8.5 6 8.5-6" />
+      <circle cx="12" cy="7.5" r="3.5" />
+      <path d="M5.5 19.5a6.5 6.5 0 0 1 13 0" />
     </svg>
   );
 }
@@ -498,6 +527,7 @@ function TextField(props: {
   type?: string;
   icon: ReactNode;
   autoComplete?: string;
+  autoCapitalize?: string;
   inputMode?: "email" | "text";
   error?: boolean;
   disabled?: boolean;
@@ -516,6 +546,7 @@ function TextField(props: {
         placeholder=" "
         disabled={props.disabled}
         autoComplete={props.autoComplete}
+        autoCapitalize={props.autoCapitalize}
         inputMode={props.inputMode}
         spellCheck={false}
         onChange={(e) => props.onChange(e.target.value)}
@@ -549,7 +580,7 @@ function Banner(props: {
 }
 
 /* ============================================================================
-   HELPERS — session + local account lookup (unchanged working logic)
+   HELPERS — session + local account lookup
 ============================================================================ */
 
 /** Cloud/row values (snake_case or camelCase) → the currentUser shape the
@@ -570,20 +601,28 @@ function localShapeFrom(row: any, fallbackEmail: string, authId?: string): AnyUs
   return u;
 }
 
-/** Find the account in the OFFLINE caches: Dexie users first (the synced
- *  roster), then the last account that signed in on this device. */
-async function findLocalUser(email: string): Promise<AnyUser | null> {
-  const needle = email.trim().toLowerCase();
+/** Find the account in the OFFLINE caches by USERNAME (or a legacy email
+ *  value): Dexie users first (the synced roster), then the last account
+ *  that signed in on this device. */
+async function findLocalUser(handle: string): Promise<AnyUser | null> {
+  const needle = handle.trim().toLowerCase();
   try {
     const all = await db.users.toArray();
-    const hit = all.find((u: any) => String(u?.email ?? "").trim().toLowerCase() === needle && needle !== "");
+    const hit = all.find((u: any) => {
+      if (needle === "") return false;
+      const un = String(u?.username ?? "").trim().toLowerCase();
+      const em = String(u?.email ?? "").trim().toLowerCase();
+      return un === needle || (em === needle && em !== "");
+    });
     if (hit) return hit as AnyUser;
   } catch {
     /* Dexie not open / table missing — fall through to the last-user cache */
   }
   try {
     const last = JSON.parse(localStorage.getItem(LAST_USER_KEY) || "null");
-    if (last && (needle === "" || String(last?.email ?? "").toLowerCase() === needle)) {
+    const un = String(last?.username ?? "").trim().toLowerCase();
+    const em = String(last?.email ?? "").trim().toLowerCase();
+    if (last && (needle === "" || un === needle || (em === needle && em !== ""))) {
       return last as AnyUser;
     }
   } catch {
@@ -592,23 +631,10 @@ async function findLocalUser(email: string): Promise<AnyUser | null> {
   return null;
 }
 
-function classifyAuthError(err: any): "network" | "credentials" | "other" {
-  const msg = String(err?.message ?? err ?? "");
-  if (typeof navigator !== "undefined" && navigator.onLine === false) return "network";
-  if (/failed to fetch|networkerror|network request|fetch failed|load failed|timed?\s?out|ERR_INTERNET|ERR_NETWORK|dns/i.test(msg)) {
-    return "network";
-  }
-  if (/invalid login|invalid credentials|incorrect email or password/i.test(msg)) return "credentials";
-  return "other";
-}
-
 function friendlyAuthError(raw: string): string {
   const msg = String(raw ?? "");
-  if (/invalid login|invalid credentials/i.test(msg)) {
-    return "Wrong email or password. Please check them and try again.";
-  }
-  if (/email not confirmed/i.test(msg)) {
-    return "This email hasn't been confirmed yet — open the confirmation link in your inbox, then sign in.";
+  if (/invalid login|invalid credentials|incorrect (email|username) or password|wrong (email|username) or password|username not found|user not found/i.test(msg)) {
+    return "Wrong username or password. Please check them and try again.";
   }
   if (/too many requests/i.test(msg)) {
     return "Too many attempts. Wait about a minute, then try again.";
@@ -631,16 +657,15 @@ export default function Login(props: LoginProps) {
   const [institution, setInstitution] = useState("");
   const [instError, setInstError] = useState(false);
   const [createBusy, setCreateBusy] = useState(false);
-  const [email, setEmail] = useState("");
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [showPw, setShowPw] = useState(false);
   const [busy, setBusy] = useState(false);
   const [offlineBusy, setOfflineBusy] = useState(false);
-  const [resetBusy, setResetBusy] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
   const [notice, setNotice] = useState("");
   const [noticeKind, setNoticeKind] = useState<"info" | "success">("info");
-  const [emailError, setEmailError] = useState(false);
+  const [usernameError, setUsernameError] = useState(false);
   const [pwError, setPwError] = useState(false);
   const [hasLocalAccount, setHasLocalAccount] = useState(false);
 
@@ -652,19 +677,21 @@ export default function Login(props: LoginProps) {
         const parsed = JSON.parse(settings);
         if (parsed?.businessName) {
           // Prefill the field with whatever was saved (even a legacy value,
-          // so it can be corrected), but only advance to sign-in when a REAL
-          // institution name was created.
+          // so it can be corrected). Screen 1 still shows first — the login
+          // page is reached BY entering the institution name.
           setInstitution(String(parsed.businessName));
         }
       }
       const brand = brandFromSettings();
       if (brand) {
+        // Known institution: prefill only. NEVER auto-jump to sign-in —
+        // the user routes there by entering the name on "Continue".
         setInstitution(brand);
         setSavedName(brand);
-        setStep("signin");
       }
       const last = JSON.parse(localStorage.getItem(LAST_USER_KEY) || "null");
-      if (last?.email) setEmail(String(last.email));
+      const lastHandle = String(last?.username ?? last?.email ?? "").trim();
+      if (lastHandle) setUsername(lastHandle);
     } catch {
       /* ignore */
     }
@@ -708,6 +735,16 @@ export default function Login(props: LoginProps) {
           "localBusinessSettings",
           JSON.stringify({ ...prevSettings, businessName: institution.trim() })
         );
+        // Remember this institution's tenant id so a future "Enter
+        // institution" can find it locally (offline) via institutionExists().
+        if (user.tenantId) {
+          try {
+            let known: Record<string, string> = {};
+            try { known = JSON.parse(localStorage.getItem("sp_known_institutions") || "{}") || {}; } catch {}
+            known[String(user.tenantId)] = institution.trim();
+            localStorage.setItem("sp_known_institutions", JSON.stringify(known));
+          } catch { /* quota — local cache only */ }
+        }
       }
     } catch {
       /* storage full/blocked — session still lives in memory for this page */
@@ -723,7 +760,7 @@ export default function Login(props: LoginProps) {
   /* ------------------------- OFFLINE sign-in path ------------------------ */
 
   async function finishOffline(afterNetworkFailure: boolean) {
-    const mail = email.trim();
+    const uname = username.trim();
     if (!hasLocalAccount) {
       setErrorMsg(
         "There is no saved account on this device yet. Sign in once with an internet connection — after that, offline sign-in works everywhere."
@@ -734,16 +771,16 @@ export default function Login(props: LoginProps) {
     setErrorMsg("");
     setNotice("");
     try {
-      const hit = await findLocalUser(mail);
+      const hit = await findLocalUser(uname);
       if (!hit || !hit.id) {
         setErrorMsg(
-          mail
-            ? `"${mail}" is not saved on this device. Connect to the internet once and sign in with it to enable offline access.`
-            : "Enter your email above so the saved account can be found."
+          uname
+            ? `"${uname}" is not saved on this device. Connect to the internet once and sign in with it to enable offline access.`
+            : "Enter your username above so the saved account can be found."
         );
         return;
       }
-      const user = localShapeFrom(hit, mail, String(hit.id));
+      const user = localShapeFrom(hit, "", String(hit.id));
       if (afterNetworkFailure) {
         setNoticeKind("info");
         setNotice(
@@ -756,14 +793,20 @@ export default function Login(props: LoginProps) {
     }
   }
 
-  /* -------------------------- ONLINE sign-in path ------------------------ */
+  /* --------------------------- USERNAME sign-in --------------------------- */
 
-  async function finishOnline() {
-    const mail = email.trim();
+  /** Screen 3 "Sign in": username + password through the app's REAL auth
+   *  path — userDB.loginWithIdentifier(). The institution name from screen
+   *  1 scopes the lookup; userDB itself persists the session and caches the
+   *  credentials in Dexie, so a dead network falls back to the cached
+   *  account inside userDB (the explicit "Continue offline" button below is
+   *  the manual path for the same thing). */
+  async function finishSignIn() {
+    const uname = username.trim();
     const pass = password;
-    if (!mail) {
-      setEmailError(true);
-      setErrorMsg("Enter your email to continue.");
+    if (!uname) {
+      setUsernameError(true);
+      setErrorMsg("Enter your username to continue.");
       return;
     }
     if (!pass) {
@@ -774,64 +817,41 @@ export default function Login(props: LoginProps) {
     setBusy(true);
     setErrorMsg("");
     setNotice("");
-    setEmailError(false);
+    setUsernameError(false);
     setPwError(false);
     try {
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email: mail,
+      const user = await loginWithIdentifier({
+        business: institution.trim() || undefined,
+        username: uname,
         password: pass,
       });
 
-      if (error) {
-        // A dead network must never block the user — fall back to the local
-        // account automatically instead of showing an error.
-        if (classifyAuthError(error) === "network") {
-          await finishOffline(true);
-          return;
-        }
-        setErrorMsg(friendlyAuthError(error.message));
-        return;
-      }
+      // Normalize to the currentUser shape the whole app reads (id, name,
+      // role, tenantId, assignedCourses…).
+      const anyUser = user as any;
+      const shaped = localShapeFrom(anyUser, "", String(anyUser?.id ?? ""));
 
-      const session = data?.session;
-      const authUser = data?.user;
-      if (!session || !authUser) {
-        setErrorMsg("Sign-in succeeded but no session was returned. Please try again.");
-        return;
-      }
-
-      // App profile: public.users row first, then the local Dexie copy.
-      let row: any = null;
+      // Belt-and-braces: the startup gate reads these keys. userDB persists
+      // them itself — only fill the gap if a future version ever stops.
       try {
-        const { data: profile } = await supabase
-          .from("users")
-          .select("*")
-          .eq("email", mail)
-          .maybeSingle();
-        row = profile ?? null;
+        if (shaped.id && !localStorage.getItem("currentUser")) {
+          localStorage.setItem("currentUser", JSON.stringify(shaped));
+        }
+        // Remember the account for the username prefill + offline lookup.
+        localStorage.setItem(LAST_USER_KEY, JSON.stringify({ ...shaped, username: uname }));
       } catch {
-        row = null;
-      }
-      if (!row) {
-        const localHit = await findLocalUser(mail);
-        if (localHit) row = localHit;
-      }
-
-      const user = localShapeFrom(row, mail, String(authUser.id));
-      if (!user.tenantId) {
-        const meta = (authUser.user_metadata ?? {}) as any;
-        user.tenantId = String(meta.tenant_id ?? meta.tenantId ?? localStorage.getItem("activeTenantId") ?? "");
+        /* storage blocked — session still lives for this run */
       }
 
       setNoticeKind("success");
       setNotice("Welcome back!");
-      setUserSession(user, session.access_token, false);
+      window.dispatchEvent(new Event("authStateChanged"));
+      // The engine is idempotent (it clears its previous interval first).
+      startPeriodicPull();
+      void syncNow(shaped.tenantId);
+      navigateWithFallback(routeForRole(shaped.role, props.routes), navigate);
     } catch (e: any) {
-      if (classifyAuthError(e) === "network") {
-        await finishOffline(true);
-        return;
-      }
-      setErrorMsg(friendlyAuthError(e?.message ?? "Sign-in failed. Please try again."));
+      setErrorMsg(friendlyAuthError(String(e?.message ?? e)));
     } finally {
       setBusy(false);
     }
@@ -841,7 +861,10 @@ export default function Login(props: LoginProps) {
 
   /** Screen 1 ("Enter institution name"): remember the name on this device
    *  and continue to sign-in. The tenant id is NOT touched here — it comes
-   *  from the signed-in account. */
+   *  from the signed-in account. There is intentionally NO existence check
+   *  on Continue: the user just types a name and proceeds; the actual
+   *  validation happens at sign-in time via loginWithIdentifier(), which
+   *  scopes the lookup by this institution name. */
   function enterInstitution() {
     const name = institution.trim();
     if (!name) {
@@ -959,38 +982,6 @@ export default function Login(props: LoginProps) {
       setStep("signin");
     } finally {
       setCreateBusy(false);
-    }
-  }
-
-  /* --------------------------- password reset ---------------------------- */
-
-  async function sendPasswordReset() {
-    const mail = email.trim();
-    if (!mail) {
-      setEmailError(true);
-      setErrorMsg("Type your email above first, then tap “Forgot password”.");
-      return;
-    }
-    setResetBusy(true);
-    setErrorMsg("");
-    setNotice("");
-    try {
-      const { error } = await supabase.auth.resetPasswordForEmail(mail);
-      if (error) {
-        if (classifyAuthError(error) === "network") {
-          setNoticeKind("info");
-          setNotice("You're offline — password reset needs a connection. Try again once you're back online.");
-        } else {
-          setErrorMsg(friendlyAuthError(error.message));
-        }
-        return;
-      }
-      setNoticeKind("info");
-      setNotice(`Password reset email sent to ${mail}. Check your inbox.`);
-    } catch (e: any) {
-      setErrorMsg(classifyAuthError(e) === "network" ? "You're offline — password reset needs a connection." : friendlyAuthError(e?.message));
-    } finally {
-      setResetBusy(false);
     }
   }
 
@@ -1145,21 +1136,20 @@ export default function Login(props: LoginProps) {
               {notice && <Banner kind={noticeKind}>{notice}</Banner>}
 
               <TextField
-                label="Email address"
-                value={email}
+                label="Username"
+                value={username}
                 onChange={(v) => {
-                  setEmail(v);
-                  setEmailError(false);
+                  setUsername(v);
+                  setUsernameError(false);
                 }}
-                type="email"
-                inputMode="email"
-                autoComplete="email"
-                icon={<IconMail />}
-                error={emailError}
+                autoComplete="username"
+                autoCapitalize="none"
+                icon={<IconPerson />}
+                error={usernameError}
                 disabled={busy}
                 onEnter={() => {
                   if (busy) return;
-                  if (password) void finishOnline();
+                  if (password) void finishSignIn();
                 }}
               />
 
@@ -1176,7 +1166,7 @@ export default function Login(props: LoginProps) {
                 error={pwError}
                 disabled={busy}
                 onEnter={() => {
-                  if (!busy) void finishOnline();
+                  if (!busy) void finishSignIn();
                 }}
                 trailing={
                   <button
@@ -1193,17 +1183,8 @@ export default function Login(props: LoginProps) {
 
               <button
                 type="button"
-                className="lg-link lg-focusable"
-                onClick={() => void sendPasswordReset()}
-                disabled={resetBusy || busy}
-              >
-                {resetBusy ? "Sending reset email…" : "Forgot password?"}
-              </button>
-
-              <button
-                type="button"
                 className="lg-btn lg-btn-filled lg-focusable"
-                onClick={() => void finishOnline()}
+                onClick={() => void finishSignIn()}
                 disabled={busy}
               >
                 {busy ? (
