@@ -870,7 +870,7 @@ export async function syncUp() {
           }
         }
 
-        if (!enrollmentSyncFailed) {
+        if (!enrollmentSyncFailed && user.id) {
           await db.users.update(user.id, {
             synced: true,
           });

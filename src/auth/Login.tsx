@@ -1,12 +1,5 @@
-
 /* ============================================================================
-   src/auth/Login.tsx — v9: SIMPLE INSTITUTION-ENTRY FLOW (MD3)
-
-   v9 change: Screen 1's Continue no longer runs an existence check. The
-   user types any institution name, taps Continue, and is taken straight to
-   the sign-in screen. The actual validation happens at sign-in time via
-   userDB.loginWithIdentifier(), which scopes the lookup by this institution
-   name. This matches the original v7 behavior the user asked to restore.
+   src/auth/Login.tsx — v7: USERNAME SIGN-IN + ENTER-INSTITUTION FLOW (MD3)
 
    v7 change: sign-in now uses USERNAME, not email. It goes through
    database/userDB.loginWithIdentifier() — the app's real auth path, the
@@ -33,8 +26,7 @@
           institution name — it is never shown before that.
         • One MD3 card: institution name field + "Continue". Continue saves
           the name on this device (localStorage.localBusinessSettings — the
-          key every other screen reads) and routes to sign-in. No existence
-          check — the user just types a name and proceeds.
+          key every other screen reads) and routes to sign-in.
         • A "Create institution" button sits in the CORNER (top-right) and
           opens screen 2.
 
@@ -735,16 +727,6 @@ export default function Login(props: LoginProps) {
           "localBusinessSettings",
           JSON.stringify({ ...prevSettings, businessName: institution.trim() })
         );
-        // Remember this institution's tenant id so a future "Enter
-        // institution" can find it locally (offline) via institutionExists().
-        if (user.tenantId) {
-          try {
-            let known: Record<string, string> = {};
-            try { known = JSON.parse(localStorage.getItem("sp_known_institutions") || "{}") || {}; } catch {}
-            known[String(user.tenantId)] = institution.trim();
-            localStorage.setItem("sp_known_institutions", JSON.stringify(known));
-          } catch { /* quota — local cache only */ }
-        }
       }
     } catch {
       /* storage full/blocked — session still lives in memory for this page */
@@ -861,10 +843,7 @@ export default function Login(props: LoginProps) {
 
   /** Screen 1 ("Enter institution name"): remember the name on this device
    *  and continue to sign-in. The tenant id is NOT touched here — it comes
-   *  from the signed-in account. There is intentionally NO existence check
-   *  on Continue: the user just types a name and proceeds; the actual
-   *  validation happens at sign-in time via loginWithIdentifier(), which
-   *  scopes the lookup by this institution name. */
+   *  from the signed-in account. */
   function enterInstitution() {
     const name = institution.trim();
     if (!name) {
