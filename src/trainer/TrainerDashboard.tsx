@@ -514,7 +514,9 @@ export default function TrainerDashboard() {
     // 1) Local database — near-instant, works fully offline.
     try {
       const allLocalCourses = await getCourses();
-      const localCourses = allLocalCourses.filter((c) => assignedIds.includes(c.id));
+      const localCourses = allLocalCourses.filter(
+        (c): c is Course => !!c.id && assignedIds.includes(c.id),
+      );
       setCourses((prev) => (prev.length > 0 ? prev : localCourses)); // never clobber cached content with a smaller list
     } catch (e) { console.error("Local courses fetch failed", e); }
     setLoading(false); // skeleton gone at this point — network no longer blocks the UI
@@ -706,7 +708,7 @@ export default function TrainerDashboard() {
           {!loading && visibleCourses.length > 0 && (
             <div className="td-grid">
               {visibleCourses.map((course) => {
-                const learnerCount = courseStats[course.id] || 0;
+                const learnerCount = (course.id && courseStats[course.id]) || 0;
                 const start = course.startDate ? new Date(course.startDate) : null;
                 const startValid = start ? !isNaN(start.getTime()) : false;
                 return (

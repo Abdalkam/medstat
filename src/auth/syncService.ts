@@ -1,29 +1,5 @@
 // src/auth/syncService.ts — v3: session-aware realtime + unified pull/push
 //
-// v1 put Supabase rows straight into Dexie with no tombstone check — a failed
-// cloud delete meant every realtime event / manual syncDown resurrected the
-// deleted user.
-// v2 added tombstones + tenant-scoped PULL, but realtime still subscribed
-// UNSCOPED when no tenant was known, mappers clobbered rich local rows
-// (tuition/remuneration vanished), and pull/push ran with dead sessions.
-//
-// v3 changes:
-//   1. Self-heal gate — every pull/push first checks hasValidAuth() and
-//      silently re-logs-in (tryReauthenticate) instead of hammering Supabase
-//      with an offline/fabricated session.
-//   2. Pull/push DELEGATE to the battle-tested functions in supabase.ts
-//      (pullAllTenantData / syncUp) — one code path, no divergent copies.
-//      This module adds what supabase.ts doesn't do: course push, SMS-log
-//      pull, realtime.
-//   3. Realtime is ALWAYS tenant-scoped — when no tenant is known we simply
-//      don't subscribe (v2 fell back to `{}` and received every institution's
-//      rows). Channels are rebuilt automatically when the signed-in account
-//      changes, and double enableRealtimeSync() can't duplicate them.
-//   4. Realtime/pull never overwrite locally-unsynced edits (synced === false
-//      wins until pushed), and a remote soft-delete now removes the stale
-//      local row instead of keeping it forever.
-//   5. Mappers match supabase.ts — tuition, remuneration, payment history and
-//      assignedDepartments survive every realtime update.
 
 import {
   supabase,
@@ -301,7 +277,12 @@ export async function syncUp() {
 
     for (const course of localCourses) {
       const rec = course as any;
-      if (rec.synced || deletedCourseIds.has(course.id)) continue;
+      // `course.id` is typed `string | undefined` on the Course model —
+      // skip rows that somehow lack an id. This guard ALSO narrows
+      // `course.id` to `string` for the rest of the loop body, so the
+      // deletedCourseIds.has(...) and db.courses.update(...) calls below
+      // type-check cleanly without any `as string` casts.
+      if (!course.id || rec.synced || deletedCourseIds.has(course.id)) continue;
       if (rec.tenantId && rec.tenantId !== tenantId) continue; // never cross-tenant
 
       const { error } = await supabase

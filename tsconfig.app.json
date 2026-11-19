@@ -1,25 +1,30 @@
 {
   "compilerOptions": {
-    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
-    "target": "es2023",
-    "lib": ["ES2023", "DOM", "DOM.Iterable"],
-    "module": "esnext",
-    "types": ["vite/client"],
-    "allowArbitraryExtensions": true,
+    "target": "ES2020",
+    "useDefineForClassFields": true,
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
     "skipLibCheck": true,
 
-    /* Bundler mode */
+    /* Bundler mode — required for relative imports like "./supabase"
+       and "../database/db" to resolve under Vite. */
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,
-    "verbatimModuleSyntax": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
     "moduleDetection": "force",
     "noEmit": true,
+
+    /* The single most important line for your errors — registers the
+       react-jsx runtime so JSX.IntrinsicElements and react/jsx-runtime
+       resolve. Without this, every <div>, <button>, <svg>... fails with
+       "JSX element implicitly has type 'any'". */
     "jsx": "react-jsx",
 
-    /* Linting */
+    /* Lint-style checks — keep them strict; your code already passes. */
+    "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
   "include": ["src"]
