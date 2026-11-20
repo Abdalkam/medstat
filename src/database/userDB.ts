@@ -660,6 +660,17 @@ export async function loginWithIdentifier(
     (input.tenantId || "").trim() ||
     (await resolveTenantIdentifier(businessIdentifier));
 
+  if (!tenantId) {
+    console.warn(
+      "[userDB] Could not resolve tenant from business identifier " +
+        businessIdentifier +
+        ". This usually means the RLS policies " +
+        "(rls_policies.sql) have not been applied to public.tenants yet, " +
+        "so the anon read returned nothing. The backend will be asked to " +
+        "resolve the tenant from the businessName instead.",
+    );
+  }
+
   /* ---- BACKEND-FIRST: real JWT, RLS-proof, bcrypt-aware ------------- */
   try {
     const { loginTenant } = await import("../api/authApi");
@@ -712,10 +723,51 @@ export async function loginWithIdentifier(
 
     return setSession(result.authToken, user);
   } catch (err: any) {
-    // Backend said "wrong credentials" (non-network error) -> propagate
-    // immediately. The fallback below would say the same thing.
-    // Backend unreachable -> fall through to the Supabase + local path.
-    if (!isAuthNetworkError(err)) throw err;
+    console.error("[userDB] Backend login failed:", {
+      tenantId: tenantId || "(empty — RLS may be blocking)",
+      businessName: businessIdentifier || "(none)",
+      username,
+      error: err?.message || String(err),
+    });
+
+    // Backend UNREACHABLE (network/DNS) → fall through to the Supabase +
+    // local path below.
+    if (!isAuthNetworkError(err)) {
+      // Backend rejected the credentials. Before propagating the error,
+      // try the LOCAL cache (Dexie + last-user). This covers:
+      //   - The user JUST created an institution (RegisterAdmin cached the
+      //     row with the plaintext password) and the backend has a transient
+      //     issue or the tenantId was RLS-blocked.
+      //   - The user previously signed in on this device and the backend's
+      //     bcrypt hash was overwritten by a syncUp that pushed the plaintext
+      //     password (a known issue when profile edits set synced:false).
+      //   - Any backend bug that returns "invalid credentials" for a user
+      //     that genuinely exists locally.
+      const localUser = await findLocalUser(
+        username,
+        input.phone || "",
+        tenantId || undefined,
+      );
+      if (localUser) {
+        if (await verifyPassword(password, localUser.password)) {
+          console.warn(
+            "[userDB] Backend rejected credentials, but a local cached " +
+              "account matches. Signing in with the offline token — the " +
+              "session will self-heal to a real JWT once the backend issue " +
+              "is resolved.",
+          );
+          const user = normalizeUser(localUser);
+          user.password = password; // cache plaintext for re-auth
+          return setSession(
+            `offline-${user.id || makeId()}`,
+            user,
+          );
+        }
+      }
+
+      // No local match either — propagate the backend's error.
+      throw err;
+    }
   }
 
   /* ---- FALLBACK: direct Supabase + local cache (offline / DNS-blocked) */
@@ -734,8 +786,10 @@ export async function loginWithIdentifier(
 
 /**
  * True when an error from loginTenant means "could not reach the backend"
- * (as opposed to "wrong credentials"). The fallback path runs only on
- * these — a credentials rejection is propagated immediately.
+ * (as opposed to "wrong credentials"). On a network error, loginWithIdentifier
+ * falls through to the direct-Supabase + local-cache path. On a credentials
+ * error, it first tries the local Dexie cache (the user may have just created
+ * an institution), and only propagates the error if no local match exists.
  */
 function isAuthNetworkError(error: any): boolean {
   if (error instanceof TypeError) return true;
