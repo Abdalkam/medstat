@@ -1,25 +1,41 @@
-// src/database/userDB.ts — v2: deleteUser's tombstone is now tenant-scoped
-// MedStat user accounts, authentication and offline-first user storage.
-// REVISED (direct-to-Supabase + multi-device): login, deleteUser() and
-// getUser() no longer call the localhost:3001 / Render backend — they talk
-// to Supabase directly. The backend is now used only for first-run tenant
-// registration (register-tenant), plus settings via supabase.ts pullSettings.
+// src/database/userDB.ts — v3: BACKEND-FIRST login (RLS-proof JWT)
 //
-// "LOGIN FROM ANY DEVICE, ANY TIME" — how this file achieves it:
-//   1. Supabase is the primary identity provider. Unlike the Render backend
-//      it never cold-starts, so sign-in works from any device at any hour.
-//   2. Business identifier resolution (UUID | phone | business name) is done
-//      HERE against the `tenants` table, matching the DB's
-//      UNIQUE (tenant_id, username) constraint — the same username may exist
-//      in two institutions, so tenant scoping decides which row is yours.
-//      When no business is given and the username matches several tenants,
-//      login refuses with a clear message instead of guessing.
-//   3. Passwords are verified bcrypt-aware: rows created by the backend
-//      (bcrypt hash) and legacy plaintext rows both authenticate.
-//   4. Every successful login caches the full row (incl. password hash) in
-//      Dexie, so the NEXT login on this device works even offline.
-//   5. A cached-session fallback signs the user in when Supabase is
-//      unreachable but this device has seen the credentials before.
+// v3 change: loginWithIdentifier now calls loginTenant (Render backend)
+// BEFORE falling back to the direct-Supabase path. The backend uses the
+// service-role key (bypasses RLS) to read the user row, bcrypt.compare
+// the password, and issue a real JWT ("eyJ..."). This fixes three bugs
+// that blocked login on any device where the user hadn't signed in before:
+//
+//   1. RLS: Supabase enables RLS by default. With no policy on
+//      public.users, an anon select returns ZERO rows (password hashes
+//      must NOT be anon-readable). findSupabaseUser always saw row:null
+//      -> "Invalid username or password." even for correct credentials.
+//   2. Fake token: the v2 Supabase path set authToken = `session-<id>`
+//      (not a JWT). isRealBackendToken() / hasValidAuth() returned false
+//      -> every cloud push/pull was blocked or degraded.
+//   3. Hash cached as password: v2 cached the bcrypt HASH in currentUser.
+//      tryReauthenticate() sent the hash to /api/auth/login as the
+//      "password" -> bcrypt.compare(hash, hash) always failed -> the
+//      session self-heal never worked.
+//
+// v3 fixes all three: the backend issues a real JWT, and the PLAINTEXT
+// password (the one the user typed) is cached in currentUser + Dexie so
+// tryReauthenticate can silently re-login on a dead session and offline
+// login (verifyPassword) still works (it falls through to compareSync
+// when the stored value is a hash, or plaintext-match when it's not).
+//
+// The v2 direct-Supabase + local-cache path is RETAINED as a fallback
+// for when the Render backend is unreachable (offline / DNS-blocked).
+//
+// v2 changes preserved:
+//   - deleteUser's tombstone is now tenant-scoped.
+//   - Business identifier resolution (UUID | phone | business name) is
+//     done HERE against the tenants table (needs the RLS policy in
+//     rls_policies.sql for anon reads on id/phone/business_name).
+//   - Passwords are verified bcrypt-aware.
+//   - Every successful login caches the full row in Dexie for offline.
+//   - A cached-session fallback signs the user in when both the backend
+//     and Supabase are unreachable.
 
 import { db } from "./db";
 import type { User } from "../types";
@@ -551,11 +567,18 @@ export async function loginUser(
       throw new Error("Invalid username or password.");
     }
 
+    // v3: cache the PLAINTEXT password (not the bcrypt hash) so
+    // tryReauthenticate() can silently re-login with it on a dead session.
+    const user = normalizeUser(supabaseUser);
+    user.password = credentials.password;
+
     try {
-      // Cache the full row (incl. password hash) so the NEXT login on this
-      // device can succeed even with no network at all.
+      // Cache the full row so the NEXT login on this device can succeed
+      // even with no network at all. The plaintext password stored here
+      // makes offline login work (verifyPassword handles both plaintext
+      // and bcrypt via compareSync).
       await (db as any).users.put({
-        ...supabaseUser,
+        ...user,
         synced: true,
       });
     } catch {
@@ -563,8 +586,8 @@ export async function loginUser(
     }
 
     return setSession(
-      getToken() || `session-${supabaseUser.id || makeId()}`,
-      normalizeUser(supabaseUser),
+      getToken() || `session-${user.id || makeId()}`,
+      user,
     );
   }
 
@@ -576,13 +599,17 @@ export async function loginUser(
       throw new Error("Invalid username or password.");
     }
 
+    // v3: same plaintext-password fix as the Supabase path above.
+    const user = normalizeUser(localUser);
+    user.password = credentials.password;
+
     console.warn(
-      "[userDB] Signed in using locally stored credentials (Supabase unavailable or account not yet synced).",
+      "[userDB] Signed in using locally stored credentials (backend + Supabase both unavailable).",
     );
 
     return setSession(
-      getToken() || `offline-${localUser.id || makeId()}`,
-      normalizeUser(localUser),
+      getToken() || `offline-${user.id || makeId()}`,
+      user,
     );
   }
 
@@ -600,8 +627,14 @@ export async function loginUser(
 /**
  * One-call login for the login screen: resolves the business identifier
  * (tenant UUID | institution phone | business name) to a tenant, then
- * authenticates against Supabase with tenant scoping. Falls back to locally
- * cached credentials when the network is down.
+ * authenticates via the Render backend (RLS-proof, real JWT). Falls back
+ * to the direct-Supabase + local-cache path when the backend is
+ * unreachable (offline / DNS-blocked).
+ *
+ * v3 BACKEND-FIRST: the backend uses the service role to read public.users
+ * (bypassing RLS), bcrypt.compare the password, and issue a real JWT. The
+ * direct-Supabase path in v2 always saw row:null because RLS blocks anon
+ * reads on public.users (password hashes must NOT be anon-readable).
  */
 export async function loginWithIdentifier(
   input: LoginWithIdentifierInput,
@@ -610,6 +643,8 @@ export async function loginWithIdentifier(
     throw new Error("Username and password are required.");
   }
 
+  const username = input.username.trim();
+  const password = input.password;
   const businessIdentifier =
     input.business ||
     input.business_name ||
@@ -617,18 +652,99 @@ export async function loginWithIdentifier(
     "";
 
   // A tenant UUID passed by the caller (deep link) wins; otherwise resolve
-  // whatever identifier we were given. "" means "unknown tenant" and the
-  // unscoped lookup below decides — including refusing on ambiguity.
+  // whatever identifier we were given. "" means "unknown tenant" — the
+  // backend can still resolve by businessName (sent below) or by username
+  // when globally unique. resolveTenantIdentifier needs the RLS policy on
+  // public.tenants (see rls_policies.sql) for anon reads to work.
   const tenantId =
     (input.tenantId || "").trim() ||
     (await resolveTenantIdentifier(businessIdentifier));
 
+  /* ---- BACKEND-FIRST: real JWT, RLS-proof, bcrypt-aware ------------- */
+  try {
+    const { loginTenant } = await import("../api/authApi");
+    const result = await loginTenant({
+      tenantId: tenantId || "",
+      username,
+      password,
+      // Send the businessName too so the backend can resolve the tenant
+      // server-side when the client-side lookup was RLS-blocked.
+      businessName: businessIdentifier.trim() || undefined,
+    });
+
+    // Use the backend's user row if it returned one; else best-effort
+    // Supabase read (may be RLS-blocked — that's fine, the JWT is the
+    // authoritative proof of identity here).
+    let cloudRow: any = result.user || null;
+    if (!cloudRow && tenantId) {
+      const supabase = await getSupabase();
+      if (supabase) {
+        try {
+          const { data } = await supabase
+            .from("users")
+            .select("*")
+            .eq("tenant_id", tenantId)
+            .eq("username", username)
+            .maybeSingle();
+          if (data) cloudRow = data;
+        } catch {
+          /* RLS / network — JWT is still authoritative */
+        }
+      }
+    }
+
+    const user = normalizeUser(cloudRow || {
+      username,
+      tenant_id: tenantId,
+      role: "admin",
+    });
+
+    // v3: cache the PLAINTEXT password (not the bcrypt hash) so
+    // tryReauthenticate() can silently re-login with it on a dead session,
+    // and offline login (verifyPassword) still works on next boot.
+    user.password = password;
+
+    try {
+      await (db as any).users.put({ ...user, synced: true });
+    } catch {
+      /* cache failure is non-fatal — session still lives in localStorage */
+    }
+
+    return setSession(result.authToken, user);
+  } catch (err: any) {
+    // Backend said "wrong credentials" (non-network error) -> propagate
+    // immediately. The fallback below would say the same thing.
+    // Backend unreachable -> fall through to the Supabase + local path.
+    if (!isAuthNetworkError(err)) throw err;
+  }
+
+  /* ---- FALLBACK: direct Supabase + local cache (offline / DNS-blocked) */
+  // RLS may block the Supabase read on public.users; in that case the
+  // local cache (Dexie / last currentUser) decides. This path issues a
+  // `session-<id>` / `offline-<id>` token that tryReauthenticate() will
+  // silently upgrade to a real JWT once the backend is reachable again
+  // (the plaintext password cached above makes that work).
   return loginUser({
-    username: input.username,
-    password: input.password,
+    username,
+    password,
     phone: input.phone,
     tenantId: tenantId || undefined,
   });
+}
+
+/**
+ * True when an error from loginTenant means "could not reach the backend"
+ * (as opposed to "wrong credentials"). The fallback path runs only on
+ * these — a credentials rejection is propagated immediately.
+ */
+function isAuthNetworkError(error: any): boolean {
+  if (error instanceof TypeError) return true;
+  const msg = String(error?.message ?? error ?? "").toLowerCase();
+  return (
+    /could not reach the server|failed to fetch|network|err_name|err_connection|err_internet|unreachable|timeout|load failed/.test(
+      msg,
+    )
+  );
 }
 
 /* -------------------------------------------------------------------------- */

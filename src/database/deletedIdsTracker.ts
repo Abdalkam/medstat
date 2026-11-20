@@ -7,12 +7,12 @@
 // alongside the v4/v5/v8 sync stack so every module builds against one copy.
 //
 // v2 recap (retryFailedCloudDeletes — everything else unchanged):
-//   • "user" retries go through deleteUserRowFromSupabase
+//   - "user" retries go through deleteUserRowFromSupabase
 //     (supabaseUserSync) — schema-exact, row-count-verified, and idempotent
 //     for already-deleted rows. The old dynamic import called
 //     supabaseCourseSync.deleteUserFromSupabase, an export the current
 //     supabaseCourseSync does not have (TS2339 at compile time).
-//   • "course" retries dynamically probe supabaseCourseSync for whichever
+//   - "course" retries dynamically probe supabaseCourseSync for whichever
 //     course-delete export it actually carries, so this file compiles
 //     regardless of that module's export names; a missing export keeps the
 //     tombstone and warns instead of crashing the retry loop.
