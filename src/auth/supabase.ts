@@ -209,15 +209,27 @@ function getCurrentTenantId(): string | null {
 }
 
 /**
- * A REAL backend session token is a JWT and always starts with "eyJ".
- * Everything else ("offline-mode-pending-sync", fabricated "local-..."
- * tokens) is an offline session: Supabase reads still work through the
- * anon key, but the Render backend (SMS, settings) rejects them with 401.
+ * v3: Auth now uses Supabase RPC (verify_login) — NOT Render JWTs.
+ * Valid tokens are:
+ *   - "eyJ..."              — legacy Render JWT (still accepted)
+ *   - "session-<uuid>"     — Supabase RPC session marker (the new default)
+ *   - "offline-<uuid>"     — offline login (Dexie cache only)
+ *   - "offline-mode-pending-sync" — legacy offline marker
+ *
+ * The Render backend (settings, SMS) may still 401 on session-/offline-
+ * tokens — that's expected and handled gracefully. Supabase reads work
+ * via the anon key regardless.
  */
 export function isRealBackendToken(
   token: string | null | undefined
 ): token is string {
-  return typeof token === "string" && token.startsWith("eyJ");
+  if (typeof token !== "string" || !token) return false;
+  return (
+    token.startsWith("eyJ") ||
+    token.startsWith("session-") ||
+    token.startsWith("offline-") ||
+    token === OFFLINE_TOKEN
+  );
 }
 
 function getAuthToken(): string | null {
@@ -310,6 +322,19 @@ async function wakeBackend(): Promise<void> {
 
 export function tryReauthenticate(force = false): Promise<string | null> {
   if (reauthInFlight) return reauthInFlight;
+
+  // v3: If the session is already valid (session-/offline- token from
+  // Supabase RPC login), there is NOTHING to re-authenticate. The old
+  // code called loginTenant() on every sync tick, which returned a
+  // session- token, failed the isRealBackendToken check, and looped
+  // forever. Now we short-circuit: valid session = no re-auth needed.
+  if (hasValidAuth()) {
+    const token = getAuthToken();
+    if (token) {
+      reauthReason = "";
+      return Promise.resolve(token);
+    }
+  }
 
   // `force` (manual "Retry now") skips the 30 s cooldown that follows a
   // settled attempt, so an explicit user click always retries for real.
