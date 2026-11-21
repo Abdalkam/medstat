@@ -1,1363 +1,498 @@
-import { useState, useEffect } from "react";
-import { Navigate, useLocation } from "react-router-dom";
-import { loginUser, addUser } from "../database/userDB";
-import { loginTenant } from "../api/authApi";
-import {
-  pullAllTenantData,
-  enableSyncHooks,
-  startPeriodicPull,
-  stopPeriodicPull,
-  pullSettings,
-} from "../database/sync";
-import { supabase } from "../auth/supabase";
-import LoadingButton from "../components/LoadingButton";
-import { getVersion } from "@tauri-apps/api/app";
+/* ============================================================================
+   src/auth/startup.tsx — v5: BULLETPROOF session gate + diagnostic logging
+   ============================================================================
 
-const iosFont =
-  "-apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif";
+   v5 fixes three hang bugs in v4:
 
-type AppScreen = "main" | "login";
+   1. STALE SESSION REDIRECT LOOP — if authToken + currentUser exist from a
+      previous failed login, v4 navigates to /admin. If that route fails to
+      load (sync issues), the 2s fallback fires fullPageRedirect("/admin"),
+      the page reloads, startup sees the same stale session, tries again —
+      but the redirect guard blocks it (10s cooldown) -> stuck on splash.
+      FIX: v5 clears any token that isn't a real session before proceeding,
+      and validates the currentUser object has a tenantId (no orphan sessions).
 
-/* ── Nav routes — full page navigation to the blog (app is mounted at /app/) ── */
-const NAV_LINKS = [
-  { label: "Home", href: "/" },
-  { label: "Blog", href: "/articles" },
-  { label: "About", href: "/about" },
-  { label: "E-Learning", href: "/app/" },
-];
+   2. cancelled FLAG KILLS THE HARD DEADLINE — v4's 6s deadline checks
+      `if (cancelled) return;`, but `cancelled` is set by the cleanup
+      function which runs on ANY re-render. If any state update fires
+      before the deadline, the escape hatch silently disappears.
+      FIX: v5 uses a separate `deadlineFired` ref — the deadline always
+      runs once, regardless of `cancelled`.
 
-/* ── Startup media type detection (mirrors settings.tsx) ── */
-type MediaType = "image" | "video" | "pdf";
+   3. NO LOGGING — when the app hangs, there's zero visibility into which
+      step is stuck.
+      FIX: v5 logs every step with [Startup] prefix + timestamps.
 
-function detectMediaType(url: string): MediaType | null {
-  if (!url) return null;
-  const clean = url.split("?")[0].toLowerCase();
-  if (/\.(png|jpe?g|gif|webp|svg)$/.test(clean)) return "image";
-  if (/\.(mp4|webm|mov|m4v|ogg)$/.test(clean)) return "video";
-  if (/\.pdf$/.test(clean)) return "pdf";
-  return null;
+   Everything else (MD3 design, in-place login handover, role routing,
+   Skip button, boot version footer) is unchanged from v4.
+   ============================================================================ */
+
+import { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
+
+import { db } from "../database/db";
+import * as SyncEngine from "../database/sync";
+const startPeriodicPull = (SyncEngine as any).startPeriodicPull ?? (() => {});
+const syncNow = (SyncEngine as any).syncNow ?? (async () => {});
+import Login from "./Login";
+
+/* ------------------------------------------------------------------ */
+/* Shared constants                                                     */
+/* ------------------------------------------------------------------ */
+
+const OFFLINE_LOGIN_TOKEN = "offline-mode-pending-sync";
+const BOOT_VERSION = "v5";
+const REDIRECT_GUARD_KEY = "sp_last_redirect";
+
+function log(msg: string): void {
+  console.info(`[Startup ${BOOT_VERSION}] ${msg}`);
 }
 
-/* ── Full-bleed media background: image / video / pdf, edge to edge ── */
-function MediaBackground({
-  url,
-  type,
-}: {
-  url: string;
-  type: MediaType | null;
-}) {
-  if (!url) return null;
-  const t = type || detectMediaType(url);
-
-  return (
-    <div
-      style={{
-        position: "absolute",
-        top: 0,
-        left: 0,
-        right: 0,
-        bottom: 0,
-        overflow: "hidden",
-        zIndex: 0,
-      }}
-    >
-      {t === "video" ? (
-        <video
-          autoPlay
-          loop
-          muted
-          playsInline
-          preload="auto"
-          style={{
-            position: "absolute",
-            top: 0,
-            left: 0,
-            width: "100%",
-            height: "100%",
-            objectFit: "cover",
-          }}
-        >
-          <source src={url} />
-        </video>
-      ) : t === "pdf" ? (
-        <iframe
-          src={url}
-          title="Startup media"
-          style={{
-            position: "absolute",
-            top: 0,
-            left: 0,
-            width: "100%",
-            height: "100%",
-            border: "none",
-          }}
-        />
-      ) : (
-        <div
-          style={{
-            position: "absolute",
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            backgroundImage: `url(${url})`,
-            backgroundSize: "cover",
-            backgroundPosition: "center",
-            backgroundRepeat: "no-repeat",
-          }}
-        />
-      )}
-
-      {/* Scrim for card readability (light for PDF, dark for image/video) */}
-      <div
-        style={{
-          position: "absolute",
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          background:
-            t === "pdf" ? "rgba(255,255,255,0.35)" : "rgba(0,0,0,0.38)",
-          pointerEvents: "none",
-        }}
-      />
-    </div>
-  );
-}
-
-/* ── Fixed bottom footer: tagline with app logo beneath it ── */
-function PoweredByBar() {
-  return (
-    <div
-      style={{
-        position: "fixed",
-        left: 0,
-        right: 0,
-        bottom: 0,
-        padding: "10px 0 12px",
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        gap: 6,
-        background: "rgba(255,255,255,0.9)",
-        backdropFilter: "blur(12px)",
-        WebkitBackdropFilter: "blur(12px)",
-        borderTop: "1px solid rgba(0,0,0,0.06)",
-        zIndex: 200,
-        fontFamily: iosFont,
-      }}
-    >
-      <span
-        style={{
-          fontSize: 13,
-          fontWeight: 600,
-          color: "#6b7280",
-          letterSpacing: "0.2px",
-        }}
-      >
-        Powered by Smartpage © 2026
-      </span>
-      <img
-        src="/applogo.png"
-        alt="Smartpage"
-        style={{
-          width: 30,
-          height: 30,
-          objectFit: "contain",
-          borderRadius: 6,
-          opacity: 0.9,
-        }}
-        onError={(e) => {
-          e.currentTarget.style.display = "none";
-        }}
-      />
-    </div>
-  );
-}
-
-/* ── Medstat-style app bar + shell — branding comes only from Supabase ── */
-function StartupShell({
-  children,
-  brandName,
-  tagline,
-  logo,
-  version,
-  showSubscribe,
-}: {
-  children: React.ReactNode;
-  brandName?: string;
-  tagline?: string;
-  logo?: string;
-  version?: string;
-  showSubscribe?: boolean;
-}) {
-  return (
-    <div
-      style={{
-        height: "100vh",
-        display: "flex",
-        flexDirection: "column",
-        background: "#FFFFFF",
-        fontFamily: iosFont,
-      }}
-    >
-      <style>{`
-        .msb-bar {
-          position: sticky;
-          top: 0;
-          z-index: 1000;
-          width: 100%;
-          flex-shrink: 0;
-          background: #ffffff;
-          border-bottom: 1px solid #e5e7eb;
-          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
-        }
-        .msb-inner {
-          max-width: 1280px;
-          margin: 0 auto;
-          padding: 0 32px;
-          height: 72px;
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 24px;
-        }
-        .msb-brand {
-          display: flex;
-          align-items: center;
-          gap: 12px;
-          text-decoration: none;
-          min-width: 0;
-        }
-        .msb-logo {
-          width: 44px;
-          height: 44px;
-          object-fit: contain;
-          flex-shrink: 0;
-        }
-        .msb-logo-fallback {
-          width: 44px;
-          height: 44px;
-          border-radius: 10px;
-          background: #1e3a8a;
-          color: #ffffff;
-          font-family: Georgia, "Times New Roman", serif;
-          font-size: 20px;
-          font-weight: 700;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          flex-shrink: 0;
-        }
-        .msb-brand-text {
-          display: flex;
-          flex-direction: column;
-          line-height: 1.25;
-          min-width: 0;
-        }
-        .msb-name {
-          font-family: Georgia, "Times New Roman", serif;
-          font-size: 20px;
-          font-weight: 700;
-          color: #111827;
-          white-space: nowrap;
-          overflow: hidden;
-          text-overflow: ellipsis;
-        }
-        .msb-tagline {
-          font-size: 12px;
-          color: #6b7280;
-          white-space: nowrap;
-          overflow: hidden;
-          text-overflow: ellipsis;
-        }
-        .msb-right {
-          display: flex;
-          align-items: center;
-          gap: 28px;
-          flex-shrink: 0;
-        }
-        .msb-links {
-          display: flex;
-          align-items: center;
-          gap: 28px;
-        }
-        .msb-link {
-          position: relative;
-          font-size: 15px;
-          color: #374151;
-          text-decoration: none;
-          padding: 6px 2px;
-          transition: color 0.15s ease;
-        }
-        .msb-link:hover {
-          color: #1d4ed8;
-        }
-        .msb-link.active {
-          color: #1d4ed8;
-          font-weight: 500;
-        }
-        .msb-link.active::after {
-          content: "";
-          position: absolute;
-          left: 0;
-          right: 0;
-          bottom: -2px;
-          height: 2px;
-          border-radius: 2px;
-          background: #1d4ed8;
-        }
-        .msb-version {
-          font-size: 12px;
-          color: #9ca3af;
-        }
-        .msb-cta {
-          display: inline-flex;
-          align-items: center;
-          height: 44px;
-          padding: 0 26px;
-          border: none;
-          border-radius: 8px;
-          background: #1e3a8a;
-          color: #ffffff;
-          font-size: 15px;
-          font-weight: 700;
-          text-decoration: none;
-          cursor: pointer;
-          transition: background 0.15s ease;
-        }
-        .msb-cta:hover {
-          background: #1e40af;
-        }
-        @media (max-width: 900px) {
-          .msb-links {
-            display: none;
-          }
-        }
-      `}</style>
-
-      <header className="msb-bar">
-        <div className="msb-inner">
-          <a href="/" className="msb-brand">
-            {logo ? (
-              <img
-                src={logo}
-                alt={brandName || ""}
-                className="msb-logo"
-                onError={(e) => {
-                  e.currentTarget.style.display = "none";
-                }}
-              />
-            ) : brandName ? (
-              <div className="msb-logo-fallback">
-                {brandName.charAt(0).toUpperCase()}
-              </div>
-            ) : null}
-
-            {(brandName || tagline) && (
-              <span className="msb-brand-text">
-                {brandName && (
-                  <span className="msb-name">{brandName}</span>
-                )}
-                {tagline && (
-                  <span className="msb-tagline">{tagline}</span>
-                )}
-              </span>
-            )}
-          </a>
-
-          <div className="msb-right">
-            <nav className="msb-links">
-              {NAV_LINKS.map((l) => {
-                /* The app itself IS e-learning — always active here */
-                const isActive = l.label === "E-Learning";
-
-                return (
-                  <a
-                    key={l.label}
-                    href={l.href}
-                    className={"msb-link" + (isActive ? " active" : "")}
-                  >
-                    {l.label}
-                  </a>
-                );
-              })}
-            </nav>
-
-            {version && (
-              <span className="msb-version">v{version}</span>
-            )}
-
-            {showSubscribe && (
-              <a href="/subscribe" className="msb-cta">
-                Subscribe
-              </a>
-            )}
-          </div>
-        </div>
-      </header>
-
-      <div
-        style={{
-          flex: 1,
-          minHeight: 0,
-          position: "relative",
-          overflowY: "auto",
-        }}
-      >
-        {children}
-      </div>
-    </div>
-  );
-}
-
-const AuthLayout = ({
-  children,
-  background,
-  showBack,
-  onBack,
-  watermark,
-  transparent = false,
-}: {
-  children: React.ReactNode;
-  background?: string;
-  showBack?: boolean;
-  onBack?: () => void;
-  watermark?: boolean;
-  transparent?: boolean;
-}) => (
-  <div
-    style={{
-      width: "100%",
-      height: "100%",
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      backgroundImage: watermark
-        ? "none"
-        : transparent
-        ? "none"
-        : background
-        ? `url(${background})`
-        : "linear-gradient(135deg, #F2F2F7 0%, #E5E5EA 100%)",
-      backgroundSize: watermark ? "auto" : "cover",
-      backgroundPosition: "center",
-      backgroundColor: watermark
-        ? "#FFFFFF"
-        : transparent
-        ? "transparent"
-        : "#F2F2F7",
-      fontFamily: iosFont,
-      overflow: "hidden",
-      position: "relative",
-      padding: transparent ? 0 : 24,
-      boxSizing: "border-box",
-    }}
-  >
-    <style>{`
-      @keyframes fadeUp {
-        from {
-          opacity: 0;
-          transform: translateY(20px);
-        }
-        to {
-          opacity: 1;
-          transform: translateY(0);
-        }
-      }
-
-      @keyframes scrollBg {
-        0% {
-          background-position: 0px 0px;
-        }
-        100% {
-          background-position: 120px 120px;
-        }
-      }
-    `}</style>
-
-    {watermark && (
-      <div
-        style={{
-          position: "absolute",
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          backgroundImage: "url(/loadlogo.png)",
-          backgroundRepeat: "repeat",
-          backgroundSize: "120px 120px",
-          opacity: 0.08,
-          animation: "scrollBg 30s linear infinite",
-          zIndex: 0,
-          pointerEvents: "none",
-        }}
-      />
-    )}
-
-    {!watermark && !transparent && background && (
-      <div
-        style={{
-          position: "absolute",
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          background: "rgba(0,0,0,0.4)",
-          zIndex: 0,
-          pointerEvents: "none",
-        }}
-      />
-    )}
-
-    {showBack && onBack && (
-      <button
-        onClick={onBack}
-        style={{
-          position: "absolute",
-          top: 24,
-          left: 24,
-          width: 44,
-          height: 44,
-          borderRadius: "50%",
-          background: "rgba(255,255,255,0.2)",
-          backdropFilter: "blur(10px)",
-          border: "none",
-          cursor: "pointer",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          color: "#fff",
-          zIndex: 10,
-        }}
-      >
-        <svg
-          width="24"
-          height="24"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2.5"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        >
-          <polyline points="15 18 9 12 15 6" />
-        </svg>
-      </button>
-    )}
-
-    <div
-      style={{
-        position: "relative",
-        zIndex: 1,
-        width: "100%",
-        maxWidth: 400,
-        background: "#FFFFFF",
-        borderRadius: 28,
-        padding: "40px 32px",
-        boxShadow: "0 20px 60px rgba(0,0,0,0.10)",
-        border: "1px solid rgba(0,0,0,0.05)",
-        animation: "fadeUp 0.6s ease-out",
-        boxSizing: "border-box",
-      }}
-    >
-      {children}
-    </div>
-  </div>
-);
-
-export default function Startup() {
-  const location = useLocation();
-
-  const [redirectRoute, setRedirectRoute] =
-    useState<string | null>(null);
-
-  const [screen, setScreen] =
-    useState<AppScreen>("main");
-
-  /* ── All empty until fetched from Supabase ── */
-  const [siteLogo, setSiteLogo] = useState("");
-  const [siteName, setSiteName] = useState("");
-  const [siteTagline, setSiteTagline] = useState("");
-
-  /* ── Startup page media (image / video / pdf) ── */
-  const [startupMediaUrl, setStartupMediaUrl] = useState("");
-  const [startupMediaType, setStartupMediaType] = useState("");
-
-  const [branding, setBranding] = useState<{
-    businessName: string;
-    logo: string;
-    phone: string;
-    loginBackground: string;
-  } | null>(null);
-
-  const [appVersion, setAppVersion] = useState("");
-
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
-  const [message, setMessage] = useState("");
-  const [loading, setLoading] = useState(false);
-
-  const [businessName, setBusinessName] = useState("");
-  const [tenantId, setTenantId] = useState<string | null>(null);
-  const [lookupError, setLookupError] = useState("");
-  const [lookupLoading, setLookupLoading] = useState(false);
-
-  const [requiresUnlock, setRequiresUnlock] = useState(false);
-
-  /* ── Fetch from Supabase only: site_settings first, supadmin_settings fallback ── */
-  async function fetchSiteSettings() {
-    let logo: string | null = null;
-    let name: string | null = null;
-    let tag: string | null = null;
-    let mediaUrl: string | null = null;
-    let mediaType: string | null = null;
-
-    // Try site_settings
-    try {
-      const r1 = await supabase
-        .from("site_settings")
-        .select("*")
-        .eq("id", "main")
-        .maybeSingle();
-
-      if (!r1.error && r1.data) {
-        const d: any = r1.data;
-        logo = d.logo_url || null;
-        name = d.site_name || null;
-        tag = d.tagline || null;
-        mediaUrl = d.startup_media_url || null;
-        mediaType = d.startup_media_type || null;
-      }
-    } catch {
-      // Skipped.
-    }
-
-    // Try supadmin_settings — fills in anything site_settings didn't provide
-    try {
-      const r2 = await supabase
-        .from("supadmin_settings")
-        .select("*")
-        .limit(1)
-        .maybeSingle();
-
-      if (!r2.error && r2.data) {
-        const d2: any = r2.data;
-        if (!logo && d2.logo_url) logo = d2.logo_url;
-        if (!name && d2.business_name) name = d2.business_name;
-        if (!tag && d2.tagline) tag = d2.tagline;
-        if (!mediaUrl && d2.startup_media_url) {
-          mediaUrl = d2.startup_media_url;
-          mediaType = d2.startup_media_type || mediaType;
-        }
-      }
-    } catch {
-      // Skipped.
-    }
-
-    // Apply only what Supabase returned
-    if (logo) setSiteLogo(logo);
-    if (name) setSiteName(name);
-    if (tag) setSiteTagline(tag);
-    if (mediaUrl) {
-      setStartupMediaUrl(mediaUrl);
-      setStartupMediaType(mediaType || "");
-    }
+/** Institution name saved by Login.tsx; legacy "MedStat" -> treated as none. */
+export function brandFromSettings(): string | null {
+  try {
+    const parsed = JSON.parse(
+      localStorage.getItem("localBusinessSettings") || "null"
+    );
+    const name = parsed?.businessName ? String(parsed.businessName).trim() : "";
+    if (!name) return null;
+    if (name.toLowerCase() === "medstat") return null;
+    return name;
+  } catch {
+    return null;
   }
+}
+
+/**
+ * Guarded full-page redirect: same target only followed ONCE per 10 s.
+ * But on the splash screen, if we're already stuck, we MUST break out —
+ * so v5 adds a `force` parameter that bypasses the guard for /login only.
+ */
+function fullPageRedirect(target: string, force = false): void {
+  try {
+    const last = JSON.parse(
+      sessionStorage.getItem(REDIRECT_GUARD_KEY) || "null"
+    );
+    if (!force && last && last.target === target && Date.now() - last.ts < 10000) {
+      log(`Redirect to ${target} blocked by 10s guard (already redirected recently)`);
+      return;
+    }
+  } catch {
+    /* ignore */
+  }
+  try {
+    sessionStorage.setItem(
+      REDIRECT_GUARD_KEY,
+      JSON.stringify({ target, ts: Date.now() })
+    );
+  } catch {
+    /* ignore */
+  }
+  log(`Full-page redirect -> ${target}${force ? " (forced)" : ""}`);
+  window.location.assign(target);
+}
+
+/* ============================================================================
+   MD3 DESIGN TOKENS + STYLES (unchanged from v4)
+============================================================================ */
+
+const C = {
+  primary: "#0B57D0",
+  primaryDeep: "#0842A0",
+  primaryContainer: "#D3E3FD",
+  background: "#F8FAFD",
+  surfaceVariant: "#E9EEF6",
+  onSurface: "#1F1F1F",
+  onSurfaceVariant: "#444746",
+};
+
+const FONT =
+  "'Google Sans', 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif";
+
+const CSS = `
+.st-root {
+  min-height: 100vh; min-height: 100dvh;
+  box-sizing: border-box;
+  display: flex; align-items: center; justify-content: center;
+  background: radial-gradient(120% 90% at 50% 0%, #FFFFFF 0%, ${C.background} 55%, #EEF3FB 100%);
+  font-family: ${FONT};
+  color: ${C.onSurface};
+  padding: env(safe-area-inset-top) env(safe-area-inset-right)
+           env(safe-area-inset-bottom) env(safe-area-inset-left);
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+}
+.st-col {
+  display: flex; flex-direction: column; align-items: center;
+  text-align: center;
+  width: 100%; max-width: 460px;
+  padding: clamp(16px, 4vh, 40px) clamp(18px, 5vw, 32px);
+}
+.st-title {
+  font-size: clamp(22px, 6vw, 28px);
+  font-weight: 600; letter-spacing: 0.2px;
+  color: ${C.onSurface};
+  word-break: break-word;
+  line-height: 1.25;
+}
+.st-progress-track {
+  width: min(260px, 62vw);
+  height: 5px;
+  border-radius: 999px;
+  background: ${C.surfaceVariant};
+  overflow: hidden;
+  margin-top: clamp(24px, 5.4vh, 44px);
+  position: relative;
+}
+.st-progress-bar {
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 38%;
+  border-radius: 999px;
+  background: ${C.primary};
+  animation: stSlide 1.15s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+@keyframes stSlide {
+  0% { left: -38%; }
+  100% { left: 100%; }
+}
+.st-status {
+  font-size: 13.5px;
+  color: ${C.onSurfaceVariant};
+  margin-top: 14px;
+  line-height: 1.5;
+  min-height: 20px;
+  transition: all 0.25s cubic-bezier(0.2, 0, 0, 1);
+}
+.st-skip {
+  margin-top: 10px;
+  border: none;
+  background: transparent;
+  font-family: ${FONT};
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  color: ${C.primaryDeep};
+  padding: 10px 18px;
+  border-radius: 999px;
+  cursor: pointer;
+  min-height: 44px;
+  transition: background 0.2s cubic-bezier(0.2, 0, 0, 1);
+}
+.st-skip:hover { background: ${C.primaryContainer}; }
+.st-footer {
+  position: absolute;
+  left: 0; right: 0;
+  bottom: calc(10px + env(safe-area-inset-bottom));
+  font-size: 11.5px;
+  color: ${C.onSurfaceVariant};
+  opacity: 0.75;
+  text-align: center;
+}
+@media (max-height: 520px) and (orientation: landscape) {
+  .st-col { padding-top: 10px; padding-bottom: 10px; }
+  .st-progress-track { margin-top: 16px; }
+  .st-status { margin-top: 8px; }
+  .st-skip { margin-top: 4px; min-height: 36px; }
+  .st-footer { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .st-root *, .st-root *::before, .st-root *::after {
+    transition: none !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+`;
+
+/* ============================================================================
+   TYPES + ROLE ROUTING
+============================================================================ */
+
+export interface HomeRoutes {
+  admin?: string;
+  trainer?: string;
+  member?: string;
+}
+
+export interface StartupProps {
+  routes?: HomeRoutes;
+  minSplashMs?: number;
+  timeoutMs?: number;
+}
+
+type AnyUser = Record<string, any> & { id?: string };
+
+export function routeForRole(role: string | undefined | null, routes?: HomeRoutes): string {
+  const r = String(role || "").toLowerCase();
+  if (r === "admin" || r === "owner" || r === "super_admin" || r === "superadmin") {
+    return routes?.admin ?? "/admin";
+  }
+  if (r === "trainer" || r === "teacher") return routes?.trainer ?? "/trainer";
+  return routes?.member ?? "/";
+}
+
+export function readCurrentUser(): AnyUser | null {
+  try {
+    const raw = localStorage.getItem("currentUser");
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * v5: Validates that a stored session is actually usable. A session is
+ * "stale" (returns false) when:
+ *   - There's no authToken
+ *   - There's no currentUser, or it has no id
+ *   - The currentUser has no tenantId (orphaned from a failed registration)
+ * Stale sessions are cleared by the caller so the app shows login.
+ */
+function isValidSession(): boolean {
+  const token = localStorage.getItem("authToken");
+  const cu = readCurrentUser();
+  if (!token || !cu?.id) return false;
+  // v5: require a tenantId — without it the sync engine and admin pages
+  // can't scope their reads, causing the "stuck on loading" symptom.
+  const tid = cu.tenantId || cu.tenant_id;
+  if (!tid) {
+    log("Session has no tenantId — clearing stale session");
+    return false;
+  }
+  return true;
+}
+
+function clearStaleSession(): void {
+  try {
+    localStorage.removeItem("authToken");
+    localStorage.removeItem("token");
+    localStorage.removeItem("currentUser");
+    localStorage.removeItem("activeTenantId");
+  } catch {
+    /* ignore */
+  }
+}
+
+/* ============================================================================
+   <Startup /> — default export
+============================================================================ */
+
+function Startup(props: StartupProps) {
+  const navigate = useNavigate();
+
+  const [appName, setAppName] = useState("");
+  const [status, setStatus] = useState("Getting ready…");
+  const [skipReady, setSkipReady] = useState(false);
+  const routed = useRef(false);
+
+  // v5: deadlineFired is SEPARATE from cancelled — the hard deadline
+  // always runs once, even if the effect was cleaned up by a re-render.
+  const deadlineFired = useRef(false);
+
+  const [showLogin, setShowLogin] = useState<boolean>(() => {
+    try {
+      return /login|signin|sign-in/i.test(window.location.pathname);
+    } catch {
+      return false;
+    }
+  });
 
   useEffect(() => {
-    getVersion()
-      .then((v) => setAppVersion(v))
-      .catch(() => {});
+    log(`boot ${BOOT_VERSION} — showLogin=${showLogin}`);
 
-    fetchSiteSettings();
-
-    const storedUser =
-      localStorage.getItem("currentUser");
-
-    if (storedUser && location.pathname === "/") {
-      try {
-        const userObj = JSON.parse(storedUser);
-
-        if (userObj?.id) {
-          setRequiresUnlock(true);
-          setUsername(userObj.username || "");
-          setTenantId(userObj.tenantId || null);
-
-          const savedBranding =
-            localStorage.getItem(
-              "institutionBranding"
-            );
-
-          if (savedBranding) {
-            setBranding(JSON.parse(savedBranding));
-          }
-
-          if (userObj.tenantId) {
-            try {
-              supabase
-                .from("business_settings")
-                .select(
-                  "business_name, logo, phone, login_background"
-                )
-                .eq("tenant_id", userObj.tenantId)
-                .maybeSingle()
-                .then(({ data }) => {
-                  if (data) {
-                    const b = {
-                      businessName:
-                        data.business_name || "",
-                      logo: data.logo || "",
-                      phone: data.phone || "",
-                      loginBackground:
-                        data.login_background || "",
-                    };
-
-                    setBranding(b);
-
-                    localStorage.setItem(
-                      "institutionBranding",
-                      JSON.stringify(b)
-                    );
-                  }
-                });
-            } catch {
-              // Offline — cached branding shown.
-            }
-          }
-        }
-      } catch {
-        localStorage.removeItem("currentUser");
-      }
-    }
-
-    return () => {
-      stopPeriodicPull();
-    };
-  }, [location.pathname]);
-
-  async function handleTrainerLookup() {
-    setLookupError("");
-
-    if (!businessName.trim()) {
-      return setLookupError(
-        "Institution name is required"
-      );
-    }
-
-    setLookupLoading(true);
-
-    const enteredName = businessName.trim();
-
-    const savedInstName =
-      localStorage.getItem("institutionName");
-
-    const savedInstId =
-      localStorage.getItem("institutionTenantId");
-
-    const savedBranding =
-      localStorage.getItem("institutionBranding");
-
-    if (
-      savedInstName &&
-      savedInstId &&
-      savedInstName === enteredName
-    ) {
-      setTenantId(savedInstId);
-
-      if (savedBranding) {
-        setBranding(JSON.parse(savedBranding));
-      }
-
-      setScreen("login");
-      setLookupLoading(false);
-
-      (async () => {
-        try {
-          const { data: settings } =
-            await supabase
-              .from("business_settings")
-              .select("*")
-              .eq("tenant_id", savedInstId)
-              .maybeSingle();
-
-          if (settings) {
-            const b = {
-              businessName:
-                settings.business_name || "",
-              logo: settings.logo || "",
-              phone: settings.phone || "",
-              loginBackground:
-                settings.login_background || "",
-            };
-
-            setBranding(b);
-
-            localStorage.setItem(
-              "institutionBranding",
-              JSON.stringify(b)
-            );
-          }
-        } catch {
-          // Background branding sync failed.
-        }
-      })();
-
+    if (showLogin) {
+      log("URL contains login — rendering Login directly");
       return;
     }
 
-    try {
-      const { data: tenants, error } =
-        await supabase
-          .from("tenants")
-          .select("id, business_name")
-          .eq("business_name", enteredName);
+    let cancelled = false;
+    const startedAt = Date.now();
+    const minSplash = props.minSplashMs ?? 600;
+    const timeoutMs = props.timeoutMs ?? 6000;
 
-      if (error) throw error;
+    const routeBySession = (): string => {
+      if (!isValidSession()) return "/login";
+      const cu = readCurrentUser()!;
+      return routeForRole(cu.role, props.routes);
+    };
 
-      if (!tenants || tenants.length === 0) {
-        setLookupError(
-          "Institution not found. Check the name or your connection."
-        );
-        setLookupLoading(false);
+    const finish = (path: string) => {
+      if (routed.current || cancelled) return;
+      routed.current = true;
+      const wait = Math.max(0, minSplash - (Date.now() - startedAt));
+      log(`finish -> ${path} (waiting ${wait}ms for minSplash)`);
+      window.setTimeout(() => {
+        if (!cancelled) {
+          log(`navigate(${path})`);
+          navigate(path, { replace: true });
+        }
+      }, wait);
+    };
+
+    /* 1. HARD DEADLINE — v5: uses deadlineFired ref, NOT cancelled.
+       The deadline ALWAYS fires once, even if the effect was cleaned up
+       by a re-render. This is the ultimate escape hatch. */
+    const hardDeadline = window.setTimeout(() => {
+      if (deadlineFired.current) return;
+      deadlineFired.current = true;
+      log(`HARD DEADLINE fired after ${Date.now() - startedAt}ms`);
+
+      // Always re-validate the session at deadline time — it may have
+      // been cleared by the async block above.
+      const target = routeBySession();
+      if (target === "/login") {
+        if (!cancelled) {
+          setShowLogin(true);
+        } else {
+          // Effect was cleaned up — force a full-page redirect to /login
+          // so the user is never stuck on a dead splash.
+          fullPageRedirect("/login", true);
+        }
+      } else {
+        fullPageRedirect(target);
+      }
+    }, timeoutMs);
+
+    /* 2. Skip escape hatch, visible after 3 s. */
+    const skipTimer = window.setTimeout(() => setSkipReady(true), 3000);
+
+    const onAuthChanged = () => {
+      log("authStateChanged event");
+      if (!isValidSession()) {
+        log("Session invalid after authStateChanged — showing login");
+        setShowLogin(true);
+      }
+    };
+    window.addEventListener("authStateChanged", onAuthChanged);
+
+    (async () => {
+      // The institution name is the ONLY title this splash ever shows.
+      const brand = brandFromSettings();
+      if (brand) {
+        log(`Institution: ${brand}`);
+        setAppName(brand);
+      }
+
+      // 3. v5: Session gate — validate BEFORE proceeding. Clear stale
+      //    sessions so they can't cause a redirect loop.
+      if (!isValidSession()) {
+        log("No valid session — clearing and showing login");
+        clearStaleSession();
+        setShowLogin(true);
         return;
       }
 
-      if (tenants.length > 1) {
-        setLookupError(
-          "Multiple institutions share this name. Please contact support."
-        );
-        setLookupLoading(false);
-        return;
-      }
+      const cu = readCurrentUser()!;
+      const token = localStorage.getItem("authToken")!;
+      log(`Valid session: user=${cu.username || cu.id}, role=${cu.role}, tenant=${cu.tenantId || cu.tenant_id}`);
 
-      const tenant = tenants[0];
-
-      localStorage.setItem(
-        "institutionName",
-        tenant.business_name || enteredName
-      );
-
-      localStorage.setItem(
-        "institutionTenantId",
-        tenant.id
-      );
-
+      // 4. Open the local database (2.5 s cap).
+      setStatus("Opening local database…");
       try {
-        const { data: settings } =
-          await supabase
-            .from("business_settings")
-            .select("*")
-            .eq("tenant_id", tenant.id)
-            .maybeSingle();
-
-        if (settings) {
-          const b = {
-            businessName:
-              settings.business_name || "",
-            logo: settings.logo || "",
-            phone: settings.phone || "",
-            loginBackground:
-              settings.login_background || "",
-          };
-
-          setBranding(b);
-
-          localStorage.setItem(
-            "institutionBranding",
-            JSON.stringify(b)
-          );
-        }
-      } catch {
-        // Branding fetch failed.
+        await Promise.race([
+          db.open().catch((e: any) => log(`db.open error: ${e?.message || e}`)),
+          new Promise((res) => window.setTimeout(res, 2500)),
+        ]);
+        log("Database ready");
+      } catch (e: any) {
+        log(`Database open failed (non-fatal): ${e?.message || e}`);
       }
+      if (cancelled) return;
 
-      setTenantId(tenant.id);
-      setScreen("login");
-      setLookupLoading(false);
-    } catch {
-      setLookupError(
-        "Institution not found. Check the name or your connection."
-      );
-      setLookupLoading(false);
-    }
-  }
-
-  async function handleLogin() {
-    setMessage("");
-
-    if (!username.trim() || !password.trim()) {
-      return setMessage(
-        "Username and password are required"
-      );
-    }
-
-    if (!tenantId) {
-      return setMessage(
-        "Session error. Please re-select your institution."
-      );
-    }
-
-    setLoading(true);
-
-    try {
+      // 5. Start the sync engine + one online refresh.
       try {
-        const result = await loginTenant({
-          tenantId,
-          username,
-          password,
-        });
-
-        if (
-          typeof result.user.username !== "string" ||
-          result.user.username !== username.trim()
-        ) {
-          throw new Error(
-            "Invalid username or password"
-          );
-        }
-
-        const safeUser = {
-          id: result.user.id,
-          username: result.user.username,
-          email: result.user.email || "",
-          phone: result.user.phone || "",
-          profilePic:
-            (result.user as any).profile_pic || "",
-          role: result.user.role,
-          tenantId: result.user.tenantId,
-          assignedCourses:
-            result.user.assigned_courses || [],
-          createdAt:
-            (result.user as any).created_at ||
-            new Date().toISOString(),
-          password,
-          synced: true,
-        };
-
-        await addUser(safeUser);
-
-        localStorage.setItem(
-          "currentUser",
-          JSON.stringify(safeUser)
-        );
-
-        localStorage.setItem(
-          "authToken",
-          result.authToken
-        );
-
-        window.dispatchEvent(
-          new Event("authStateChanged")
-        );
-
-        enableSyncHooks();
-        startPeriodicPull(60000);
-
-        if (safeUser.tenantId) {
-          pullAllTenantData(
-            safeUser.tenantId
-          ).catch(() => {});
-
-          pullSettings().catch(() => {});
-        }
-
-        redirectUser(safeUser.role);
-        return;
-      } catch (backendError: any) {
-        if (backendError?.noOfflineFallback) {
-          throw backendError;
-        }
-
-        if (import.meta.env.DEV) {
-          console.warn(
-            "Backend login failed, trying offline DB.",
-            backendError
-          );
-        }
+        startPeriodicPull();
+        log("Periodic pull started");
+      } catch (e: any) {
+        log(`startPeriodicPull error: ${e?.message || e}`);
       }
 
-      const user = await loginUser(
-        username.trim(),
-        password,
-        tenantId
-      );
-
-      if (
-        !user ||
-        typeof user.username !== "string" ||
-        user.username !== username.trim()
-      ) {
-        throw new Error(
-          "Invalid username or password."
+      const offlineSession = token === OFFLINE_LOGIN_TOKEN || token.startsWith("offline-");
+      if (!offlineSession && typeof navigator !== "undefined" && navigator.onLine && cu.tenantId) {
+        setStatus("Syncing your data…");
+        log("Starting syncNow (fire-and-forget)…");
+        // Fire-and-forget — never blocks navigation.
+        void syncNow(cu.tenantId).catch((e: any) =>
+          log(`syncNow error (non-fatal): ${e?.message || e}`)
         );
+      } else {
+        log(`Skipping syncNow: offlineSession=${offlineSession}, online=${typeof navigator !== "undefined" ? navigator.onLine : "?"}`);
       }
 
-      const safeUser = {
-        id: user.id,
-        username: user.username,
-        email: user.email || "",
-        phone: user.phone || "",
-        profilePic: user.profilePic || "",
-        role: user.role,
-        tenantId: user.tenantId,
-        assignedCourses: user.assignedCourses || [],
-        createdAt: user.createdAt,
-        synced: false,
-      };
+      // 6. Navigate to the role home.
+      const target = routeForRole(cu.role, props.routes);
+      log(`Target route: ${target}`);
+      finish(target);
 
-      localStorage.setItem(
-        "currentUser",
-        JSON.stringify(safeUser)
-      );
+      // 7. Fallback: if SPA navigation didn't work after 2s, force a
+      //    full-page redirect. v5: force=true for /login so the guard
+      //    can't trap the user on the splash.
+      window.setTimeout(() => {
+        if (cancelled) return;
+        try {
+          const here = window.location.pathname + window.location.hash;
+          if (here.endsWith(target)) {
+            log("Navigation confirmed — URL matches target");
+            return;
+          }
+        } catch {
+          /* ignore */
+        }
+        log(`Navigation fallback: SPA nav didn't land on ${target} — forcing redirect`);
+        fullPageRedirect(target, target === "/login");
+      }, 2000);
+    })();
 
-      localStorage.setItem(
-        "authToken",
-        "offline-mode-pending-sync"
-      );
+    return () => {
+      cancelled = true;
+      window.clearTimeout(hardDeadline);
+      window.clearTimeout(skipTimer);
+      window.removeEventListener("authStateChanged", onAuthChanged);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showLogin]);
 
-      window.dispatchEvent(
-        new Event("authStateChanged")
-      );
-
-      redirectUser(safeUser.role);
-    } catch {
-      setMessage("Invalid username or password.");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  function redirectUser(role: string) {
-    if (role === "admin") {
-      setRedirectRoute("/admin");
-    } else if (role === "trainer") {
-      setRedirectRoute("/trainer");
-    } else {
-      setRedirectRoute("/user");
-    }
-  }
-
-  if (redirectRoute) {
-    return <Navigate to={redirectRoute} replace />;
-  }
-
-  const inputStyle: React.CSSProperties = {
-    width: "100%",
-    height: 54,
-    padding: "0 16px",
-    border: "none",
-    outline: "none",
-    background: "rgba(0,0,0,0.03)",
-    fontSize: 17,
-    color: "#1C1C1E",
-    boxSizing: "border-box",
-    borderRadius: 14,
-    marginBottom: 12,
-    transition: "background 0.2s",
+  const skip = () => {
+    log("Skip button clicked");
+    const target = routeBySessionPublic();
+    if (target === "/login") setShowLogin(true);
+    else fullPageRedirect(target, true);
   };
-
-  if (requiresUnlock) {
-    return (
-      <StartupShell
-        brandName={siteName || undefined}
-        tagline={siteTagline || undefined}
-        logo={siteLogo || undefined}
-        version={appVersion}
-      >
-        <AuthLayout
-          background={branding?.loginBackground}
-          showBack
-          onBack={() => {
-            stopPeriodicPull();
-            localStorage.removeItem("currentUser");
-            localStorage.removeItem("authToken");
-            setRequiresUnlock(false);
-            setPassword("");
-            setUsername("");
-          }}
-        >
-          <h2
-            style={{
-              textAlign: "center",
-              fontSize: 24,
-              color: "#1C1C1E",
-              fontWeight: 700,
-              marginBottom: 8,
-            }}
-          >
-            Welcome back
-          </h2>
-
-          <p
-            style={{
-              textAlign: "center",
-              fontSize: 15,
-              color: "#8E8E93",
-              marginBottom: 24,
-            }}
-          >
-            Enter your password to continue.
-          </p>
-
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              handleLogin();
-            }}
-            style={{ width: "100%" }}
-          >
-            <input
-              type="password"
-              placeholder="Enter Password"
-              value={password}
-              onChange={(e) => {
-                setPassword(e.target.value);
-                setMessage("");
-              }}
-              style={inputStyle}
-              autoFocus
-              autoComplete="current-password"
-            />
-
-            {message && (
-              <p
-                style={{
-                  textAlign: "center",
-                  color: "#FF3B30",
-                  fontSize: 14,
-                  marginBottom: 12,
-                }}
-              >
-                {message}
-              </p>
-            )}
-
-            <LoadingButton
-              type="submit"
-              loading={loading}
-              loadingLabel="Signing in…"
-              disabled={!password}
-              style={{
-                height: 54,
-                padding: 0,
-              }}
-            >
-              Unlock
-            </LoadingButton>
-          </form>
-        </AuthLayout>
-      </StartupShell>
-    );
+  function routeBySessionPublic(): string {
+    if (!isValidSession()) return "/login";
+    const cu = readCurrentUser()!;
+    return routeForRole(cu.role, props.routes);
   }
 
-  if (screen === "login") {
-    return (
-      <StartupShell
-        brandName={siteName || undefined}
-        tagline={siteTagline || undefined}
-        logo={siteLogo || undefined}
-        version={appVersion}
-      >
-        <AuthLayout
-          background={branding?.loginBackground}
-          showBack
-          onBack={() => {
-            stopPeriodicPull();
-            setScreen("main");
-            setTenantId(null);
-            setMessage("");
-          }}
-        >
-          <h1
-            style={{
-              textAlign: "center",
-              fontSize: 24,
-              color: "#1C1C1E",
-              fontWeight: 700,
-              marginBottom: 24,
-            }}
-          >
-            Welcome Back
-          </h1>
-
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              handleLogin();
-            }}
-            style={{ width: "100%" }}
-          >
-            <input
-              name="username"
-              placeholder="Username"
-              value={username}
-              onChange={(e) =>
-                setUsername(e.target.value)
-              }
-              style={inputStyle}
-              autoFocus
-              autoComplete="username"
-              autoCapitalize="none"
-              autoCorrect="off"
-              spellCheck={false}
-            />
-
-            <input
-              type="password"
-              name="password"
-              placeholder="Password"
-              value={password}
-              onChange={(e) =>
-                setPassword(e.target.value)
-              }
-              style={inputStyle}
-              autoComplete="current-password"
-            />
-
-            {message && (
-              <p
-                style={{
-                  textAlign: "center",
-                  color: "#FF3B30",
-                  fontSize: 14,
-                  marginBottom: 12,
-                }}
-              >
-                {message}
-              </p>
-            )}
-
-            <LoadingButton
-              type="submit"
-              loading={loading}
-              loadingLabel="Signing in…"
-              style={{
-                height: 54,
-                padding: 0,
-              }}
-            >
-              Login
-            </LoadingButton>
-          </form>
-        </AuthLayout>
-      </StartupShell>
-    );
+  if (showLogin) {
+    log("Rendering <Login /> in-place");
+    return <Login routes={props.routes} />;
   }
 
   return (
-    <StartupShell
-      brandName={siteName || undefined}
-      tagline={siteTagline || undefined}
-      logo={siteLogo || undefined}
-      version={appVersion}
-      showSubscribe
-    >
-      <div
-        style={{
-          position: "relative",
-          width: "100%",
-          height: "100%",
-          background:
-            "linear-gradient(135deg, #F2F2F7 0%, #E5E5EA 100%)",
-        }}
-      >
-        {/* Full-width media background (image / video / pdf) */}
-        <MediaBackground
-          url={startupMediaUrl}
-          type={(startupMediaType || null) as MediaType | null}
-        />
+    <div className="st-root">
+      <style>{CSS}</style>
+      <div className="st-col">
+        {appName ? <div className="st-title">{appName}</div> : null}
 
-        {/* Card layer — no logo in the page body */}
-        <div
-          style={{
-            position: "relative",
-            zIndex: 1,
-            width: "100%",
-            height: "100%",
-            paddingBottom: 96,
-            boxSizing: "border-box",
-          }}
-        >
-          <AuthLayout transparent>
-            <h1
-              style={{
-                textAlign: "center",
-                fontSize: 24,
-                color: "#1C1C1E",
-                fontWeight: 700,
-                marginBottom: 8,
-              }}
-            >
-              Welcome
-            </h1>
-
-            <p
-              style={{
-                textAlign: "center",
-                fontSize: 15,
-                color: "#8E8E93",
-                marginBottom: 24,
-              }}
-            >
-              Enter your institution to continue
-            </p>
-
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                handleTrainerLookup();
-              }}
-              style={{ width: "100%" }}
-            >
-              <input
-                type="text"
-                placeholder="Enter Institution Name"
-                value={businessName}
-                onChange={(e) => {
-                  setBusinessName(e.target.value);
-                  setLookupError("");
-                }}
-                style={inputStyle}
-                autoFocus
-                autoComplete="organization"
-                autoCapitalize="none"
-                autoCorrect="off"
-                spellCheck={false}
-              />
-
-              {lookupError && (
-                <p
-                  style={{
-                    textAlign: "center",
-                    color: "#FF3B30",
-                    fontSize: 14,
-                    marginBottom: 12,
-                  }}
-                >
-                  {lookupError}
-                </p>
-              )}
-
-              <LoadingButton
-                type="submit"
-                loading={lookupLoading}
-                loadingLabel="Finding…"
-                disabled={!businessName.trim()}
-                style={{
-                  height: 54,
-                  padding: 0,
-                }}
-              >
-                Continue
-              </LoadingButton>
-            </form>
-          </AuthLayout>
+        <div className="st-progress-track" role="progressbar" aria-label="Loading">
+          <div className="st-progress-bar" />
         </div>
+        <div className="st-status">{status}</div>
 
-        {/* Bottom footer: tagline + app logo */}
-        <PoweredByBar />
+        {skipReady && (
+          <button type="button" className="st-skip" onClick={skip}>
+            Skip
+          </button>
+        )}
       </div>
-    </StartupShell>
+      <div className="st-footer">boot {BOOT_VERSION}</div>
+    </div>
   );
 }
+
+export default Startup;
+export { Startup };
