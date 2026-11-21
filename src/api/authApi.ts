@@ -172,7 +172,7 @@ export async function registerTenant(
 /* ------------------------------------------------------------------ */
 
 export interface LoginTenantParams {
-  tenantId: string;
+  tenantId?: string;
   username: string;
   password: string;
   businessName?: string;
