@@ -40,3 +40,4 @@ dist/
 
 vercel.json.bak-*
 .env*
+*.tsbuildinfo
