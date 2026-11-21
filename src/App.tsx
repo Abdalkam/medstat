@@ -1,12 +1,15 @@
 // src/App.tsx — root router.
 
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useNavigate } from "react-router-dom";
 import { useEffect, useState, useCallback } from "react";
 import { DailyProvider } from "@daily-co/daily-react";
 
 // AUTH & LOADING
 import SyncLoadingScreen from "./components/SyncLoadingScreen";
 import Startup from "./auth/startup";
+import PhoneEntry from "./auth/PhoneEntry";
+import VerifyCode from "./auth/VerifyCode";
+import RegisterAdmin from "./auth/RegisterAdmin";
 
 // LAYOUTS
 import AdminLayout from "./admin/AdminLayout";
@@ -46,9 +49,9 @@ import ProfileSettings from "./components/ProfileSettings";
 
 // 🛑 BLOCK NATIVE BROWSER DIALOGS
 if (typeof window !== "undefined") {
-  window.alert = (message) => { console.warn("🚨 ALERT SUPPRESSED:", message); };
-  window.confirm = (message) => { console.warn("🚨 CONFIRM SUPPRESSED (auto-false):", message); return false; };
-  window.prompt = (message, _default) => { console.warn("🚨 PROMPT SUPPRESSED (auto-null):", message); return null; };
+    window.alert = (message) => { console.warn("🚨 ALERT SUPPRESSED:", message); };
+    window.confirm = (message) => { console.warn("🚨 CONFIRM SUPPRESSED (auto-false):", message); return false; };
+    window.prompt = (message, _default) => { console.warn("🚨 PROMPT SUPPRESSED (auto-null):", message); return null; };
 }
 
 // Safe JSON parse — never throws, even on corrupted/legacy localStorage
@@ -59,6 +62,55 @@ function safeParse<T>(json: string | null, fallback: T): T {
     } catch {
         return fallback;
     }
+}
+
+/* ============================================================================
+   RegisterFlow — 3-step registration wizard coordinator:
+   PhoneEntry (phone + OTP) -> VerifyCode (OTP code) -> RegisterAdmin
+   (institution + admin account). Route: /register.
+   ============================================================================ */
+function RegisterFlow() {
+    const navigate = useNavigate();
+    const [step, setStep] = useState<"phone" | "verify" | "details">("phone");
+    const [phone, setPhone] = useState("");
+    const [tempToken, setTempToken] = useState("");
+
+    function handleComplete(user: any) {
+        if (!user) {
+            // RegisterAdmin bounced us (phone already registered) -> login.
+            navigate("/login", { replace: true });
+            return;
+        }
+        // Success: RegisterAdmin already stored currentUser + authToken and
+        // fired authStateChanged; "/" redirects logged-in users to dashboard.
+        navigate("/", { replace: true });
+    }
+
+    return (
+        <>
+            {step === "phone" && (
+                <PhoneEntry
+                    onSent={(p) => { setPhone(p); setStep("verify"); }}
+                    onBack={() => navigate("/login", { replace: true })}
+                />
+            )}
+            {step === "verify" && (
+                <VerifyCode
+                    phone={phone}
+                    onVerified={(t) => { setTempToken(t); setStep("details"); }}
+                    onBack={() => setStep("phone")}
+                />
+            )}
+            {step === "details" && (
+                <RegisterAdmin
+                    phone={phone}
+                    tempToken={tempToken}
+                    onComplete={handleComplete}
+                    onBack={() => setStep("verify")}
+                />
+            )}
+        </>
+    );
 }
 
 export default function App() {
@@ -166,6 +218,11 @@ export default function App() {
                             user is bounced straight to their dashboard. */}
                         <Route path="/login" element={currentUser ? <Navigate to={getDashboardPath(currentUser.role)} replace /> : <Startup />} />
                         <Route path="/" element={currentUser ? <Navigate to={getDashboardPath(currentUser.role)} replace /> : <Startup />} />
+
+                        {/* REGISTRATION — 3-step wizard, reached from the Startup
+                            institution gate (no institution yet) or from the
+                            "Create new institution" button on Login. */}
+                        <Route path="/register" element={<RegisterFlow />} />
 
                         {/* ADMIN — main suite: ALL admin pages inside the layout, incl. Forms */}
                         <Route path="/admin" element={<ProtectedAdmin><AdminLayout user={currentUser} /></ProtectedAdmin>}>
