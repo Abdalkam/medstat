@@ -1,26 +1,6 @@
 // src/database/trainerDB.ts — v5: cloud-synced, tombstone-aware trainer CRUD
 //
-// Changes vs v4 (behavior hardening only — the API surface is identical):
-//  • deleteTrainer reads the row BEFORE the local cascade. When the trainer
-//    was never confirmed in the cloud (synced === false — created offline
-//    with every push failing, or no institution linked), the cloud delete is
-//    skipped and the tombstone lifted immediately: deleteUserRowFromSupabase
-//    throws "Cloud delete matched no user row" for rows that never existed,
-//    which used to strand an immortal "failed" tombstone that
-//    retryFailedCloudDeletes chased on every sync tick.
-//  • getTrainers filters tombstoned ids (defense in depth — the canonical
-//    filter lives in getUsersDetailed; direct Dexie reads stay clean too).
-//  Everything else (tombstone-first delete, guarded cascade, username
-//  uniqueness, idempotent put, syncedAt stamping) is unchanged from v4.
-//
-// Changes vs v3 (preserved):
-//  • Cloud pushes and soft-deletes go through supabaseUserSync — the
-//    schema-exact helper for public.users (explicit column whitelist,
-//    camelCase "assignedDepartments" column, snake_case remuneration jsonb,
-//    CHECK-safe role). The old pushUserToSupabase from supabaseCourseSync
-//    is no longer used here; its behavior is otherwise identical.
-//  • Successful pushes also stamp syncedAt (local-only metadata, never
-//    uploaded — the users table has no such column).
+
 
 import { db } from "./db";
 import type { User } from "../types";
