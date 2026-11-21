@@ -514,6 +514,8 @@ export default function TrainerDashboard() {
     // 1) Local database — near-instant, works fully offline.
     try {
       const allLocalCourses = await getCourses();
+      // `c.id` is `string | undefined` in the Course type — guard the includes()
+      // call and drop any local row that somehow lacks an id at the same time.
       const localCourses = allLocalCourses.filter(
         (c): c is Course => !!c.id && assignedIds.includes(c.id),
       );

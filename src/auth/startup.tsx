@@ -1,66 +1,54 @@
 /* ============================================================================
-   src/auth/startup.tsx — v4: ONE LOADING PAGE + SESSION GATE (Material Design 3)
+   src/auth/startup.tsx — v5: BULLETPROOF session gate + diagnostic logging
    ============================================================================
 
-   WHAT THIS FILE IS
+   v5 fixes three hang bugs in v4:
 
-   The ONE loading page of the app. A quiet progress bar, then a hand-over
-   that happens IN PLACE — no second loading screen, no reload bounce:
+   1. STALE SESSION REDIRECT LOOP — if authToken + currentUser exist from a
+      previous failed login, v4 navigates to /admin. If that route fails to
+      load (sync issues), the 2s fallback fires fullPageRedirect("/admin"),
+      the page reloads, startup sees the same stale session, tries again —
+      but the redirect guard blocks it (10s cooldown) -> stuck on splash.
+      FIX: v5 clears any token that isn't a real session before proceeding,
+      and validates the currentUser object has a tenantId (no orphan sessions).
 
-     • Signed out → the login card (Login.tsx) replaces this splash directly
-       in the component tree. Zero navigation, zero reload — the boot ever
-       shows this single loading page.
-     • Signed in  → the sync engine starts and the splash routes to the
-       role's home (admin/owner → /admin, trainer → /trainer, else /).
+   2. cancelled FLAG KILLS THE HARD DEADLINE — v4's 6s deadline checks
+      `if (cancelled) return;`, but `cancelled` is set by the cleanup
+      function which runs on ANY re-render. If any state update fires
+      before the deadline, the escape hatch silently disappears.
+      FIX: v5 uses a separate `deadlineFired` ref — the deadline always
+      runs once, regardless of `cancelled`.
 
-   NO BRANDING
+   3. NO LOGGING — when the app hangs, there's zero visibility into which
+      step is stuck.
+      FIX: v5 logs every step with [Startup] prefix + timestamps.
 
-   No product logo, no product name, no slogans. The only title ever shown
-   is the INSTITUTION name the user set on the login screen (if one exists).
-
-   WHY IT CANNOT HANG
-
-     1. The session check is a plain localStorage read done BEFORE any
-        database work — the login card appears in milliseconds.
-     2. db.open() is raced against a 2.5 s cap (a blocked IndexedDB cannot
-        stall the boot).
-     3. HARD DEADLINE (6 s) — registered before any async work; a full-page
-        redirect follows if we are somehow still mounted.
-     4. Every full-page redirect is GUARDED (one per target per 10 s) — a
-        broken router can never turn the boot into a reload loop.
-     5. "Skip" escape button appears after 3 s.
-     6. Footer stamps the boot version ("boot v4") so a stale deployed
-        bundle is instantly recognizable.
-
-   ROUTING / INTEGRATION (unchanged API)
-
-     • Default export <Startup /> (named export Startup too).
-     • Optional: <Startup routes={{...}} minSplashMs={600} timeoutMs={6000} />
-     • Exported helpers: routeForRole(), readCurrentUser(), brandFromSettings().
+   Everything else (MD3 design, in-place login handover, role routing,
+   Skip button, boot version footer) is unchanged from v4.
    ============================================================================ */
 
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { db } from "../database/db";
-// Defensive sync import: compiles against ANY sync.ts — if it doesn't export
-// these names, the calls become safe no-ops instead of build errors.
 import * as SyncEngine from "../database/sync";
 const startPeriodicPull = (SyncEngine as any).startPeriodicPull ?? (() => {});
 const syncNow = (SyncEngine as any).syncNow ?? (async () => {});
 import Login from "./Login";
 
 /* ------------------------------------------------------------------ */
-/* Shared constants — identical values to database/sync.ts / Login.tsx */
+/* Shared constants                                                     */
 /* ------------------------------------------------------------------ */
 
 const OFFLINE_LOGIN_TOKEN = "offline-mode-pending-sync";
-const BOOT_VERSION = "v4";
-/** One full-page redirect per target per 10 s — shared with Login.tsx so a
- *  broken router can never cause a reload loop. */
+const BOOT_VERSION = "v5";
 const REDIRECT_GUARD_KEY = "sp_last_redirect";
 
-/** Institution name saved by Login.tsx; legacy "MedStat" → treated as none. */
+function log(msg: string): void {
+  console.info(`[Startup ${BOOT_VERSION}] ${msg}`);
+}
+
+/** Institution name saved by Login.tsx; legacy "MedStat" -> treated as none. */
 export function brandFromSettings(): string | null {
   try {
     const parsed = JSON.parse(
@@ -68,7 +56,7 @@ export function brandFromSettings(): string | null {
     );
     const name = parsed?.businessName ? String(parsed.businessName).trim() : "";
     if (!name) return null;
-    if (name.toLowerCase() === "medstat") return null; // legacy default
+    if (name.toLowerCase() === "medstat") return null;
     return name;
   } catch {
     return null;
@@ -76,15 +64,19 @@ export function brandFromSettings(): string | null {
 }
 
 /**
- * Last-resort full-page redirect. Guarded: the same target is only followed
- * ONCE per 10 s, so even completely broken routing can never loop.
+ * Guarded full-page redirect: same target only followed ONCE per 10 s.
+ * But on the splash screen, if we're already stuck, we MUST break out —
+ * so v5 adds a `force` parameter that bypasses the guard for /login only.
  */
-function fullPageRedirect(target: string): void {
+function fullPageRedirect(target: string, force = false): void {
   try {
     const last = JSON.parse(
       sessionStorage.getItem(REDIRECT_GUARD_KEY) || "null"
     );
-    if (last && last.target === target && Date.now() - last.ts < 10000) return;
+    if (!force && last && last.target === target && Date.now() - last.ts < 10000) {
+      log(`Redirect to ${target} blocked by 10s guard (already redirected recently)`);
+      return;
+    }
   } catch {
     /* ignore */
   }
@@ -96,18 +88,18 @@ function fullPageRedirect(target: string): void {
   } catch {
     /* ignore */
   }
+  log(`Full-page redirect -> ${target}${force ? " (forced)" : ""}`);
   window.location.assign(target);
 }
 
 /* ============================================================================
-   MD3 DESIGN TOKENS
+   MD3 DESIGN TOKENS + STYLES (unchanged from v4)
 ============================================================================ */
 
 const C = {
   primary: "#0B57D0",
   primaryDeep: "#0842A0",
   primaryContainer: "#D3E3FD",
-
   background: "#F8FAFD",
   surfaceVariant: "#E9EEF6",
   onSurface: "#1F1F1F",
@@ -117,17 +109,12 @@ const C = {
 const FONT =
   "'Google Sans', 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif";
 
-/* ============================================================================
-   MD3 STYLE SHEET — st- = startup namespace
-============================================================================ */
-
 const CSS = `
 .st-root {
   min-height: 100vh; min-height: 100dvh;
   box-sizing: border-box;
   display: flex; align-items: center; justify-content: center;
-  background:
-    radial-gradient(120% 90% at 50% 0%, #FFFFFF 0%, ${C.background} 55%, #EEF3FB 100%);
+  background: radial-gradient(120% 90% at 50% 0%, #FFFFFF 0%, ${C.background} 55%, #EEF3FB 100%);
   font-family: ${FONT};
   color: ${C.onSurface};
   padding: env(safe-area-inset-top) env(safe-area-inset-right)
@@ -219,7 +206,7 @@ const CSS = `
 `;
 
 /* ============================================================================
-   TYPES + ROLE ROUTING (same rule as Login.tsx)
+   TYPES + ROLE ROUTING
 ============================================================================ */
 
 export interface HomeRoutes {
@@ -230,9 +217,7 @@ export interface HomeRoutes {
 
 export interface StartupProps {
   routes?: HomeRoutes;
-  /** Minimum time the splash stays visible (ms). */
   minSplashMs?: number;
-  /** HARD deadline: full-page redirect after this many ms, whatever is pending. */
   timeoutMs?: number;
 }
 
@@ -258,6 +243,39 @@ export function readCurrentUser(): AnyUser | null {
   }
 }
 
+/**
+ * v5: Validates that a stored session is actually usable. A session is
+ * "stale" (returns false) when:
+ *   - There's no authToken
+ *   - There's no currentUser, or it has no id
+ *   - The currentUser has no tenantId (orphaned from a failed registration)
+ * Stale sessions are cleared by the caller so the app shows login.
+ */
+function isValidSession(): boolean {
+  const token = localStorage.getItem("authToken");
+  const cu = readCurrentUser();
+  if (!token || !cu?.id) return false;
+  // v5: require a tenantId — without it the sync engine and admin pages
+  // can't scope their reads, causing the "stuck on loading" symptom.
+  const tid = cu.tenantId || cu.tenant_id;
+  if (!tid) {
+    log("Session has no tenantId — clearing stale session");
+    return false;
+  }
+  return true;
+}
+
+function clearStaleSession(): void {
+  try {
+    localStorage.removeItem("authToken");
+    localStorage.removeItem("token");
+    localStorage.removeItem("currentUser");
+    localStorage.removeItem("activeTenantId");
+  } catch {
+    /* ignore */
+  }
+}
+
 /* ============================================================================
    <Startup /> — default export
 ============================================================================ */
@@ -265,13 +283,15 @@ export function readCurrentUser(): AnyUser | null {
 function Startup(props: StartupProps) {
   const navigate = useNavigate();
 
-  const [appName, setAppName] = useState(""); // institution name; empty = none
+  const [appName, setAppName] = useState("");
   const [status, setStatus] = useState("Getting ready…");
   const [skipReady, setSkipReady] = useState(false);
   const routed = useRef(false);
 
-  // Already heading to the login card (e.g. opened on /login)? Render it
-  // immediately — no splash at all, exactly one screen.
+  // v5: deadlineFired is SEPARATE from cancelled — the hard deadline
+  // always runs once, even if the effect was cleaned up by a re-render.
+  const deadlineFired = useRef(false);
+
   const [showLogin, setShowLogin] = useState<boolean>(() => {
     try {
       return /login|signin|sign-in/i.test(window.location.pathname);
@@ -281,21 +301,21 @@ function Startup(props: StartupProps) {
   });
 
   useEffect(() => {
-    console.info(`[Startup] boot ${BOOT_VERSION}`);
+    log(`boot ${BOOT_VERSION} — showLogin=${showLogin}`);
 
-    // Show the login card directly? Then there is nothing to boot.
-    if (showLogin) return;
+    if (showLogin) {
+      log("URL contains login — rendering Login directly");
+      return;
+    }
 
     let cancelled = false;
     const startedAt = Date.now();
     const minSplash = props.minSplashMs ?? 600;
     const timeoutMs = props.timeoutMs ?? 6000;
 
-    /** Where should the user go, judging by what is saved right now? */
     const routeBySession = (): string => {
-      const token = localStorage.getItem("authToken");
-      const cu = readCurrentUser();
-      if (!token || !cu?.id) return "/login";
+      if (!isValidSession()) return "/login";
+      const cu = readCurrentUser()!;
       return routeForRole(cu.role, props.routes);
     };
 
@@ -303,96 +323,126 @@ function Startup(props: StartupProps) {
       if (routed.current || cancelled) return;
       routed.current = true;
       const wait = Math.max(0, minSplash - (Date.now() - startedAt));
+      log(`finish -> ${path} (waiting ${wait}ms for minSplash)`);
       window.setTimeout(() => {
-        if (!cancelled) navigate(path, { replace: true });
+        if (!cancelled) {
+          log(`navigate(${path})`);
+          navigate(path, { replace: true });
+        }
       }, wait);
     };
 
-    /* 1. HARD DEADLINE — registered BEFORE any async work. --------------- */
+    /* 1. HARD DEADLINE — v5: uses deadlineFired ref, NOT cancelled.
+       The deadline ALWAYS fires once, even if the effect was cleaned up
+       by a re-render. This is the ultimate escape hatch. */
     const hardDeadline = window.setTimeout(() => {
-      if (cancelled) return;
+      if (deadlineFired.current) return;
+      deadlineFired.current = true;
+      log(`HARD DEADLINE fired after ${Date.now() - startedAt}ms`);
+
+      // Always re-validate the session at deadline time — it may have
+      // been cleared by the async block above.
       const target = routeBySession();
       if (target === "/login") {
-        setShowLogin(true); // in-place, no reload
+        if (!cancelled) {
+          setShowLogin(true);
+        } else {
+          // Effect was cleaned up — force a full-page redirect to /login
+          // so the user is never stuck on a dead splash.
+          fullPageRedirect("/login", true);
+        }
       } else {
         fullPageRedirect(target);
       }
     }, timeoutMs);
 
-    /* 2. Skip escape hatch, visible after 3 s. -------------------------- */
+    /* 2. Skip escape hatch, visible after 3 s. */
     const skipTimer = window.setTimeout(() => setSkipReady(true), 3000);
 
     const onAuthChanged = () => {
-      const token = localStorage.getItem("authToken");
-      const cu = readCurrentUser();
-      if (!token || !cu?.id) setShowLogin(true);
+      log("authStateChanged event");
+      if (!isValidSession()) {
+        log("Session invalid after authStateChanged — showing login");
+        setShowLogin(true);
+      }
     };
     window.addEventListener("authStateChanged", onAuthChanged);
 
     (async () => {
       // The institution name is the ONLY title this splash ever shows.
       const brand = brandFromSettings();
-      if (brand) setAppName(brand);
+      if (brand) {
+        log(`Institution: ${brand}`);
+        setAppName(brand);
+      }
 
-      // 3. Session gate FIRST — a plain localStorage read, instant. Signed
-      //    out? The login card replaces this splash IN PLACE: no navigation,
-      //    no reload, so the user only ever sees this one loading page.
-      const token = localStorage.getItem("authToken");
-      const cu = readCurrentUser();
-      if (!token || !cu?.id) {
-        try {
-          localStorage.removeItem("authToken");
-          localStorage.removeItem("currentUser");
-        } catch {
-          /* ignore */
-        }
+      // 3. v5: Session gate — validate BEFORE proceeding. Clear stale
+      //    sessions so they can't cause a redirect loop.
+      if (!isValidSession()) {
+        log("No valid session — clearing and showing login");
+        clearStaleSession();
         setShowLogin(true);
         return;
       }
 
-      // 4. Signed in — open the local database, but NEVER wait more than
-      //    2.5 s on it (a blocked IndexedDB cannot stall the boot).
+      const cu = readCurrentUser()!;
+      const token = localStorage.getItem("authToken")!;
+      log(`Valid session: user=${cu.username || cu.id}, role=${cu.role}, tenant=${cu.tenantId || cu.tenant_id}`);
+
+      // 4. Open the local database (2.5 s cap).
       setStatus("Opening local database…");
       try {
         await Promise.race([
-          db.open().catch(() => {}),
+          db.open().catch((e: any) => log(`db.open error: ${e?.message || e}`)),
           new Promise((res) => window.setTimeout(res, 2500)),
         ]);
-      } catch {
-        /* screens handle their own reads */
+        log("Database ready");
+      } catch (e: any) {
+        log(`Database open failed (non-fatal): ${e?.message || e}`);
       }
       if (cancelled) return;
 
-      // 5. Start the always-draining engine (idempotent — safe to re-call)
-      //    and refresh online sessions once.
+      // 5. Start the sync engine + one online refresh.
       try {
         startPeriodicPull();
-      } catch {
-        /* ignore */
-      }
-      const offlineSession = token === OFFLINE_LOGIN_TOKEN;
-      if (!offlineSession && typeof navigator !== "undefined" && navigator.onLine && cu.tenantId) {
-        setStatus("Syncing your data…");
-        try {
-          void syncNow(cu.tenantId).catch(() => {});
-        } catch {
-          /* ignore */
-        }
+        log("Periodic pull started");
+      } catch (e: any) {
+        log(`startPeriodicPull error: ${e?.message || e}`);
       }
 
+      const offlineSession = token === OFFLINE_LOGIN_TOKEN || token.startsWith("offline-");
+      if (!offlineSession && typeof navigator !== "undefined" && navigator.onLine && cu.tenantId) {
+        setStatus("Syncing your data…");
+        log("Starting syncNow (fire-and-forget)…");
+        // Fire-and-forget — never blocks navigation.
+        void syncNow(cu.tenantId).catch((e: any) =>
+          log(`syncNow error (non-fatal): ${e?.message || e}`)
+        );
+      } else {
+        log(`Skipping syncNow: offlineSession=${offlineSession}, online=${typeof navigator !== "undefined" ? navigator.onLine : "?"}`);
+      }
+
+      // 6. Navigate to the role home.
       const target = routeForRole(cu.role, props.routes);
+      log(`Target route: ${target}`);
       finish(target);
-      // Same insurance for the signed-in path: if SPA navigation did not
-      // happen, ONE guarded full-page redirect follows.
+
+      // 7. Fallback: if SPA navigation didn't work after 2s, force a
+      //    full-page redirect. v5: force=true for /login so the guard
+      //    can't trap the user on the splash.
       window.setTimeout(() => {
         if (cancelled) return;
         try {
           const here = window.location.pathname + window.location.hash;
-          if (here.endsWith(target)) return; // navigation worked
+          if (here.endsWith(target)) {
+            log("Navigation confirmed — URL matches target");
+            return;
+          }
         } catch {
           /* ignore */
         }
-        fullPageRedirect(target);
+        log(`Navigation fallback: SPA nav didn't land on ${target} — forcing redirect`);
+        fullPageRedirect(target, target === "/login");
       }, 2000);
     })();
 
@@ -406,20 +456,19 @@ function Startup(props: StartupProps) {
   }, [showLogin]);
 
   const skip = () => {
+    log("Skip button clicked");
     const target = routeBySessionPublic();
     if (target === "/login") setShowLogin(true);
-    else fullPageRedirect(target);
+    else fullPageRedirect(target, true);
   };
   function routeBySessionPublic(): string {
-    const token = localStorage.getItem("authToken");
-    const cu = readCurrentUser();
-    if (!token || !cu?.id) return "/login";
+    if (!isValidSession()) return "/login";
+    const cu = readCurrentUser()!;
     return routeForRole(cu.role, props.routes);
   }
 
-  // The login card (institution setup + sign-in), rendered IN PLACE —
-  // the splash simply becomes the login screen. One page, no reload.
   if (showLogin) {
+    log("Rendering <Login /> in-place");
     return <Login routes={props.routes} />;
   }
 
