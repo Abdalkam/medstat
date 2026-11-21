@@ -1,27 +1,20 @@
 /* ============================================================================
-   src/auth/startup.tsx — v6: session gate + institution availability gate
+   src/auth/startup.tsx — v7: institution gate enforcement
    ============================================================================
 
-   v6 changes (on top of v5):
+   v7 changes (on top of v6):
 
-   4. INSTITUTION GATE — when there is no valid session, the app now
-      checks whether ANY institution exists, in BOTH Supabase (tenants
-      table) and the local database, before showing login:
+   - Institution check runs on EVERY boot without a valid session — even
+     when the URL points directly at /login. The login screen can only
+     render after the gate confirms an institution exists (Supabase or
+     local DB).
+   - Login is gated behind `gateResolved` — no more fallback-to-login
+     when navigation goes sideways.
+   - Register navigation has a loop guard (missing route detection).
+   - Local DB check logs the actual table names for diagnosis.
 
-        - institution found (either source)  -> Login
-        - institution NOT found (or Supabase unreachable within 3 s
-          and local DB empty)               -> registration flow
-
-      A valid session skips the check entirely — logged-in users go
-      straight to their role home as before.
-
-   v5 fixes (still in effect):
-
-   1. STALE SESSION REDIRECT LOOP — invalid sessions are cleared before
-      proceeding.
-   2. HARD DEADLINE always fires once via deadlineFired ref, regardless
-      of effect cleanup.
-   3. [Startup] diagnostic logging on every step.
+   v5 fixes still in effect: stale-session clearing, hard deadline via
+   deadlineFired ref, [Startup] diagnostic logging.
    ============================================================================ */
 
 import { useEffect, useRef, useState } from "react";
@@ -38,13 +31,16 @@ import Login from "./Login";
 /* Shared constants                                                     */
 /* ------------------------------------------------------------------ */
 
-// ⚠️ Must match the real registration route in your <Routes> definition,
-//    and the REGISTER_ROUTE constant in Login.tsx.
+// ⚠️ MUST match the real registration route in your <Routes> definition
+//    AND the REGISTER_ROUTE constant in Login.tsx. Run:
+//      findstr /s /n /c:"<Route" src\*.tsx
+//    to see every route your app actually has.
 const REGISTER_ROUTE = "/register";
 
 const OFFLINE_LOGIN_TOKEN = "offline-mode-pending-sync";
-const BOOT_VERSION = "v6";
+const BOOT_VERSION = "v7";
 const REDIRECT_GUARD_KEY = "sp_last_redirect";
+const REGISTER_NAV_GUARD = "sp_register_nav";
 
 function log(msg: string): void {
   console.info(`[Startup ${BOOT_VERSION}] ${msg}`);
@@ -67,8 +63,7 @@ export function brandFromSettings(): string | null {
 
 /**
  * Guarded full-page redirect: same target only followed ONCE per 10 s.
- * But on the splash screen, if we're already stuck, we MUST break out —
- * so a `force` parameter bypasses the guard for /login only.
+ * `force` bypasses the guard (used for /login escapes).
  */
 function fullPageRedirect(target: string, force = false): void {
   try {
@@ -95,7 +90,7 @@ function fullPageRedirect(target: string, force = false): void {
 }
 
 /* ============================================================================
-   MD3 DESIGN TOKENS + STYLES (unchanged from v4)
+   MD3 DESIGN TOKENS + STYLES
 ============================================================================ */
 
 const C = {
@@ -246,12 +241,8 @@ export function readCurrentUser(): AnyUser | null {
 }
 
 /**
- * v5: Validates that a stored session is actually usable. A session is
- * "stale" (returns false) when:
- *   - There's no authToken
- *   - There's no currentUser, or it has no id
- *   - The currentUser has no tenantId (orphaned from a failed registration)
- * Stale sessions are cleared by the caller so the app shows login.
+ * Validates that a stored session is actually usable (has token, user id,
+ * and tenantId). Stale sessions are cleared by the caller.
  */
 function isValidSession(): boolean {
   const token = localStorage.getItem("authToken");
@@ -277,7 +268,7 @@ function clearStaleSession(): void {
 }
 
 /* ============================================================================
-   INSTITUTION AVAILABILITY CHECK (v6)
+   INSTITUTION AVAILABILITY CHECK
 ============================================================================ */
 
 /** Supabase: does ANY tenant exist? Never throws. */
@@ -299,18 +290,19 @@ async function supabaseHasInstitution(): Promise<boolean> {
 }
 
 /**
- * Local DB: does ANY tenant row exist? Looks up the Dexie table by name
- * (matches anything containing "tenant") so it works regardless of the
- * exact table name in ../database/db.
+ * Local DB: does ANY tenant/business row exist? Logs the actual table
+ * names so mismatches are visible in the console.
  */
 async function localHasInstitution(): Promise<boolean> {
   try {
     const tables: any[] = ((db as any).tables || []) as any[];
+    const names = tables.map((t) => String(t?.name || ""));
+    log(`Local tables: ${names.join(", ") || "(none)"}`);
     const tenantTable = tables.find((t) =>
-      /tenant/i.test(String(t?.name || ""))
+      /tenant|business|institution/i.test(String(t?.name || ""))
     );
     if (!tenantTable) {
-      log("No local tenant table found");
+      log("No local tenant-like table found (institution lives in Supabase only?)");
       return false;
     }
     const count = await tenantTable.count();
@@ -322,10 +314,8 @@ async function localHasInstitution(): Promise<boolean> {
 }
 
 /**
- * v6 gate: institution is "available" if it exists in Supabase OR the
- * local database. The Supabase check is capped at ~3 s so the splash
- * never hangs on a slow/blocked network — a timeout counts as
- * "not found", which routes to registration per the onboarding rule.
+ * Institution is "available" if it exists in Supabase OR the local DB.
+ * The Supabase check is capped at ~3 s; a timeout counts as "not found".
  */
 async function institutionExists(): Promise<boolean> {
   const [online, local] = await Promise.all([
@@ -350,8 +340,11 @@ function Startup(props: StartupProps) {
   const [status, setStatus] = useState("Getting ready…");
   const [skipReady, setSkipReady] = useState(false);
   const routed = useRef(false);
-
   const deadlineFired = useRef(false);
+
+  // v7: the institution gate must resolve before Login may render.
+  const [gateResolved, setGateResolved] = useState(false);
+  const gateResolvedRef = useRef(false);
 
   const [showLogin, setShowLogin] = useState<boolean>(() => {
     try {
@@ -365,11 +358,6 @@ function Startup(props: StartupProps) {
 
   useEffect(() => {
     log(`boot ${BOOT_VERSION} — showLogin=${showLogin}`);
-
-    if (showLogin) {
-      log("URL contains login — rendering Login directly");
-      return;
-    }
 
     let cancelled = false;
     const startedAt = Date.now();
@@ -395,7 +383,9 @@ function Startup(props: StartupProps) {
       }, wait);
     };
 
-    /* 1. HARD DEADLINE — always fires once via deadlineFired ref. */
+    /* 1. HARD DEADLINE — always fires once via deadlineFired ref.
+       As an escape hatch it may reveal Login, but it also resolves the
+       gate so the Login render isn't blocked. */
     const hardDeadline = window.setTimeout(() => {
       if (deadlineFired.current) return;
       deadlineFired.current = true;
@@ -404,6 +394,9 @@ function Startup(props: StartupProps) {
       const target = routeBySession();
       if (target === "/login") {
         if (!cancelled) {
+          log("Deadline escape: revealing login (gate resolved by force)");
+          gateResolvedRef.current = true;
+          setGateResolved(true);
           setShowLogin(true);
         } else {
           fullPageRedirect("/login", true);
@@ -433,84 +426,123 @@ function Startup(props: StartupProps) {
         setAppName(brand);
       }
 
-      // 3. Session gate — validate BEFORE proceeding.
-      if (!isValidSession()) {
-        log("No valid session — checking for an institution…");
-        clearStaleSession();
+      /* 3. SESSION GATE — valid session goes straight to role home. */
+      if (isValidSession()) {
+        const cu = readCurrentUser()!;
+        const token = localStorage.getItem("authToken")!;
+        log(`Valid session: user=${cu.username || cu.id}, role=${cu.role}, tenant=${cu.tenantId || cu.tenant_id}`);
 
-        // v6: institution gate — check Supabase AND local DB before
-        // deciding between Login and Registration.
-        setStatus("Checking for an institution…");
-        const found = await institutionExists();
+        // Open the local database (2.5 s cap).
+        setStatus("Opening local database…");
+        try {
+          await Promise.race([
+            db.open().catch((e: any) => log(`db.open error: ${e?.message || e}`)),
+            new Promise((res) => window.setTimeout(res, 2500)),
+          ]);
+          log("Database ready");
+        } catch (e: any) {
+          log(`Database open failed (non-fatal): ${e?.message || e}`);
+        }
         if (cancelled) return;
 
-        if (found) {
-          log("Institution available — showing login");
-          setShowLogin(true);
-        } else {
-          log("No institution available — routing to registration");
-          setShowRegister(true);
+        try {
+          startPeriodicPull();
+          log("Periodic pull started");
+        } catch (e: any) {
+          log(`startPeriodicPull error: ${e?.message || e}`);
         }
+
+        const offlineSession = token === OFFLINE_LOGIN_TOKEN || token.startsWith("offline-");
+        if (!offlineSession && typeof navigator !== "undefined" && navigator.onLine && cu.tenantId) {
+          setStatus("Syncing your data…");
+          log("Starting syncNow (fire-and-forget)…");
+          void syncNow(cu.tenantId).catch((e: any) =>
+            log(`syncNow error (non-fatal): ${e?.message || e}`)
+          );
+        } else {
+          log(`Skipping syncNow: offlineSession=${offlineSession}, online=${typeof navigator !== "undefined" ? navigator.onLine : "?"}`);
+        }
+
+        const target = routeForRole(cu.role, props.routes);
+        log(`Target route: ${target}`);
+        finish(target);
+
+        window.setTimeout(() => {
+          if (cancelled) return;
+          try {
+            const here = window.location.pathname + window.location.hash;
+            if (here.endsWith(target)) {
+              log("Navigation confirmed — URL matches target");
+              return;
+            }
+          } catch {
+            /* ignore */
+          }
+          log(`Navigation fallback: SPA nav didn't land on ${target} — forcing redirect`);
+          fullPageRedirect(target, target === "/login");
+        }, 2000);
         return;
       }
 
-      const cu = readCurrentUser()!;
-      const token = localStorage.getItem("authToken")!;
-      log(`Valid session: user=${cu.username || cu.id}, role=${cu.role}, tenant=${cu.tenantId || cu.tenant_id}`);
+      /* 4. INSTITUTION GATE (v7) — no valid session. Login may ONLY
+         appear if an institution exists in Supabase or the local DB.
+         This runs even when the URL was already /login. */
+      log("No valid session — checking for an institution…");
+      clearStaleSession();
+      if (!showLogin) setStatus("Checking for an institution…");
 
-      // 4. Open the local database (2.5 s cap).
-      setStatus("Opening local database…");
-      try {
-        await Promise.race([
-          db.open().catch((e: any) => log(`db.open error: ${e?.message || e}`)),
-          new Promise((res) => window.setTimeout(res, 2500)),
-        ]);
-        log("Database ready");
-      } catch (e: any) {
-        log(`Database open failed (non-fatal): ${e?.message || e}`);
-      }
-      if (cancelled) return;
-
-      // 5. Start the sync engine + one online refresh.
-      try {
-        startPeriodicPull();
-        log("Periodic pull started");
-      } catch (e: any) {
-        log(`startPeriodicPull error: ${e?.message || e}`);
-      }
-
-      const offlineSession = token === OFFLINE_LOGIN_TOKEN || token.startsWith("offline-");
-      if (!offlineSession && typeof navigator !== "undefined" && navigator.onLine && cu.tenantId) {
-        setStatus("Syncing your data…");
-        log("Starting syncNow (fire-and-forget)…");
-        void syncNow(cu.tenantId).catch((e: any) =>
-          log(`syncNow error (non-fatal): ${e?.message || e}`)
-        );
-      } else {
-        log(`Skipping syncNow: offlineSession=${offlineSession}, online=${typeof navigator !== "undefined" ? navigator.onLine : "?"}`);
-      }
-
-      // 6. Navigate to the role home.
-      const target = routeForRole(cu.role, props.routes);
-      log(`Target route: ${target}`);
-      finish(target);
-
-      // 7. Fallback: if SPA navigation didn't work after 2s, force a
-      //    full-page redirect.
-      window.setTimeout(() => {
+      if (!gateResolvedRef.current) {
+        const found = await institutionExists();
         if (cancelled) return;
-        try {
-          const here = window.location.pathname + window.location.hash;
-          if (here.endsWith(target)) {
-            log("Navigation confirmed — URL matches target");
+        gateResolvedRef.current = true;
+
+        if (!found) {
+          log("No institution available — login is blocked, routing to registration");
+
+          // Loop guard: if we already tried navigating to the register
+          // route recently and ended up back here, the route is probably
+          // missing — break the loop instead of spinning forever.
+          let justTried = false;
+          try {
+            const last = JSON.parse(
+              sessionStorage.getItem(REGISTER_NAV_GUARD) || "null"
+            );
+            justTried = !!(last && Date.now() - last.ts < 10000);
+          } catch {
+            /* ignore */
+          }
+          try {
+            sessionStorage.setItem(
+              REGISTER_NAV_GUARD,
+              JSON.stringify({ ts: Date.now() })
+            );
+          } catch {
+            /* ignore */
+          }
+
+          if (justTried) {
+            log(
+              "REGISTER LOOP DETECTED — the register route is likely missing " +
+              `from your <Routes>. Check REGISTER_ROUTE ("${REGISTER_ROUTE}") ` +
+              "against your router definition. Falling back to login."
+            );
+            setGateResolved(true);
+            setShowLogin(true);
             return;
           }
-        } catch {
-          /* ignore */
+
+          setShowRegister(true);
+          return;
         }
-        log(`Navigation fallback: SPA nav didn't land on ${target} — forcing redirect`);
-        fullPageRedirect(target, target === "/login");
-      }, 2000);
+
+        log("Institution available — login allowed");
+      } else {
+        log("Institution gate already resolved — institution available");
+      }
+
+      // Institution exists -> Login may render (in-place or via URL).
+      setGateResolved(true);
+      if (!showLogin) setShowLogin(true);
     })();
 
     return () => {
@@ -524,22 +556,19 @@ function Startup(props: StartupProps) {
 
   const skip = () => {
     log("Skip button clicked");
-    const target = routeBySessionPublic();
-    if (target === "/login") setShowLogin(true);
-    else fullPageRedirect(target, true);
+    if (isValidSession()) {
+      const target = routeForRole(readCurrentUser()!.role, props.routes);
+      fullPageRedirect(target, true);
+    }
+    // No valid session: the institution gate decides login vs register.
   };
-  function routeBySessionPublic(): string {
-    if (!isValidSession()) return "/login";
-    const cu = readCurrentUser()!;
-    return routeForRole(cu.role, props.routes);
-  }
 
   if (showRegister) {
     log("Rendering registration flow");
     return <Navigate to={REGISTER_ROUTE} replace />;
   }
 
-  if (showLogin) {
+  if (showLogin && gateResolved) {
     log("Rendering <Login /> in-place");
     return <Login routes={props.routes} />;
   }
