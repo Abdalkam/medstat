@@ -205,7 +205,13 @@ function getClient(): SbClient {
         "section 3 in supabaseCourseSync.ts."
     );
   }
-  cachedClient = SupabaseJS.createClient(creds.url, creds.key);
+  cachedClient = SupabaseJS.createClient(creds.url, creds.key, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+    },
+  });
   return cachedClient;
 }
 
