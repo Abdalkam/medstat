@@ -1,47 +1,49 @@
 /* ============================================================================
-   src/auth/startup.tsx — v5: BULLETPROOF session gate + diagnostic logging
+   src/auth/startup.tsx — v6: session gate + institution availability gate
    ============================================================================
 
-   v5 fixes three hang bugs in v4:
+   v6 changes (on top of v5):
 
-   1. STALE SESSION REDIRECT LOOP — if authToken + currentUser exist from a
-      previous failed login, v4 navigates to /admin. If that route fails to
-      load (sync issues), the 2s fallback fires fullPageRedirect("/admin"),
-      the page reloads, startup sees the same stale session, tries again —
-      but the redirect guard blocks it (10s cooldown) -> stuck on splash.
-      FIX: v5 clears any token that isn't a real session before proceeding,
-      and validates the currentUser object has a tenantId (no orphan sessions).
+   4. INSTITUTION GATE — when there is no valid session, the app now
+      checks whether ANY institution exists, in BOTH Supabase (tenants
+      table) and the local database, before showing login:
 
-   2. cancelled FLAG KILLS THE HARD DEADLINE — v4's 6s deadline checks
-      `if (cancelled) return;`, but `cancelled` is set by the cleanup
-      function which runs on ANY re-render. If any state update fires
-      before the deadline, the escape hatch silently disappears.
-      FIX: v5 uses a separate `deadlineFired` ref — the deadline always
-      runs once, regardless of `cancelled`.
+        - institution found (either source)  -> Login
+        - institution NOT found (or Supabase unreachable within 3 s
+          and local DB empty)               -> registration flow
 
-   3. NO LOGGING — when the app hangs, there's zero visibility into which
-      step is stuck.
-      FIX: v5 logs every step with [Startup] prefix + timestamps.
+      A valid session skips the check entirely — logged-in users go
+      straight to their role home as before.
 
-   Everything else (MD3 design, in-place login handover, role routing,
-   Skip button, boot version footer) is unchanged from v4.
+   v5 fixes (still in effect):
+
+   1. STALE SESSION REDIRECT LOOP — invalid sessions are cleared before
+      proceeding.
+   2. HARD DEADLINE always fires once via deadlineFired ref, regardless
+      of effect cleanup.
+   3. [Startup] diagnostic logging on every step.
    ============================================================================ */
 
 import { useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Navigate, useNavigate } from "react-router-dom";
 
 import { db } from "../database/db";
 import * as SyncEngine from "../database/sync";
 const startPeriodicPull = (SyncEngine as any).startPeriodicPull ?? (() => {});
 const syncNow = (SyncEngine as any).syncNow ?? (async () => {});
+import { supabase } from "./supabase";
 import Login from "./Login";
 
 /* ------------------------------------------------------------------ */
 /* Shared constants                                                     */
 /* ------------------------------------------------------------------ */
 
+// ⚠️ Must match the real registration route in your <Routes> definition,
+//    and the REGISTER_ROUTE constant in Login.tsx.
+const REGISTER_ROUTE = "/register";
+
 const OFFLINE_LOGIN_TOKEN = "offline-mode-pending-sync";
-const BOOT_VERSION = "v5";
+const BOOT_VERSION = "v6";
 const REDIRECT_GUARD_KEY = "sp_last_redirect";
 
 function log(msg: string): void {
@@ -66,7 +68,7 @@ export function brandFromSettings(): string | null {
 /**
  * Guarded full-page redirect: same target only followed ONCE per 10 s.
  * But on the splash screen, if we're already stuck, we MUST break out —
- * so v5 adds a `force` parameter that bypasses the guard for /login only.
+ * so a `force` parameter bypasses the guard for /login only.
  */
 function fullPageRedirect(target: string, force = false): void {
   try {
@@ -255,8 +257,6 @@ function isValidSession(): boolean {
   const token = localStorage.getItem("authToken");
   const cu = readCurrentUser();
   if (!token || !cu?.id) return false;
-  // v5: require a tenantId — without it the sync engine and admin pages
-  // can't scope their reads, causing the "stuck on loading" symptom.
   const tid = cu.tenantId || cu.tenant_id;
   if (!tid) {
     log("Session has no tenantId — clearing stale session");
@@ -277,6 +277,69 @@ function clearStaleSession(): void {
 }
 
 /* ============================================================================
+   INSTITUTION AVAILABILITY CHECK (v6)
+============================================================================ */
+
+/** Supabase: does ANY tenant exist? Never throws. */
+async function supabaseHasInstitution(): Promise<boolean> {
+  try {
+    const { data, error } = await supabase
+      .from("tenants")
+      .select("id")
+      .limit(1);
+    if (error) {
+      log(`tenants query error: ${error.message}`);
+      return false;
+    }
+    return Array.isArray(data) && data.length > 0;
+  } catch (e: any) {
+    log(`tenants query threw: ${e?.message || e}`);
+    return false;
+  }
+}
+
+/**
+ * Local DB: does ANY tenant row exist? Looks up the Dexie table by name
+ * (matches anything containing "tenant") so it works regardless of the
+ * exact table name in ../database/db.
+ */
+async function localHasInstitution(): Promise<boolean> {
+  try {
+    const tables: any[] = ((db as any).tables || []) as any[];
+    const tenantTable = tables.find((t) =>
+      /tenant/i.test(String(t?.name || ""))
+    );
+    if (!tenantTable) {
+      log("No local tenant table found");
+      return false;
+    }
+    const count = await tenantTable.count();
+    return count > 0;
+  } catch (e: any) {
+    log(`local tenant check failed: ${e?.message || e}`);
+    return false;
+  }
+}
+
+/**
+ * v6 gate: institution is "available" if it exists in Supabase OR the
+ * local database. The Supabase check is capped at ~3 s so the splash
+ * never hangs on a slow/blocked network — a timeout counts as
+ * "not found", which routes to registration per the onboarding rule.
+ */
+async function institutionExists(): Promise<boolean> {
+  const [online, local] = await Promise.all([
+    Promise.race([
+      supabaseHasInstitution(),
+      new Promise<boolean>((res) => window.setTimeout(() => res(false), 3000)),
+    ]),
+    localHasInstitution().catch(() => false),
+  ]);
+  log(`institution check: supabase=${online}, local=${local}`);
+  return online || local;
+}
+
+/* ============================================================================
    <Startup /> — default export
 ============================================================================ */
 
@@ -288,8 +351,6 @@ function Startup(props: StartupProps) {
   const [skipReady, setSkipReady] = useState(false);
   const routed = useRef(false);
 
-  // v5: deadlineFired is SEPARATE from cancelled — the hard deadline
-  // always runs once, even if the effect was cleaned up by a re-render.
   const deadlineFired = useRef(false);
 
   const [showLogin, setShowLogin] = useState<boolean>(() => {
@@ -299,6 +360,8 @@ function Startup(props: StartupProps) {
       return false;
     }
   });
+
+  const [showRegister, setShowRegister] = useState(false);
 
   useEffect(() => {
     log(`boot ${BOOT_VERSION} — showLogin=${showLogin}`);
@@ -332,23 +395,17 @@ function Startup(props: StartupProps) {
       }, wait);
     };
 
-    /* 1. HARD DEADLINE — v5: uses deadlineFired ref, NOT cancelled.
-       The deadline ALWAYS fires once, even if the effect was cleaned up
-       by a re-render. This is the ultimate escape hatch. */
+    /* 1. HARD DEADLINE — always fires once via deadlineFired ref. */
     const hardDeadline = window.setTimeout(() => {
       if (deadlineFired.current) return;
       deadlineFired.current = true;
       log(`HARD DEADLINE fired after ${Date.now() - startedAt}ms`);
 
-      // Always re-validate the session at deadline time — it may have
-      // been cleared by the async block above.
       const target = routeBySession();
       if (target === "/login") {
         if (!cancelled) {
           setShowLogin(true);
         } else {
-          // Effect was cleaned up — force a full-page redirect to /login
-          // so the user is never stuck on a dead splash.
           fullPageRedirect("/login", true);
         }
       } else {
@@ -376,12 +433,24 @@ function Startup(props: StartupProps) {
         setAppName(brand);
       }
 
-      // 3. v5: Session gate — validate BEFORE proceeding. Clear stale
-      //    sessions so they can't cause a redirect loop.
+      // 3. Session gate — validate BEFORE proceeding.
       if (!isValidSession()) {
-        log("No valid session — clearing and showing login");
+        log("No valid session — checking for an institution…");
         clearStaleSession();
-        setShowLogin(true);
+
+        // v6: institution gate — check Supabase AND local DB before
+        // deciding between Login and Registration.
+        setStatus("Checking for an institution…");
+        const found = await institutionExists();
+        if (cancelled) return;
+
+        if (found) {
+          log("Institution available — showing login");
+          setShowLogin(true);
+        } else {
+          log("No institution available — routing to registration");
+          setShowRegister(true);
+        }
         return;
       }
 
@@ -414,7 +483,6 @@ function Startup(props: StartupProps) {
       if (!offlineSession && typeof navigator !== "undefined" && navigator.onLine && cu.tenantId) {
         setStatus("Syncing your data…");
         log("Starting syncNow (fire-and-forget)…");
-        // Fire-and-forget — never blocks navigation.
         void syncNow(cu.tenantId).catch((e: any) =>
           log(`syncNow error (non-fatal): ${e?.message || e}`)
         );
@@ -428,8 +496,7 @@ function Startup(props: StartupProps) {
       finish(target);
 
       // 7. Fallback: if SPA navigation didn't work after 2s, force a
-      //    full-page redirect. v5: force=true for /login so the guard
-      //    can't trap the user on the splash.
+      //    full-page redirect.
       window.setTimeout(() => {
         if (cancelled) return;
         try {
@@ -465,6 +532,11 @@ function Startup(props: StartupProps) {
     if (!isValidSession()) return "/login";
     const cu = readCurrentUser()!;
     return routeForRole(cu.role, props.routes);
+  }
+
+  if (showRegister) {
+    log("Rendering registration flow");
+    return <Navigate to={REGISTER_ROUTE} replace />;
   }
 
   if (showLogin) {
