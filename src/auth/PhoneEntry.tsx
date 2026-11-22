@@ -1,19 +1,448 @@
 import { useState } from "react";
+import type { FormEvent, ReactNode } from "react";
 import { sendATCode } from "../api/authApi";
 import { supabase } from "../auth/supabase";
 
-const MEDICAL_BLUE = "#007AFF";
+/* -------------------------------------------------------------------------- */
+/* Material Design 3 design tokens                                             */
+/* -------------------------------------------------------------------------- */
 
-export default function PhoneEntry({ onSent, onBack }: { onSent: (phone: string) => void; onBack: () => void }) {
+const C = {
+  primary: "#0B57D0",
+  onSurface: "#1F1F1F",
+  onSurfaceVariant: "#444746",
+  outlineVariant: "#C4C7C5",
+  red: "#B3261E",
+  redBg: "#F9DEDC",
+};
+
+const FONT =
+  "'Google Sans', 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif";
+
+/* -------------------------------------------------------------------------- */
+/* Styles                                                                      */
+/* -------------------------------------------------------------------------- */
+
+const PE_CSS = `
+.pe-root {
+  min-height: 100vh;
+  min-height: 100dvh;
+  box-sizing: border-box;
+  display: flex;
+  overflow-y: auto;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(120% 90% at 50% 0%, #FFFFFF 0%, #F8FAFD 55%, #EEF3FB 100%);
+  font-family: ${FONT};
+  color: ${C.onSurface};
+  padding: env(safe-area-inset-top) env(safe-area-inset-right)
+           env(safe-area-inset-bottom) env(safe-area-inset-left);
+  -webkit-tap-highlight-color: transparent;
+  position: relative;
+}
+
+.pe-root * {
+  box-sizing: border-box;
+}
+
+.pe-back {
+  position: absolute;
+  top: calc(16px + env(safe-area-inset-top));
+  left: calc(16px + env(safe-area-inset-left));
+  width: 44px;
+  height: 44px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: ${C.primary};
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background .2s cubic-bezier(.2, 0, 0, 1);
+  z-index: 10;
+}
+
+.pe-back:hover {
+  background: rgba(11, 87, 208, .08);
+}
+
+.pe-panel {
+  width: 100%;
+  max-width: 460px;
+  margin: auto;
+  display: flex;
+  flex-direction: column;
+  padding: clamp(14px, 3vh, 32px) clamp(16px, 4vw, 28px);
+}
+
+.pe-card {
+  width: 100%;
+  background: #FFFFFF;
+  border-radius: 28px;
+  box-shadow: 0 1px 2px 0 rgba(0,0,0,.12),
+              0 2px 6px 2px rgba(0,0,0,.08);
+  padding: clamp(22px, 5vw, 36px);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.pe-card-title {
+  font-size: clamp(21px, 5.6vw, 26px);
+  font-weight: 600;
+  margin: 2px 0 0;
+  letter-spacing: .1px;
+  line-height: 1.25;
+}
+
+.pe-card-sub {
+  font-size: 14px;
+  color: ${C.onSurfaceVariant};
+  margin: 0 0 4px;
+  line-height: 1.5;
+}
+
+.pe-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.pe-field {
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: 56px;
+  border-radius: 12px;
+  background: #FFFFFF;
+  border: 1px solid ${C.outlineVariant};
+  transition: all .2s cubic-bezier(.2, 0, 0, 1);
+}
+
+.pe-field:focus-within {
+  border-color: ${C.primary};
+  box-shadow: inset 0 0 0 1px ${C.primary};
+}
+
+.pe-field.pe-invalid {
+  border-color: ${C.red};
+  box-shadow: inset 0 0 0 1px ${C.red};
+}
+
+.pe-field.pe-invalid:focus-within {
+  border-color: ${C.red};
+  box-shadow: inset 0 0 0 1px ${C.red};
+}
+
+.pe-lead {
+  position: absolute;
+  left: 14px;
+  display: flex;
+  color: ${C.onSurfaceVariant};
+  transition: all .2s cubic-bezier(.2, 0, 0, 1);
+}
+
+.pe-field:focus-within .pe-lead {
+  color: ${C.primary};
+}
+
+.pe-field.pe-invalid .pe-lead,
+.pe-field.pe-invalid:focus-within .pe-lead {
+  color: ${C.red};
+}
+
+.pe-input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border: none;
+  outline: none;
+  background: transparent;
+  padding: 0 46px;
+  font-family: inherit;
+  font-size: 16px;
+  color: ${C.onSurface};
+}
+
+.pe-input:disabled {
+  opacity: .55;
+}
+
+.pe-float {
+  position: absolute;
+  left: 46px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: ${C.onSurfaceVariant};
+  font-size: 15px;
+  pointer-events: none;
+  transition: all .2s cubic-bezier(.2, 0, 0, 1);
+  white-space: nowrap;
+}
+
+.pe-float.pe-floated {
+  top: 0;
+  transform: translateY(-50%) scale(.76);
+  transform-origin: left center;
+  background: #FFFFFF;
+  padding: 0 5px;
+  margin-left: -5px;
+  color: ${C.onSurfaceVariant};
+}
+
+.pe-field:focus-within .pe-float.pe-floated {
+  color: ${C.primary};
+}
+
+.pe-field.pe-invalid .pe-float.pe-floated,
+.pe-field.pe-invalid:focus-within .pe-float.pe-floated {
+  color: ${C.red};
+}
+
+.pe-btn {
+  position: relative;
+  height: 48px;
+  width: 100%;
+  border: none;
+  border-radius: 999px;
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: .2px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  cursor: pointer;
+  transition: all .2s cubic-bezier(.2, 0, 0, 1);
+}
+
+.pe-btn:active:not(:disabled) {
+  transform: scale(.985);
+}
+
+.pe-btn:disabled {
+  opacity: .42;
+  cursor: default;
+}
+
+.pe-btn-filled {
+  background: ${C.primary};
+  color: #FFFFFF;
+  box-shadow: 0 1px 2px 0 rgba(0,0,0,.10),
+              0 1px 3px 1px rgba(0,0,0,.07);
+}
+
+.pe-btn-filled:hover:not(:disabled) {
+  box-shadow: 0 1px 2px 0 rgba(0,0,0,.12),
+              0 2px 6px 2px rgba(0,0,0,.08);
+}
+
+.pe-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  border-radius: 12px;
+  padding: 11px 13px;
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+
+.pe-banner svg {
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.pe-spinner {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  border: 2.5px solid currentColor;
+  border-top-color: transparent;
+  animation: peSpin .8s linear infinite;
+}
+
+@keyframes peSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.pe-focusable:focus-visible {
+  outline: 2px solid ${C.primary};
+  outline-offset: 2px;
+}
+
+@media (max-width: 374px) {
+  .pe-field {
+    height: 52px;
+  }
+
+  .pe-float {
+    left: 42px;
+  }
+}
+
+@media (max-height: 520px) and (orientation: landscape) {
+  .pe-panel {
+    padding-top: 10px;
+    padding-bottom: 10px;
+  }
+
+  .pe-card {
+    padding: 16px 22px;
+    gap: 9px;
+    border-radius: 20px;
+  }
+
+  .pe-field {
+    height: 48px;
+  }
+
+  .pe-btn {
+    height: 42px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pe-root *,
+  .pe-root *::before,
+  .pe-root *::after {
+    transition: none !important;
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+`;
+
+/* -------------------------------------------------------------------------- */
+/* SVG icons                                                                   */
+/* -------------------------------------------------------------------------- */
+
+const iconProps = {
+  fill: "none",
+  stroke: "currentColor",
+  strokeWidth: 1.8,
+  strokeLinecap: "round" as const,
+  strokeLinejoin: "round" as const,
+};
+
+function IconChevronLeft({ size = 22 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2.2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <polyline points="15 18 9 12 15 6" />
+    </svg>
+  );
+}
+
+function IconPhone({ size = 20 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" {...iconProps} aria-hidden="true">
+      <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.79 19.79 0 0 1 2.12 4.18 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92z" />
+    </svg>
+  );
+}
+
+function IconAlert({ size = 20 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" {...iconProps} aria-hidden="true">
+      <circle cx="12" cy="12" r="9" />
+      <line x1="12" y1="7.5" x2="12" y2="13" />
+      <line x1="12" y1="16.2" x2="12" y2="16.3" />
+    </svg>
+  );
+}
+
+function IconArrowRight({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" {...iconProps} aria-hidden="true">
+      <line x1="5" y1="12" x2="19" y2="12" />
+      <polyline points="12 5 19 12 12 19" />
+    </svg>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* MD3 floating-label field                                                    */
+/* -------------------------------------------------------------------------- */
+
+function PeField(props: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  type?: string;
+  icon: ReactNode;
+  autoComplete?: string;
+  autoFocus?: boolean;
+  invalid?: boolean;
+  describedBy?: string;
+}) {
+  const [focused, setFocused] = useState(false);
+  const floated = focused || props.value.length > 0;
+
+  return (
+    <div className={`pe-field${props.invalid ? " pe-invalid" : ""}`}>
+      <span className="pe-lead">{props.icon}</span>
+
+      <input
+        className="pe-input"
+        type={props.type ?? "text"}
+        value={props.value}
+        placeholder=" "
+        autoComplete={props.autoComplete}
+        autoFocus={props.autoFocus}
+        spellCheck={false}
+        onChange={(e) => props.onChange(e.target.value)}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
+        aria-label={props.label}
+        aria-invalid={props.invalid}
+        aria-describedby={props.describedBy}
+      />
+
+      <label className={`pe-float${floated ? " pe-floated" : ""}`}>
+        {props.label}
+      </label>
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Phone entry screen                                                          */
+/* -------------------------------------------------------------------------- */
+
+const PHONE_PATTERN = /^\+?\d{10,15}$/;
+
+export default function PhoneEntry({
+  onSent,
+  onBack,
+}: {
+  onSent: (phone: string) => void;
+  onBack: () => void;
+}) {
   const [phone, setPhone] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  async function handleSend(e: React.FormEvent) {
+  async function handleSend(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
+
     const cleanPhone = phone.replace(/\s/g, "").trim();
 
-    if (cleanPhone.length < 10 || !cleanPhone.match(/^\+?\d{10,15}$/)) {
+    // Accept international numbers with or without a leading +.
+    if (cleanPhone.length < 10 || !PHONE_PATTERN.test(cleanPhone)) {
       setError("Please enter a valid phone number (e.g., +256712345678)");
       return;
     }
@@ -31,76 +460,108 @@ export default function PhoneEntry({ onSent, onBack }: { onSent: (phone: string)
       if (checkError) {
         console.warn("Tenant check failed:", checkError);
       } else if (existingTenant) {
-        setError(`This phone is already registered${existingTenant.business_name ? ` for "${existingTenant.business_name}"` : ""}. Please login instead.`);
-        setLoading(false);
+        setError(
+          `This phone is already registered${
+            existingTenant.business_name
+              ? ` for "${existingTenant.business_name}"`
+              : ""
+          }. Please login instead.`,
+        );
+        // `finally` resets loading — no need to do it here.
         return;
       }
 
       await sendATCode(cleanPhone);
       onSent(cleanPhone);
-    } catch (err: any) {
-      setError(err.message || "Failed to send verification code. Check your network.");
+    } catch (err: unknown) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Failed to send verification code. Check your network.",
+      );
     } finally {
       setLoading(false);
     }
   }
 
-  const inputStyle: React.CSSProperties = {
-    width: "100%", height: "56px", padding: "0 16px", border: "none", outline: "none",
-    background: "#F2F2F7", fontSize: "17px", color: "#1C1C1E", boxSizing: "border-box",
-    borderRadius: "12px", marginBottom: "12px"
-  };
+  // Mirror the submit handler's cleaning so the button's disabled state
+  // matches what will actually be validated, not the raw (possibly
+  // space-containing) input.
+  const cleanPhone = phone.replace(/\s/g, "").trim();
+  const submitDisabled = loading || !PHONE_PATTERN.test(cleanPhone);
 
   return (
-    <div style={{ width: "100%", height: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#FFFFFF", fontFamily: "-apple-system, sans-serif", overflow: "hidden", position: "relative", padding: "24px" }}>
-      <style>{`
-        @keyframes scrollBg {
-          0% { background-position: 0px 0px; }
-          100% { background-position: 120px 120px; }
-        }
-        @keyframes fadeUp {
-          from { opacity: 0; transform: translateY(10px); }
-          to { opacity: 1; transform: translateY(0); }
-        }
-      `}</style>
+    <div className="pe-root">
+      <style>{PE_CSS}</style>
 
-      {/* Animated Watermark Background */}
-      <div style={{
-        position: "absolute",
-        top: 0, left: 0, right: 0, bottom: 0,
-        backgroundImage: "url(/loadlogo.png)",
-        backgroundRepeat: "repeat",
-        backgroundSize: "120px 120px",
-        opacity: 0.08,
-        animation: "scrollBg 30s linear infinite",
-        zIndex: 0
-      }} />
-
-      <button onClick={onBack} style={{ position: "absolute", top: "24px", left: "24px", width: "44px", height: "44px", borderRadius: "50%", background: "transparent", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: MEDICAL_BLUE, zIndex: 10 }}>
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
+      <button
+        type="button"
+        className="pe-back pe-focusable"
+        onClick={onBack}
+        aria-label="Back"
+      >
+        <IconChevronLeft />
       </button>
 
-      <div style={{ position: "relative", zIndex: 1, width: "100%", maxWidth: "400px", display: "flex", flexDirection: "column", alignItems: "center", animation: "fadeUp 0.6s ease-out" }}>
-        <img src="/loadlogo.png" alt="App logo" style={{ width: 80, height: 80, objectFit: "contain", display: "block", margin: "0 auto 24px", borderRadius: 20 }} />
-        <h1 style={{ fontSize: "24px", color: "#1C1C1E", fontWeight: "700", marginBottom: "8px" }}>Create Account</h1>
-        <p style={{ color: "#8E8E93", fontSize: "15px", marginBottom: "32px", textAlign: "center" }}>Enter your phone number to get started</p>
+      <main className="pe-panel">
+        <div className="pe-card">
+          <div>
+            <h1 className="pe-card-title">Create Account</h1>
 
-        <form onSubmit={handleSend} style={{ width: "100%" }}>
-          <input
-            type="tel"
-            placeholder="Phone number (+256...)"
-            value={phone}
-            onChange={e => { setPhone(e.target.value); setError(""); }}
-            style={inputStyle}
-            autoFocus
-            autoComplete="tel"
-          />
-          {error && <p style={{ textAlign: "center", color: "#FF3B30", fontSize: "14px", marginBottom: "12px" }}>{error}</p>}
-          <button type="submit" disabled={loading || phone.trim().length < 10} style={{ width: "100%", height: "56px", borderRadius: "12px", border: "none", background: MEDICAL_BLUE, color: "white", fontSize: "16px", fontWeight: "600", cursor: (loading || phone.trim().length < 10) ? "not-allowed" : "pointer", opacity: (loading || phone.trim().length < 10) ? 0.4 : 1, transition: "opacity 0.2s" }}>
-            {loading ? "Sending..." : "Send Code"}
-          </button>
-        </form>
-      </div>
+            <p className="pe-card-sub">
+              Enter your phone number to get started — we'll text you a
+              verification code.
+            </p>
+          </div>
+
+          {error && (
+            <div
+              id="pe-error"
+              className="pe-banner"
+              style={{ background: C.redBg, color: C.red }}
+              role="alert"
+            >
+              <IconAlert size={18} />
+              <span>{error}</span>
+            </div>
+          )}
+
+          <form className="pe-form" onSubmit={handleSend} aria-busy={loading}>
+            <PeField
+              label="Phone number"
+              value={phone}
+              onChange={(v) => {
+                setPhone(v);
+                setError("");
+              }}
+              type="tel"
+              autoComplete="tel"
+              autoFocus
+              icon={<IconPhone />}
+              invalid={!!error}
+              describedBy={error ? "pe-error" : undefined}
+            />
+
+            <button
+              type="submit"
+              className="pe-btn pe-btn-filled pe-focusable"
+              disabled={submitDisabled}
+            >
+              {loading ? (
+                <>
+                  <span className="pe-spinner" aria-hidden="true" />
+                  Sending...
+                </>
+              ) : (
+                <>
+                  Send Code
+                  <IconArrowRight />
+                </>
+              )}
+            </button>
+          </form>
+        </div>
+      </main>
     </div>
   );
 }
