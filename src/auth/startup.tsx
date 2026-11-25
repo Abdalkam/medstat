@@ -1,24 +1,34 @@
 /* ============================================================================
-   src/auth/startup.tsx — v7: institution gate enforcement
+   src/auth/startup.tsx — v7.1: institution gate enforcement + dialog
    ============================================================================
 
-   v7 changes (on top of v6):
+   v7.1 changes (on top of v7):
 
+   - Institution check is now sequential: Supabase first (source of truth,
+     3s cap), then local cache fallback. When Supabase confirms an
+     institution, the tenantId + businessName are merged into localStorage
+     so future boots work offline.
+   - When NO institution exists (Supabase unreachable AND local cache
+     empty), the app shows an "Institution not found" dialog with
+     "Create new institution" and "Retry" buttons. Login is HARD-BLOCKED
+     in this state.
+   - The 6s hard deadline now respects the institution gate: it only
+     reveals Login if institutionCheckResult === "found". Otherwise it
+     shows the dialog (no more fallback-to-login without an institution).
+   - The Skip button is gated the same way.
+   - Removed the showRegister auto-redirect and the REGISTER_NAV_GUARD
+     loop-guard logic — the dialog replaces it.
+
+   v7 changes still in effect:
    - Institution check runs on EVERY boot without a valid session — even
-     when the URL points directly at /login. The login screen can only
-     render after the gate confirms an institution exists (Supabase or
-     local DB).
-   - Login is gated behind `gateResolved` — no more fallback-to-login
-     when navigation goes sideways.
-   - Register navigation has a loop guard (missing route detection).
+     when the URL points directly at /login.
+   - Login is gated behind `gateResolved` — no fallback-to-login when
+     navigation goes sideways.
    - Local DB check logs the actual table names for diagnosis.
-
-   v5 fixes still in effect: stale-session clearing, hard deadline via
-   deadlineFired ref, [Startup] diagnostic logging.
    ============================================================================ */
 
 import { useEffect, useRef, useState } from "react";
-import { Navigate, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 
 import { db } from "../database/db";
 import * as SyncEngine from "../database/sync";
@@ -32,15 +42,12 @@ import Login from "./Login";
 /* ------------------------------------------------------------------ */
 
 // ⚠️ MUST match the real registration route in your <Routes> definition
-//    AND the REGISTER_ROUTE constant in Login.tsx. Run:
-//      findstr /s /n /c:"<Route" src\*.tsx
-//    to see every route your app actually has.
+//    AND the REGISTER_ROUTE constant in Login.tsx.
 const REGISTER_ROUTE = "/register";
 
 const OFFLINE_LOGIN_TOKEN = "offline-mode-pending-sync";
-const BOOT_VERSION = "v7";
+const BOOT_VERSION = "v7.1";
 const REDIRECT_GUARD_KEY = "sp_last_redirect";
-const REGISTER_NAV_GUARD = "sp_register_nav";
 
 function log(msg: string): void {
   console.info(`[Startup ${BOOT_VERSION}] ${msg}`);
@@ -202,6 +209,73 @@ const CSS = `
 }
 `;
 
+const DIALOG_CSS = `
+.infd-root {
+  position: fixed; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,0.45);
+  font-family: ${FONT};
+  padding: 24px;
+  box-sizing: border-box;
+  z-index: 9999;
+}
+.infd-card {
+  width: 100%; max-width: 380px;
+  background: #FFFFFF;
+  border-radius: 28px;
+  padding: 32px 24px 24px;
+  box-shadow: 0 24px 64px rgba(0,0,0,0.25);
+  text-align: center;
+  animation: infdIn 0.28s cubic-bezier(0.2, 0, 0, 1);
+}
+@keyframes infdIn {
+  from { opacity: 0; transform: scale(0.92) translateY(8px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
+}
+.infd-icon {
+  width: 56px; height: 56px;
+  margin: 0 auto 16px;
+  border-radius: 50%;
+  background: ${C.primaryContainer};
+  display: flex; align-items: center; justify-content: center;
+  color: ${C.primary};
+}
+.infd-title {
+  font-size: 20px; font-weight: 600;
+  color: ${C.onSurface};
+  margin: 0 0 12px;
+  letter-spacing: 0.15px;
+}
+.infd-message {
+  font-size: 14px; line-height: 1.55;
+  color: ${C.onSurfaceVariant};
+  margin: 0 0 24px;
+}
+.infd-btn-primary {
+  width: 100%; height: 48px;
+  border: none; border-radius: 999px;
+  background: ${C.primary}; color: #fff;
+  font-family: ${FONT}; font-size: 15px; font-weight: 600;
+  letter-spacing: 0.3px;
+  cursor: pointer;
+  transition: background 0.2s cubic-bezier(0.2, 0, 0, 1);
+}
+.infd-btn-primary:hover { background: ${C.primaryDeep}; }
+.infd-btn-secondary {
+  width: 100%; height: 44px;
+  margin-top: 8px;
+  border: none; border-radius: 999px;
+  background: transparent; color: ${C.primaryDeep};
+  font-family: ${FONT}; font-size: 14px; font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s cubic-bezier(0.2, 0, 0, 1);
+}
+.infd-btn-secondary:hover { background: ${C.primaryContainer}; }
+@media (prefers-reduced-motion: reduce) {
+  .infd-card { animation: none; }
+}
+`;
+
 /* ============================================================================
    TYPES + ROLE ROUTING
 ============================================================================ */
@@ -269,31 +343,70 @@ function clearStaleSession(): void {
 
 /* ============================================================================
    INSTITUTION AVAILABILITY CHECK
+   Supabase is the source of truth. Local cache is a fallback only.
 ============================================================================ */
 
-/** Supabase: does ANY tenant exist? Never throws. */
-async function supabaseHasInstitution(): Promise<boolean> {
+export interface InstitutionInfo {
+  exists: boolean;
+  tenantId?: string;
+  businessName?: string;
+  source: "supabase" | "local";
+}
+
+/**
+ * Supabase: returns the first tenant row (or null). Source of truth.
+ * Never throws — returns { exists: false } on any failure.
+ */
+async function supabaseHasInstitution(): Promise<InstitutionInfo> {
   try {
     const { data, error } = await supabase
       .from("tenants")
-      .select("id")
-      .limit(1);
+      .select("id, business_name")
+      .limit(1)
+      .maybeSingle();
+
     if (error) {
       log(`tenants query error: ${error.message}`);
-      return false;
+      return { exists: false, source: "supabase" };
     }
-    return Array.isArray(data) && data.length > 0;
+    if (!data) {
+      return { exists: false, source: "supabase" };
+    }
+    return {
+      exists: true,
+      tenantId: String(data.id),
+      businessName: data.business_name ?? "",
+      source: "supabase",
+    };
   } catch (e: any) {
     log(`tenants query threw: ${e?.message || e}`);
-    return false;
+    return { exists: false, source: "supabase" };
   }
 }
 
 /**
- * Local DB: does ANY tenant/business row exist? Logs the actual table
- * names so mismatches are visible in the console.
+ * Local fallback: checks the localStorage cache first (fast, no Dexie),
+ * then scans Dexie tables for a tenant-like row.
  */
-async function localHasInstitution(): Promise<boolean> {
+async function localHasInstitution(): Promise<InstitutionInfo> {
+  // 1. localStorage cache (set by persistInstitutionToLocal on prior boots)
+  try {
+    const cachedTenantId = localStorage.getItem("institutionTenantId");
+    if (cachedTenantId) {
+      const cachedName = brandFromSettings() ?? "";
+      log(`Local cache hit: tenantId=${cachedTenantId}, name=${cachedName || "(none)"}`);
+      return {
+        exists: true,
+        tenantId: cachedTenantId,
+        businessName: cachedName,
+        source: "local",
+      };
+    }
+  } catch {
+    /* ignore */
+  }
+
+  // 2. Dexie tables (legacy / future-proof path)
   try {
     const tables: any[] = ((db as any).tables || []) as any[];
     const names = tables.map((t) => String(t?.name || ""));
@@ -302,31 +415,79 @@ async function localHasInstitution(): Promise<boolean> {
       /tenant|business|institution/i.test(String(t?.name || ""))
     );
     if (!tenantTable) {
-      log("No local tenant-like table found (institution lives in Supabase only?)");
-      return false;
+      log("No local tenant-like table found — relying on localStorage cache only");
+      return { exists: false, source: "local" };
     }
     const count = await tenantTable.count();
-    return count > 0;
+    return { exists: count > 0, source: "local" };
   } catch (e: any) {
     log(`local tenant check failed: ${e?.message || e}`);
-    return false;
+    return { exists: false, source: "local" };
   }
 }
 
 /**
- * Institution is "available" if it exists in Supabase OR the local DB.
- * The Supabase check is capped at ~3 s; a timeout counts as "not found".
+ * Merge step: persist Supabase institution info into local cache so future
+ * boots (and offline boots) can answer "yes" without hitting Supabase.
+ * Does NOT clobber branding fields it doesn't own.
+ */
+function persistInstitutionToLocal(info: InstitutionInfo): void {
+  try {
+    if (info.tenantId) {
+      localStorage.setItem("institutionTenantId", info.tenantId);
+    }
+
+    if (info.businessName) {
+      let settings: Record<string, unknown> = {};
+      try {
+        settings = JSON.parse(
+          localStorage.getItem("localBusinessSettings") || "{}"
+        );
+      } catch {
+        /* ignore corrupt cache */
+      }
+      // Only overwrite the name; preserve logo, login_background, etc.
+      settings.businessName = info.businessName;
+      localStorage.setItem("localBusinessSettings", JSON.stringify(settings));
+    }
+  } catch {
+    /* storage unavailable or full — non-fatal */
+  }
+}
+
+/**
+ * Sequential check with merge:
+ *   1. Supabase (3s cap) — source of truth.
+ *   2. If found, merge to local cache and return true.
+ *   3. If not found (or timed out), fall back to local cache.
  */
 async function institutionExists(): Promise<boolean> {
-  const [online, local] = await Promise.all([
-    Promise.race([
-      supabaseHasInstitution(),
-      new Promise<boolean>((res) => window.setTimeout(() => res(false), 3000)),
-    ]),
-    localHasInstitution().catch(() => false),
+  log("Institution check — Supabase first (source of truth)");
+
+  const online = await Promise.race([
+    supabaseHasInstitution(),
+    new Promise<InstitutionInfo>((res) =>
+      window.setTimeout(
+        () => res({ exists: false, source: "supabase" }),
+        3000
+      )
+    ),
   ]);
-  log(`institution check: supabase=${online}, local=${local}`);
-  return online || local;
+
+  log(`institution check: supabase=${online.exists}`);
+
+  if (online.exists) {
+    // Merge: cache the authoritative answer locally.
+    persistInstitutionToLocal(online);
+    log(`Institution merged to local cache (tenantId=${online.tenantId}, name=${online.businessName || "(none)"})`);
+    return true;
+  }
+
+  // Supabase didn't answer yes (timeout, network, or genuinely no tenants).
+  // Fall back to local cache so the app still works offline.
+  const local = await localHasInstitution();
+  log(`institution check: local fallback=${local.exists}`);
+  return local.exists;
 }
 
 /* ============================================================================
@@ -342,9 +503,16 @@ function Startup(props: StartupProps) {
   const routed = useRef(false);
   const deadlineFired = useRef(false);
 
+  // v7.1: institution check result — drives the hard-deadline escape.
+  // "pending" until institutionExists() resolves; "found"/"not-found" after.
+  const institutionCheckResult = useRef<"pending" | "found" | "not-found">("pending");
+
   // v7: the institution gate must resolve before Login may render.
   const [gateResolved, setGateResolved] = useState(false);
   const gateResolvedRef = useRef(false);
+
+  // v7.1: replaces showRegister. Login is hard-blocked when this is true.
+  const [showInstitutionNotFound, setShowInstitutionNotFound] = useState(false);
 
   const [showLogin, setShowLogin] = useState<boolean>(() => {
     try {
@@ -354,8 +522,6 @@ function Startup(props: StartupProps) {
     }
   });
 
-  const [showRegister, setShowRegister] = useState(false);
-
   useEffect(() => {
     log(`boot ${BOOT_VERSION} — showLogin=${showLogin}`);
 
@@ -363,12 +529,6 @@ function Startup(props: StartupProps) {
     const startedAt = Date.now();
     const minSplash = props.minSplashMs ?? 600;
     const timeoutMs = props.timeoutMs ?? 6000;
-
-    const routeBySession = (): string => {
-      if (!isValidSession()) return "/login";
-      const cu = readCurrentUser()!;
-      return routeForRole(cu.role, props.routes);
-    };
 
     const finish = (path: string) => {
       if (routed.current || cancelled) return;
@@ -384,25 +544,31 @@ function Startup(props: StartupProps) {
     };
 
     /* 1. HARD DEADLINE — always fires once via deadlineFired ref.
-       As an escape hatch it may reveal Login, but it also resolves the
-       gate so the Login render isn't blocked. */
+       v7.1: respects the institution gate. Reveals Login ONLY if the
+       institution was confirmed earlier in this boot. Otherwise shows
+       the institution-not-found dialog. */
     const hardDeadline = window.setTimeout(() => {
       if (deadlineFired.current) return;
       deadlineFired.current = true;
       log(`HARD DEADLINE fired after ${Date.now() - startedAt}ms`);
 
-      const target = routeBySession();
-      if (target === "/login") {
-        if (!cancelled) {
-          log("Deadline escape: revealing login (gate resolved by force)");
-          gateResolvedRef.current = true;
-          setGateResolved(true);
-          setShowLogin(true);
-        } else {
-          fullPageRedirect("/login", true);
-        }
-      } else {
+      if (isValidSession()) {
+        // Already authenticated — go straight to role home, bypass the gate.
+        const target = routeForRole(readCurrentUser()!.role, props.routes);
         fullPageRedirect(target);
+        return;
+      }
+
+      // No valid session — login is allowed ONLY if institution was confirmed.
+      if (institutionCheckResult.current === "found") {
+        log("Deadline escape: revealing login (institution confirmed earlier)");
+        gateResolvedRef.current = true;
+        setGateResolved(true);
+        setShowLogin(true);
+      } else {
+        log("Deadline escape: institution NOT confirmed — showing 'not found' dialog");
+        institutionCheckResult.current = "not-found";
+        setShowInstitutionNotFound(true);
       }
     }, timeoutMs);
 
@@ -484,61 +650,26 @@ function Startup(props: StartupProps) {
         return;
       }
 
-      /* 4. INSTITUTION GATE (v7) — no valid session. Login may ONLY
-         appear if an institution exists in Supabase or the local DB.
-         This runs even when the URL was already /login. */
+      /* 4. INSTITUTION GATE (v7.1) — no valid session. Login may ONLY
+         appear if an institution exists in Supabase or the local cache.
+         If none exists, show the institution-not-found dialog (NOT login). */
       log("No valid session — checking for an institution…");
       clearStaleSession();
       if (!showLogin) setStatus("Checking for an institution…");
 
-      if (!gateResolvedRef.current) {
-        const found = await institutionExists();
-        if (cancelled) return;
-        gateResolvedRef.current = true;
+      const found = await institutionExists();
+      if (cancelled) return;
 
-        if (!found) {
-          log("No institution available — login is blocked, routing to registration");
-
-          // Loop guard: if we already tried navigating to the register
-          // route recently and ended up back here, the route is probably
-          // missing — break the loop instead of spinning forever.
-          let justTried = false;
-          try {
-            const last = JSON.parse(
-              sessionStorage.getItem(REGISTER_NAV_GUARD) || "null"
-            );
-            justTried = !!(last && Date.now() - last.ts < 10000);
-          } catch {
-            /* ignore */
-          }
-          try {
-            sessionStorage.setItem(
-              REGISTER_NAV_GUARD,
-              JSON.stringify({ ts: Date.now() })
-            );
-          } catch {
-            /* ignore */
-          }
-
-          if (justTried) {
-            log(
-              "REGISTER LOOP DETECTED — the register route is likely missing " +
-              `from your <Routes>. Check REGISTER_ROUTE ("${REGISTER_ROUTE}") ` +
-              "against your router definition. Falling back to login."
-            );
-            setGateResolved(true);
-            setShowLogin(true);
-            return;
-          }
-
-          setShowRegister(true);
-          return;
-        }
-
-        log("Institution available — login allowed");
-      } else {
-        log("Institution gate already resolved — institution available");
+      if (!found) {
+        log("No institution available — login is BLOCKED, showing 'not found' dialog");
+        institutionCheckResult.current = "not-found";
+        setShowInstitutionNotFound(true);
+        return;
       }
+
+      institutionCheckResult.current = "found";
+      gateResolvedRef.current = true;
+      log("Institution available — login allowed");
 
       // Institution exists -> Login may render (in-place or via URL).
       setGateResolved(true);
@@ -559,13 +690,77 @@ function Startup(props: StartupProps) {
     if (isValidSession()) {
       const target = routeForRole(readCurrentUser()!.role, props.routes);
       fullPageRedirect(target, true);
+      return;
     }
-    // No valid session: the institution gate decides login vs register.
+    // No valid session — only skip to login if institution is confirmed.
+    if (institutionCheckResult.current === "found") {
+      gateResolvedRef.current = true;
+      setGateResolved(true);
+      setShowLogin(true);
+    }
+    // Otherwise: do nothing. The hard deadline will surface the dialog.
   };
 
-  if (showRegister) {
-    log("Rendering registration flow");
-    return <Navigate to={REGISTER_ROUTE} replace />;
+  const handleCreateInstitution = () => {
+    log(`Create new institution clicked -> navigate(${REGISTER_ROUTE})`);
+    navigate(REGISTER_ROUTE, { replace: true });
+  };
+
+  const handleRetry = () => {
+    log("Retry institution check clicked -> reload");
+    // Full reload re-runs the boot effect from a clean state.
+    window.location.reload();
+  };
+
+  if (showInstitutionNotFound) {
+    log("Rendering institution-not-found dialog");
+    return (
+      <div className="infd-root">
+        <style>{DIALOG_CSS}</style>
+        <div
+          className="infd-card"
+          role="alertdialog"
+          aria-labelledby="infd-title"
+          aria-describedby="infd-msg"
+        >
+          <div className="infd-icon" aria-hidden="true">
+            <svg
+              width="28"
+              height="28"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M12 9v4" />
+              <path d="M12 17h.01" />
+              <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+            </svg>
+          </div>
+          <div id="infd-title" className="infd-title">Institution not found</div>
+          <div id="infd-msg" className="infd-message">
+            Check your internet connection and try again. If this is a new
+            device or first-time setup, create a new institution to continue.
+          </div>
+          <button
+            type="button"
+            className="infd-btn-primary"
+            onClick={handleCreateInstitution}
+          >
+            Create new institution
+          </button>
+          <button
+            type="button"
+            className="infd-btn-secondary"
+            onClick={handleRetry}
+          >
+            Retry
+          </button>
+        </div>
+      </div>
+    );
   }
 
   if (showLogin && gateResolved) {

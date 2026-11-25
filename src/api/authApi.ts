@@ -1,125 +1,28 @@
-// src/api/authApi.ts — v3: Supabase RPC for auth (NO Render backend for login/register)
+// src/api/authApi.ts
 //
-// WHAT CHANGED (v3)
+// Authentication architecture:
+// - Africa's Talking SMS + OTP verification: Render API.
+// - New institution registration: Render API, which verifies the short-lived
+//   OTP JWT before creating the tenant and its administrator.
+// - Existing institution login: Supabase verify_login RPC.
 //
-//   loginTenant and registerTenant now call Supabase RPC functions
-//   (verify_login, register_tenant_with_admin) directly. No Render
-//   backend is involved in credential verification or institution
-//   creation — only the OTP/SMS flow still uses Render.
-//
-//   This means:
-//     - No Render cold starts (30-60s wake delay) on login
-//     - No 401s from a sleeping server
-//     - No DNS-blocked *.onrender.com hostname for auth
-//     - Login works as long as Supabase is reachable
-//
-//   The Render backend remains for OTP only:
-//     - sendATCode (sends SMS via Africa's Talking)
-//     - verifyATCode (verifies the OTP code)
-//
-//   Prerequisite: run supabase_auth.sql in the Supabase SQL Editor to
-//   create the verify_login, register_tenant_with_admin, and
-//   resolve_tenant SECURITY DEFINER functions.
+// IMPORTANT:
+// The Render /api/auth/verify-code endpoint returns `tempToken`, not `token`.
+// This module normalizes that response to { token } for VerifyCode.tsx.
 
 import { supabase, apiFetchAny } from "../auth/supabase";
 
-/* ------------------------------------------------------------------ */
-/* Wake — only needed for the OTP flow (Render backend)               */
-/* ------------------------------------------------------------------ */
-
-export async function wakeBackend(): Promise<void> {
-  const controller = new AbortController();
-  const timeoutId = window.setTimeout(() => controller.abort(), 90000);
-  try {
-    await apiFetchAny("/api/health", { signal: controller.signal });
-  } catch {
-    /* unreachable — the OTP call below will surface the real error */
-  } finally {
-    window.clearTimeout(timeoutId);
-  }
-}
-
-/* ------------------------------------------------------------------ */
-/* POST helper for the Render backend (OTP flow only)                */
-/* ------------------------------------------------------------------ */
-
-async function authPost<T = any>(
-  path: string,
-  body: Record<string, any>,
-): Promise<T> {
-  let response: Response;
-  try {
-    response = await apiFetchAny(path, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-  } catch {
-    throw new Error(
-      "Could not reach the server. Check your internet connection and try again; " +
-        "if it keeps failing, this network may be blocking the server — try another one " +
-        "(e.g. a phone hotspot).",
-    );
-  }
-
-  const text = await response.text().catch(() => "");
-  let parsed: any = null;
-  try { parsed = text ? JSON.parse(text) : null; } catch { /* not JSON */ }
-
-  if (!response.ok) {
-    const msg =
-      parsed?.error ||
-      parsed?.message ||
-      (text ? String(text).slice(0, 200) : "") ||
-      `Request failed (${response.status})`;
-    throw new Error(msg);
-  }
-
-  return (parsed ?? {}) as T;
-}
-
-/* ------------------------------------------------------------------ */
-/* 1. SEND OTP (Africa's Talking) — PhoneEntry.tsx                    */
-/*    Stays on the Render backend (needs SMS sending).                */
-/* ------------------------------------------------------------------ */
-
-export async function sendATCode(phone: string): Promise<void> {
-  await wakeBackend();
-  await authPost("/api/auth/send-code", { phone });
-}
-
-/* ------------------------------------------------------------------ */
-/* 2. VERIFY OTP — VerifyCode.tsx, returns temp token                */
-/*    Stays on the Render backend (OTP codes stored server-side).     */
-/* ------------------------------------------------------------------ */
+/* -------------------------------------------------------------------------- */
+/* Types                                                                      */
+/* -------------------------------------------------------------------------- */
 
 export interface VerifyCodeResult {
   token: string;
 }
 
-export async function verifyATCode(
-  phone: string,
-  code: string,
-): Promise<VerifyCodeResult> {
-  const result = await authPost<{ token?: string; message?: string }>(
-    "/api/auth/verify-code",
-    { phone, code },
-  );
-  if (!result?.token) {
-    throw new Error(result?.message || "Verification failed — no token received.");
-  }
-  return { token: result.token };
-}
-
-/* ------------------------------------------------------------------ */
-/* 3. REGISTER TENANT + ADMIN — RegisterAdmin.tsx                     */
-/*    v3: calls Supabase RPC register_tenant_with_admin.             */
-/*    No Render backend, no cold start, no 401s.                      */
-/* ------------------------------------------------------------------ */
-
 export interface RegisterTenantParams {
   phone: string;
-  tempToken: string;       // from verifyATCode — kept for API compat
+  tempToken: string;
   businessName: string;
   username: string;
   password: string;
@@ -128,48 +31,9 @@ export interface RegisterTenantParams {
 export interface RegisterTenantResult {
   userId: string;
   tenantId: string;
-  authToken: string;       // session token
-  user?: any;
+  authToken: string;
+  user?: Record<string, unknown>;
 }
-
-export async function registerTenant(
-  params: RegisterTenantParams,
-): Promise<RegisterTenantResult> {
-  // Call the Supabase SECURITY DEFINER function — it creates the tenant +
-  // admin user and hashes the password with bcrypt (gen_salt('bf')).
-  const { data, error } = await supabase.rpc("register_tenant_with_admin", {
-    p_phone: params.phone,
-    p_business_name: params.businessName,
-    p_username: params.username,
-    p_password: params.password,
-  });
-
-  if (error) {
-    throw new Error(error.message || "Registration failed (database error).");
-  }
-
-  if (!data?.success) {
-    throw new Error(data?.error || "Registration failed.");
-  }
-
-  if (!data?.tenantId || !data?.userId) {
-    throw new Error("Registration completed but missing account details.");
-  }
-
-  return {
-    userId: data.userId,
-    tenantId: data.tenantId,
-    authToken: `session-${data.userId}`,
-    user: data.user,
-  };
-}
-
-/* ------------------------------------------------------------------ */
-/* 4. LOGIN — userDB.ts loginWithIdentifier + supabase.ts tryReauthenticate */
-/*    v3: calls Supabase RPC verify_login.                            */
-/*    Accepts tenantId and/or businessName — the function resolves     */
-/*    the tenant server-side if tenantId is empty.                    */
-/* ------------------------------------------------------------------ */
 
 export interface LoginTenantParams {
   tenantId?: string;
@@ -179,16 +43,188 @@ export interface LoginTenantParams {
 }
 
 export interface LoginTenantResult {
-  authToken: string;       // session token
-  user?: any;
+  authToken: string;
+  user?: Record<string, unknown>;
 }
+
+/* -------------------------------------------------------------------------- */
+/* Render backend helpers                                                    */
+/* -------------------------------------------------------------------------- */
+
+export async function wakeBackend(): Promise<void> {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), 90_000);
+
+  try {
+    await apiFetchAny("/api/health", {
+      method: "GET",
+      signal: controller.signal,
+    });
+  } catch {
+    // The actual API request below will provide the useful error.
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
+async function authPost<T = Record<string, unknown>>(
+  path: string,
+  body: Record<string, unknown>,
+): Promise<T> {
+  let response: Response;
+
+  try {
+    response = await apiFetchAny(path, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    throw new Error(
+      "Could not reach the server. Check your internet connection and try again. " +
+        "If the problem continues, try another network, such as a phone hotspot.",
+    );
+  }
+
+  const responseText = await response.text().catch(() => "");
+  let parsed: any = null;
+
+  try {
+    parsed = responseText ? JSON.parse(responseText) : null;
+  } catch {
+    // The server returned a non-JSON response.
+  }
+
+  if (!response.ok) {
+    const message =
+      parsed?.error ||
+      parsed?.message ||
+      (responseText ? responseText.slice(0, 200) : "") ||
+      `Request failed (${response.status}).`;
+
+    throw new Error(String(message));
+  }
+
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error("The server returned an invalid response.");
+  }
+
+  return parsed as T;
+}
+
+/* -------------------------------------------------------------------------- */
+/* 1. Send OTP — PhoneEntry.tsx                                               */
+/* -------------------------------------------------------------------------- */
+
+export async function sendATCode(phone: string): Promise<void> {
+  await wakeBackend();
+  await authPost("/api/auth/send-code", { phone });
+}
+
+/* -------------------------------------------------------------------------- */
+/* 2. Verify OTP — VerifyCode.tsx                                             */
+/* -------------------------------------------------------------------------- */
+
+export async function verifyATCode(
+  phone: string,
+  code: string,
+): Promise<VerifyCodeResult> {
+  const result = await authPost<{
+    tempToken?: string;
+    token?: string;
+    message?: string;
+    error?: string;
+  }>("/api/auth/verify-code", { phone, code });
+
+  // Current Render API responds with `tempToken`.
+  // Accept `token` as well for compatibility with a future backend version.
+  const token = result.tempToken || result.token;
+
+  if (!token || typeof token !== "string") {
+    throw new Error(
+      result.message ||
+        result.error ||
+        "Verification failed — the server did not return a temporary token.",
+    );
+  }
+
+  return { token };
+}
+
+/* -------------------------------------------------------------------------- */
+/* 3. Register tenant + first administrator                                   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Registration intentionally uses the Render endpoint.
+ *
+ * The uploaded Render API implementation verifies:
+ *   jwt.verify(tempToken, JWT_SECRET)
+ * and checks:
+ *   payload.phone === phone
+ *   payload.purpose === "otp-verified"
+ *
+ * The temporary token is short-lived (5 minutes). Do not replace this call
+ * with a direct Supabase insert/RPC unless that SQL function independently
+ * verifies the signed OTP token on the server.
+ */
+export async function registerTenant(
+  params: RegisterTenantParams,
+): Promise<RegisterTenantResult> {
+  if (!params.tempToken) {
+    throw new Error("Phone verification is required before registration.");
+  }
+
+  await wakeBackend();
+
+  const result = await authPost<{
+    authToken?: string;
+    user?: Record<string, any>;
+    error?: string;
+    message?: string;
+  }>("/api/auth/register-tenant", {
+    phone: params.phone,
+    tempToken: params.tempToken,
+    businessName: params.businessName,
+    username: params.username,
+    password: params.password,
+  });
+
+  if (!result.authToken || !result.user?.id) {
+    throw new Error(
+      result.error ||
+        result.message ||
+        "Registration response is missing the authentication token or user details.",
+    );
+  }
+
+  const tenantId =
+    result.user.tenantId ||
+    result.user.tenant_id;
+
+  if (!tenantId) {
+    throw new Error(
+      "Registration completed but the server did not return the tenant ID.",
+    );
+  }
+
+  return {
+    userId: String(result.user.id),
+    tenantId: String(tenantId),
+    authToken: result.authToken,
+    user: result.user,
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* 4. Login — existing institutions                                           */
+/* -------------------------------------------------------------------------- */
 
 export async function loginTenant(
   params: LoginTenantParams,
 ): Promise<LoginTenantResult> {
-  // Call the Supabase SECURITY DEFINER function — it reads the user row
-  // (bypassing RLS), verifies the password with crypt() (pgcrypto bcrypt),
-  // and returns the user row MINUS the password column.
   const { data, error } = await supabase.rpc("verify_login", {
     p_tenant_id: params.tenantId || null,
     p_business_name: params.businessName || null,
