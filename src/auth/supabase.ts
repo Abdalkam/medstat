@@ -1,6 +1,3 @@
-// src/auth/supabase.ts
-
-// ============================================================
 
 import { createClient } from "@supabase/supabase-js";
 
@@ -32,32 +29,14 @@ try {
     .filter((k) => k.startsWith("sb-") && k.endsWith("-auth-token"))
     .forEach((k) => localStorage.removeItem(k));
 } catch {
-  /* storage unavailable — nothing to purge */
+  /* storage unavailable */
 }
 
 export const OFFLINE_TOKEN = "offline-mode-pending-sync";
 
 // ==========================================
-// API ORIGIN FAILOVER (DNS-BLOCK PROOF)
+// API ORIGIN FAILOVER
 // ==========================================
-// Some user networks cannot resolve "*.onrender.com" — their ISP/router
-// DNS fails the name BEFORE any request is sent ("Failed to fetch",
-// net::ERR_NAME_NOT_RESOLVED), even though the site serving this very
-// app is reachable. So every backend call walks a fallback list of API
-// origins, in this order:
-//
-//   1. preferred              — the origin that last worked (sticky)
-//   2. caller's base          — legacy per-module base (dev parity)
-//   3. direct Render          — no proxy hop; best for cold starts
-//   4. dev base               — http://localhost:10000 (dev only)
-//   5. VITE_API_FALLBACK_URL  — optional extra origin (CF Worker etc.)
-//   6. same-origin proxy      — <this site><BASE_URL>api → Render
-//                               (see vercel.json), last resort
-//
-// A call moves to the next origin ONLY when fetch threw a TypeError
-// (DNS / offline / CORS — the server was never reached). An HTTP status
-// (401/500/…) proves the origin IS reachable and is returned as-is.
-// The first origin that answers is remembered for later calls.
 
 const PRIMARY_API_BASE = import.meta.env.PROD
   ? "https://medstat-3rxl.onrender.com"
@@ -71,9 +50,6 @@ const EXTRA_API_BASE = (
   (import.meta.env.VITE_API_FALLBACK_URL as string) || ""
 ).trim().replace(/\/+$/, "");
 
-// Same-origin proxy (vercel.json rewrite): only for the HTTPS web
-// build. Dev and the Tauri webview (http://tauri.localhost) are
-// excluded — their page origin is not the deployment.
 const SAME_ORIGIN_API_BASE =
   import.meta.env.PROD &&
   typeof window !== "undefined" &&
@@ -83,13 +59,6 @@ const SAME_ORIGIN_API_BASE =
 
 let preferredApiBase: string | null = null;
 
-/**
- * fetch() that walks the API origin list on network failures.
- * Returns the first Response received from ANY origin (any HTTP
- * status); throws only when EVERY origin failed at the network level.
- * `firstBase` is tried before the shared list (per-module dev parity).
- * Never retries on AbortError — a caller-driven abort is intentional.
- */
 export async function apiFetchAny(
   path: string,
   init?: RequestInit,
@@ -114,7 +83,7 @@ export async function apiFetchAny(
     try {
       const response = await fetch(`${base}${path}`, init);
 
-      preferredApiBase = base; // remember the winner for later calls
+      preferredApiBase = base;
 
       return response;
     } catch (err) {
@@ -123,13 +92,17 @@ export async function apiFetchAny(
       if (!(err instanceof TypeError)) throw err;
 
       console.warn(
-        `API origin unreachable (${base}${path}) — trying the next one…`
+        `API origin unreachable (${base}${path}) — trying next origin.`
       );
     }
   }
 
   throw lastError;
 }
+
+// ==========================================
+// SYNC STATE
+// ==========================================
 
 let periodicPullInterval: ReturnType<typeof setInterval> | null = null;
 let periodicPullRunning = false;
@@ -165,22 +138,21 @@ function getCurrentTenantId(): string | null {
     : null;
 }
 
+// ==========================================
+// TOKEN VALIDATION
+// ==========================================
+
 /**
- * v3: Auth now uses Supabase RPC (verify_login) — NOT Render JWTs.
- * Valid tokens are:
- *   - "eyJ..."              — legacy Render JWT (still accepted)
- *   - "session-<uuid>"     — Supabase RPC session marker (the new default)
- *   - "offline-<uuid>"     — offline login (Dexie cache only)
- *   - "offline-mode-pending-sync" — legacy offline marker
+ * Application authentication.
  *
- * The Render backend (settings, SMS) may still 401 on session-/offline-
- * tokens — that's expected and handled gracefully. Supabase reads work
- * via the anon key regardless.
+ * These tokens are allowed for local/offline app functionality.
+ * They are NOT necessarily valid for the Render backend.
  */
 export function isRealBackendToken(
   token: string | null | undefined
 ): token is string {
   if (typeof token !== "string" || !token) return false;
+
   return (
     token.startsWith("eyJ") ||
     token.startsWith("session-") ||
@@ -189,16 +161,43 @@ export function isRealBackendToken(
   );
 }
 
+/**
+ * Render API authentication.
+ *
+ * Only a three-part JWT is accepted.
+ * Supabase session markers and offline tokens are rejected.
+ */
+export function isRenderJwtToken(
+  token: string | null | undefined
+): token is string {
+  if (typeof token !== "string" || !token.startsWith("eyJ")) {
+    return false;
+  }
+
+  const parts = token.split(".");
+
+  return (
+    parts.length === 3 &&
+    parts.every((part) => part.length > 0)
+  );
+}
+
 function getAuthToken(): string | null {
   const token = localStorage.getItem("authToken");
 
-  if (!isRealBackendToken(token)) {
-    return null;
-  }
-
-  return token;
+  return isRealBackendToken(token) ? token : null;
 }
 
+function getRenderAuthToken(): string | null {
+  const token = localStorage.getItem("authToken");
+
+  return isRenderJwtToken(token) ? token : null;
+}
+
+/**
+ * Local application authentication.
+ * This intentionally continues to accept offline sessions.
+ */
 export function hasValidAuth(): boolean {
   return Boolean(getAuthToken() && parseStoredUser());
 }
@@ -231,70 +230,57 @@ function normalizeStringArray(value: any): string[] {
 }
 
 // ==========================================
-// SILENT RE-AUTHENTICATION (SELF-HEAL)
+// SILENT RE-AUTHENTICATION
 // ==========================================
-// Upgrades an offline/fabricated session to a real online session using
-// the credentials cached in localStorage.currentUser. Concurrent callers
-// share one in-flight attempt; after a failure a new attempt can be made
-// 30 s later. On success the token + user are rewritten to localStorage,
-// "authStateChanged" is fired, and a background resync heals the local
-// database (contacts, courses, enrollments, SMS logs).
 
 let reauthInFlight: Promise<string | null> | null = null;
 let reauthCooldown: number | undefined;
 let reauthReason = "";
 
-/**
- * Why the last silent re-login failed ("" when none or on success).
- * The SMS screen shows this under the offline-session banner so the
- * user knows whether to wait for the server to wake up or to sign in.
- */
 export function getReauthReason(): string {
   return reauthReason;
 }
 
 /**
- * Wake a sleeping Render instance BEFORE logging in. The free tier
- * sleeps after 15 min idle and a cold start takes 30-60 s — logging in
- * directly during a cold start usually fails (or the login endpoint
- * degrades to an offline token). Pinging /api/health first and WAITING
- * for the response makes the following login fast and reliable.
- * Pinging ANY origin wakes the same service — the same-origin proxy
- * reaches Render server-side even on networks that cannot resolve the
- * Render hostname. Never throws: resolves once any origin responded or
- * the wait timed out (the login attempt below reports the problem).
+ * Wake Render before login.
  */
 async function wakeBackend(): Promise<void> {
   const controller = new AbortController();
-  const timeoutId = window.setTimeout(() => controller.abort(), 90000);
+
+  const timeoutId = window.setTimeout(
+    () => controller.abort(),
+    90000
+  );
 
   try {
-    await apiFetchAny("/api/health", { signal: controller.signal });
+    await apiFetchAny("/api/health", {
+      signal: controller.signal,
+    });
   } catch {
-    /* unreachable — the login attempt below will surface the error */
+    /* Login attempt below will report connection problems. */
   } finally {
     window.clearTimeout(timeoutId);
   }
 }
 
-export function tryReauthenticate(force = false): Promise<string | null> {
+/**
+ * Obtain a genuine Render JWT using saved local credentials.
+ *
+ * This function deliberately does NOT treat Supabase session markers
+ * or offline tokens as valid Render authentication.
+ */
+export function tryReauthenticate(
+  force = false
+): Promise<string | null> {
   if (reauthInFlight) return reauthInFlight;
 
-  // v3: If the session is already valid (session-/offline- token from
-  // Supabase RPC login), there is NOTHING to re-authenticate. The old
-  // code called loginTenant() on every sync tick, which returned a
-  // session- token, failed the isRealBackendToken check, and looped
-  // forever. Now we short-circuit: valid session = no re-auth needed.
-  if (hasValidAuth()) {
-    const token = getAuthToken();
-    if (token) {
-      reauthReason = "";
-      return Promise.resolve(token);
-    }
+  const existingToken = getRenderAuthToken();
+
+  if (existingToken && !force) {
+    reauthReason = "";
+    return Promise.resolve(existingToken);
   }
 
-  // `force` (manual "Retry now") skips the 30 s cooldown that follows a
-  // settled attempt, so an explicit user click always retries for real.
   if (force && reauthCooldown) {
     window.clearTimeout(reauthCooldown);
     reauthCooldown = undefined;
@@ -303,74 +289,138 @@ export function tryReauthenticate(force = false): Promise<string | null> {
   reauthInFlight = (async () => {
     try {
       const user = parseStoredUser();
+
       const tenantId = user?.tenantId || user?.tenant_id;
       const username = user?.username;
       const password = user?.password;
 
       if (!tenantId || !username || !password) {
         reauthReason =
-          "No saved sign-in details on this device — log out and sign in once.";
-        console.log("Re-auth skipped - no cached credentials.");
+          "No saved sign-in details on this device. Please sign in again.";
+
+        console.warn("Render re-authentication skipped: credentials unavailable.");
+
         return null;
       }
 
-      // Wake the server first (~0.2 s when already awake).
       await wakeBackend();
 
-      // Dynamic import keeps authApi out of the critical init path and
-      // avoids any circular-import issues.
-      const { loginTenant } = await import("../api/authApi");
+      const controller = new AbortController();
 
-      const result = await loginTenant({ tenantId, username, password });
-      const authToken = result?.authToken;
+      const timeoutId = window.setTimeout(
+        () => controller.abort(),
+        90000
+      );
 
-      if (!isRealBackendToken(authToken)) {
-        reauthReason =
-          "Server is waking up or unreachable — wait a minute and retry, or log out and sign in.";
-        console.warn("Re-auth failed - backend returned no JWT.");
-        return null;
+      let response: Response;
+
+      try {
+        response = await apiFetchAny("/api/auth/login", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            tenantId,
+            username,
+            password,
+          }),
+          signal: controller.signal,
+        });
+      } finally {
+        window.clearTimeout(timeoutId);
       }
 
-      reauthReason = "";
+      const responseText = await response.text();
+
+      let result: any = {};
+
+      try {
+        result = responseText ? JSON.parse(responseText) : {};
+      } catch {
+        throw new Error(
+          "The login server returned an invalid response."
+        );
+      }
+
+      if (!response.ok) {
+        throw new Error(
+          result?.error ||
+            result?.message ||
+            `Render login failed (${response.status}).`
+        );
+      }
+
+      const authToken = result?.authToken;
+
+      if (!isRenderJwtToken(authToken)) {
+        throw new Error(
+          "The login endpoint did not return a valid Render JWT."
+        );
+      }
 
       localStorage.setItem("authToken", authToken);
 
-      try {
-        localStorage.setItem(
-          "currentUser",
-          JSON.stringify({
-            ...user,
-            authToken,
-            token: authToken,
-            synced: true,
-          })
-        );
-      } catch { /* ignore quota errors */ }
+      const updatedUser = {
+        ...user,
+        ...(result.user || {}),
+        tenantId:
+          result.user?.tenantId ||
+          result.user?.tenant_id ||
+          tenantId,
+        authToken,
+        token: authToken,
+        synced: true,
+      };
+
+      localStorage.setItem(
+        "currentUser",
+        JSON.stringify(updatedUser)
+      );
+
+      reauthReason = "";
 
       window.dispatchEvent(new Event("authStateChanged"));
-      console.log("Session restored online (silent re-login OK).");
 
-      // Fire-and-forget resync - heals contacts/logs without user action.
+      console.log("Render authentication restored successfully.");
+
+      // Background synchronisation.
       pullAllTenantData(tenantId).catch(() => {});
       pullSettings().catch(() => {});
 
       return authToken;
-    } catch (err) {
+    } catch (err: any) {
       reauthReason =
-        "Could not reach the medstat server from this network. Check your internet connection and retry; if it keeps failing, this network may be blocking the server — try another one (e.g. a phone hotspot).";
-      console.warn("Silent re-login failed:", err);
+        err?.name === "AbortError"
+          ? "The server took too long to respond. Wait and retry."
+          : err?.message ||
+            "Could not authenticate with the MedStat server. Check your connection.";
+
+      console.warn("Render re-authentication failed:", err);
+
       return null;
     } finally {
-      // Keep the settled promise cached briefly to dedupe bursts
-      // (e.g. SMS send + periodic tick firing at the same moment),
-      // then allow a fresh attempt.
       reauthCooldown = window.setTimeout(() => {
         reauthInFlight = null;
+        reauthCooldown = undefined;
       }, 30000);
     }
   })();
 
   return reauthInFlight;
+}
+
+/**
+ * Ensure a genuine Render JWT is available.
+ */
+async function ensureRenderToken(): Promise<string | null> {
+  let token = getRenderAuthToken();
+
+  if (token) return token;
+
+  token = await tryReauthenticate();
+
+  return isRenderJwtToken(token) ? token : null;
 }
 
 // ==========================================
@@ -416,7 +466,6 @@ export async function sbFetch(
   table: string,
   options: Record<string, any> = {}
 ) {
-  // PATCH
   if (options.method === "PATCH" && options.body) {
     const body =
       typeof options.body === "string"
@@ -424,6 +473,7 @@ export async function sbFetch(
         : options.body;
 
     let query: any = supabase.from(table).update(body);
+
     query = applyCommonFilters(query, options);
 
     const { data, error } = await query;
@@ -431,9 +481,9 @@ export async function sbFetch(
     return { data, error };
   }
 
-  // DELETE
   if (options.method === "DELETE") {
     let query: any = supabase.from(table).delete();
+
     query = applyCommonFilters(query, options);
 
     const { data, error } = await query;
@@ -441,7 +491,6 @@ export async function sbFetch(
     return { data, error };
   }
 
-  // POST
   if (options.method === "POST" && options.body) {
     const body =
       typeof options.body === "string"
@@ -456,7 +505,6 @@ export async function sbFetch(
     return { data, error };
   }
 
-  // SELECT
   let query: any = supabase
     .from(table)
     .select(options.select || "*");
@@ -477,48 +525,39 @@ export async function sbFetch(
 }
 
 // ==========================================
-// BACKEND API — SETTINGS ONLY
+// BACKEND API — SETTINGS
 // ==========================================
 
-function getAuthHeaders(): Record<string, string> {
-  const token = getAuthToken();
-
-  return {
-    "Content-Type": "application/json",
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
-  };
-}
-
 async function apiFetch(path: string, retry = true) {
-  if (!hasValidAuth()) {
-    // Offline session — try to self-heal before failing.
-    const healed = await tryReauthenticate();
+  let token = await ensureRenderToken();
 
-    if (!healed || !hasValidAuth()) {
-      throw new Error("No valid authentication token.");
+  if (!token) {
+    throw new Error("No valid Render authentication token.");
+  }
+
+  let response = await apiFetchAny(path, {
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  if (response.status === 401 && retry) {
+    const newToken = await tryReauthenticate(true);
+
+    if (newToken && isRenderJwtToken(newToken)) {
+      token = newToken;
+
+      response = await apiFetchAny(path, {
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+      });
     }
   }
 
-  const response = await apiFetchAny(path, {
-    headers: getAuthHeaders(),
-  });
-
   if (!response.ok) {
-    if (response.status === 401) {
-      // Expired/invalid JWT — silently re-login once and retry.
-      if (retry) {
-        const newToken = await tryReauthenticate();
-
-        if (newToken) {
-          return apiFetch(path, false);
-        }
-      }
-
-      throw new Error(
-        "API fetch failed: 401 - Authentication may have expired."
-      );
-    }
-
     throw new Error(`API fetch failed: ${response.status}`);
   }
 
@@ -553,7 +592,6 @@ export function startPeriodicPull(ms: number = 15000) {
     if (periodicPullRunning) return;
 
     if (!hasValidAuth()) {
-      // Offline/fabricated session — attempt silent re-login first.
       const healed = await tryReauthenticate();
 
       if (!healed) return;
@@ -590,7 +628,6 @@ export function stopPeriodicPull() {
 
 export async function pullAllTenantData(tenantId: string) {
   if (!hasValidAuth()) {
-    // Offline session — attempt silent re-login before skipping.
     const healed = await tryReauthenticate();
 
     if (!healed || !hasValidAuth()) {
@@ -648,7 +685,6 @@ export async function pullAllTenantData(tenantId: string) {
       await getDeletedIds("course")
     );
 
-    // USERS
     for (const remoteUser of usersRes.data || []) {
       if (deletedUserIds.has(remoteUser.id)) continue;
 
@@ -661,7 +697,6 @@ export async function pullAllTenantData(tenantId: string) {
       await db.users.put(mapUser(remoteUser, localUser));
     }
 
-    // COURSES
     for (const remoteCourse of coursesRes.data || []) {
       if (deletedCourseIds.has(remoteCourse.id)) continue;
 
@@ -674,7 +709,6 @@ export async function pullAllTenantData(tenantId: string) {
       await db.courses.put(mapCourse(remoteCourse));
     }
 
-    // ENROLLMENTS
     for (const remoteEnrollment of enrollmentsRes.data || []) {
       const localEnrollment: any = await db.enrollments.get(
         remoteEnrollment.id
@@ -816,7 +850,6 @@ export async function syncUp() {
           continue;
         }
 
-        // Local User type uses assignedCourses.
         const assignedCourses = normalizeStringArray(
           user.assignedCourses
         );
@@ -889,7 +922,6 @@ function mapUserToRow(user: any, tenantId: string) {
   return {
     id: user.id,
     tenant_id: tenantId,
-
     username: String(user.username || "").trim(),
 
     phone: user.phone?.trim()
@@ -901,17 +933,11 @@ function mapUserToRow(user: any, tenantId: string) {
       : null,
 
     password: user.password || "",
-
     role: normalizeRole(user.role),
-
     assigned_courses: assignedCourses,
-
-    // Exact quoted SQL column name.
     assignedDepartments,
 
-    profile_pic:
-      user.profilePic ||
-      null,
+    profile_pic: user.profilePic || null,
 
     tuition: {
       expected: toAmount(user.tuition?.expected),
@@ -919,13 +945,8 @@ function mapUserToRow(user: any, tenantId: string) {
     },
 
     remuneration: {
-      net_salary: toAmount(
-        user.remuneration?.netSalary
-      ),
-
-      per_diem: toAmount(
-        user.remuneration?.perDiem
-      ),
+      net_salary: toAmount(user.remuneration?.netSalary),
+      per_diem: toAmount(user.remuneration?.perDiem),
     },
 
     synced: true,
@@ -945,16 +966,10 @@ function mapUser(remoteUser: any, localUser?: any) {
     ...remoteUser,
 
     id: remoteUser.id,
-
     username: remoteUser.username || "",
-
     email: remoteUser.email || "",
-
     phone: remoteUser.phone || "",
 
-    // FIX: keep the LOCAL password for offline login. Cloud rows now hold
-    // bcrypt hashes ("$2b$12$..."); copying a hash into Dexie would break
-    // the plaintext comparison offline login relies on.
     password: localUser?.password || remoteUser.password || "",
 
     role: normalizeRole(remoteUser.role),
@@ -967,13 +982,13 @@ function mapUser(remoteUser: any, localUser?: any) {
 
     assignedCourses: normalizeStringArray(
       remoteUser.assigned_courses ??
-      remoteUser.assignedCourses
+        remoteUser.assignedCourses
     ),
 
     assignedDepartments: normalizeStringArray(
       remoteUser.assignedDepartments ??
-      remoteUser.assigned_departments ??
-      localUser?.assignedDepartments
+        remoteUser.assigned_departments ??
+        localUser?.assignedDepartments
     ),
 
     tenantId:
@@ -1004,8 +1019,6 @@ function mapUser(remoteUser: any, localUser?: any) {
         0,
     },
 
-    // These history fields are not columns in the supplied SQL.
-    // Keep local values rather than replacing them with empty arrays.
     paymentHistory:
       localUser?.paymentHistory ??
       remoteUser.paymentHistory ??
@@ -1029,7 +1042,6 @@ function mapCourse(course: any) {
     ...course,
 
     name: course.name || "",
-
     description: course.description || "",
 
     tuitionType:
@@ -1094,7 +1106,6 @@ function mapEnrollment(enrollment: any) {
       enrollment.tenantId,
 
     status: enrollment.status || "active",
-
     role: enrollment.role || "trainee",
 
     enrolledAt:
@@ -1112,19 +1123,8 @@ function mapEnrollment(enrollment: any) {
 }
 
 // ==========================================
-// 11. SMS LOGS — LOCAL-FIRST + CLOUD SYNC
+// 11. SMS LOGS — LOCAL-FIRST + RENDER SYNC
 // ==========================================
-// Cloud table (public.sms_logs):
-//   id uuid pk default gen_random_uuid(), tenant_id uuid, phone text,
-//   message text, status text, sent_at timestamp default now(),
-//   sent_by uuid
-//
-// Local Dexie (db.smsLogs): same fields with `sentAt` (ISO string) plus a
-// `synced` flag used to queue locally-recorded rows for upload.
-//
-// Flow: sendSms() succeeds -> SMSmanagement calls recordSmsLogs() (saved
-// locally first, works even offline) -> upload + cloud pull happen here
-// with the same session self-heal as every other sync path.
 
 export interface SmsLogInput {
   id: string;
@@ -1138,158 +1138,245 @@ export interface SmsLogInput {
   [key: string]: any;
 }
 
-/**
- * A SMS log row as stored in the LOCAL Dexie table (db.smsLogs).
- * Unlike SmsLogInput, `sentAt` is always a concrete ISO string — the
- * local table schema requires it, so rows are normalized to this shape
- * before every bulkPut().
- */
 export type LocalSmsLog = SmsLogInput & {
   sentAt: string;
   synced: boolean;
 };
-
-function smsLogToRow(log: SmsLogInput) {
-  return {
-    id: log.id,
-    tenant_id: log.tenant_id || null,
-    phone: log.phone,
-    message: log.message,
-    status: log.status || "Success",
-    sent_by: log.sent_by || null,
-    sent_at: log.sentAt || log.sent_at || new Date().toISOString(),
-  };
-}
 
 function mapSmsLogRow(row: any): LocalSmsLog {
   return {
     ...row,
 
     id: row.id,
-
     tenant_id: row.tenant_id || null,
-
     phone: row.phone || "",
-
     message: row.message || "",
-
     status: row.status || "Unknown",
-
     sent_by: row.sent_by || null,
 
-    sentAt: row.sent_at || row.sentAt || new Date().toISOString(),
+    sentAt:
+      row.sent_at ||
+      row.sentAt ||
+      new Date().toISOString(),
 
     synced: true,
   };
 }
 
 /**
- * Save sent-SMS records to the local database first (ALWAYS works, even
- * offline). Upload to the cloud is attempted immediately and retried by
- * syncUnsyncedSmsLogs() on later sync passes.
+ * Authenticated Render request for SMS log operations.
+ * Retries once after a 401 using a fresh Render JWT.
  */
-export async function recordSmsLogs(logs: SmsLogInput[]): Promise<void> {
+async function smsLogsApiFetch(
+  path: string,
+  init: RequestInit = {},
+  retry = true
+): Promise<any> {
+  let token = await ensureRenderToken();
+
+  if (!token) {
+    throw new Error(
+      "No valid Render authentication token for SMS history."
+    );
+  }
+
+  const makeRequest = (bearer: string) =>
+    apiFetchAny(path, {
+      ...init,
+      headers: {
+        "Content-Type": "application/json",
+        ...(init.headers || {}),
+        Authorization: `Bearer ${bearer}`,
+      },
+    });
+
+  let response = await makeRequest(token);
+
+  if (response.status === 401 && retry) {
+    const refreshedToken = await tryReauthenticate(true);
+
+    if (
+      refreshedToken &&
+      isRenderJwtToken(refreshedToken) &&
+      refreshedToken !== token
+    ) {
+      token = refreshedToken;
+      response = await makeRequest(token);
+    }
+  }
+
+  const responseText = await response.text();
+
+  let result: any = {};
+
+  try {
+    result = responseText ? JSON.parse(responseText) : {};
+  } catch {
+    result = {
+      error: responseText || "Invalid server response.",
+    };
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      result?.error ||
+        result?.message ||
+        `SMS history request failed (${response.status}).`
+    );
+  }
+
+  return result;
+}
+
+/**
+ * Save SMS logs locally first.
+ */
+export async function recordSmsLogs(
+  logs: SmsLogInput[]
+): Promise<void> {
   if (!Array.isArray(logs) || logs.length === 0) return;
 
   const { db } = await import("../database/db");
 
   const rows: LocalSmsLog[] = logs.map((log) => ({
     ...log,
-
     synced: false,
-
-    // db.smsLogs requires a concrete timestamp — default to now when
-    // the caller did not provide one (sentAt or snake_case sent_at).
-    sentAt: log.sentAt || log.sent_at || new Date().toISOString(),
+    sentAt:
+      log.sentAt ||
+      log.sent_at ||
+      new Date().toISOString(),
   }));
 
   await db.smsLogs.bulkPut(rows);
 
-  // Best-effort immediate upload — failures stay queued locally.
   syncUnsyncedSmsLogs().catch(() => {});
 }
 
 /**
- * Push locally-recorded SMS logs that have not reached the cloud yet.
- * Shares the session self-heal: an offline session is silently upgraded
- * before giving up, so queued logs drain as soon as the device is online.
+ * Upload locally queued SMS logs through Render.
+ *
+ * The server supplies tenant_id and sent_by from the verified JWT.
  */
 export async function syncUnsyncedSmsLogs(): Promise<void> {
-  if (!hasValidAuth()) {
-    const healed = await tryReauthenticate();
+  const token = await ensureRenderToken();
 
-    if (!healed || !hasValidAuth()) return;
+  if (!token) {
+    console.log("SMS log upload deferred: no Render JWT.");
+    return;
   }
 
   try {
     const { db } = await import("../database/db");
 
+    const tenantId = getCurrentTenantId();
+
+    if (!tenantId) return;
+
     const pending = await db.smsLogs
       .filter((log: any) => !log.synced)
       .toArray();
 
-    if (!pending.length) return;
-
-    const tenantId = getCurrentTenantId();
-
-    const rows = pending.map((log: any) =>
-      smsLogToRow({
-        ...log,
-        tenant_id: log.tenant_id || tenantId,
-      })
+    // Never upload records belonging to a different tenant.
+    const tenantPending = pending.filter(
+      (log: any) =>
+        !log.tenant_id ||
+        log.tenant_id === tenantId
     );
 
-    const { error } = await supabase
-      .from("sms_logs")
-      .upsert(rows, { onConflict: "id" });
+    if (!tenantPending.length) return;
 
-    if (error) throw error;
+    const rows = tenantPending.map((log: any) => ({
+      id: log.id,
+      phone: String(log.phone || "").trim(),
+      message: String(log.message || ""),
+      status: String(log.status || "Success"),
+      sent_at:
+        log.sent_at ||
+        log.sentAt ||
+        new Date().toISOString(),
+    }));
+
+    await smsLogsApiFetch("/api/sms/logs/sync", {
+      method: "POST",
+      body: JSON.stringify({ logs: rows }),
+    });
 
     await db.smsLogs.bulkPut(
-      pending.map((log: any) => ({ ...log, synced: true }))
+      tenantPending.map((log: any) => ({
+        ...log,
+        tenant_id: log.tenant_id || tenantId,
+        synced: true,
+      }))
     );
 
-    console.log(`SMS logs synced: ${pending.length} row(s).`);
+    console.log(
+      `SMS logs synced through Render: ${tenantPending.length} row(s).`
+    );
   } catch (err) {
     console.warn("SMS log upload failed (will retry):", err);
   }
 }
 
 /**
- * Pull this tenant's SMS history from the cloud into the local database,
- * so every device sees the same Sent History.
+ * Pull SMS history through Render.
+ *
+ * The tenant is checked locally before making the request.
+ * Unsynced local records are protected from being overwritten.
  */
 export async function pullRemoteSmsLogs(
   tenantId: string
 ): Promise<void> {
-  if (!hasValidAuth()) {
-    const healed = await tryReauthenticate();
+  if (!tenantId) return;
 
-    if (!healed || !hasValidAuth()) {
-      console.log("Skipping SMS log pull - not authenticated.");
-      return;
-    }
+  const currentTenantId = getCurrentTenantId();
+
+  if (!currentTenantId || currentTenantId !== tenantId) {
+    console.warn("Skipping SMS log pull - tenant mismatch.");
+    return;
   }
 
-  if (!tenantId) return;
+  const token = await ensureRenderToken();
+
+  if (!token) {
+    console.log("Skipping SMS log pull - no Render JWT.");
+    return;
+  }
 
   try {
     const { db } = await import("../database/db");
 
-    const { data, error } = await supabase
-      .from("sms_logs")
-      .select("*")
-      .eq("tenant_id", tenantId)
-      .order("sent_at", { ascending: false })
-      .limit(1000);
+    const result = await smsLogsApiFetch(
+      "/api/sms/logs?limit=1000"
+    );
 
-    if (error) throw error;
+    const remoteLogs = Array.isArray(result?.logs)
+      ? result.logs
+      : [];
 
-    if (data && data.length) {
-      await db.smsLogs.bulkPut(data.map(mapSmsLogRow));
-
-      console.log(`SMS logs pulled: ${data.length} row(s).`);
+    if (!remoteLogs.length) {
+      console.log("No remote SMS logs found.");
+      return;
     }
+
+    const localLogs = await db.smsLogs.toArray();
+
+    const unsyncedIds = new Set(
+      localLogs
+        .filter((log: any) => !log.synced)
+        .map((log: any) => log.id)
+    );
+
+    const rowsToSave = remoteLogs
+      .filter((row: any) => !unsyncedIds.has(row.id))
+      .map(mapSmsLogRow);
+
+    if (rowsToSave.length) {
+      await db.smsLogs.bulkPut(rowsToSave);
+    }
+
+    console.log(
+      `SMS logs pulled through Render: ${rowsToSave.length} row(s).`
+    );
   } catch (err) {
     console.warn("SMS log pull failed:", err);
   }

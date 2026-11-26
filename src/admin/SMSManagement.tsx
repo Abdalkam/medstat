@@ -21,6 +21,7 @@ import * as supabaseModule from "../auth/supabase";
    On the upgraded version the real failure reason is shown; on the
    current version the optional argument is safely ignored and a
    generic note is displayed instead. */
+
 const tryReauthenticate = supabaseModule.tryReauthenticate as unknown as (
   force?: boolean
 ) => Promise<string | null>;
@@ -341,9 +342,6 @@ export default function SMSmanagement() {
   // ----------------------------------------------------------
   // SESSION SELF-HEAL
   // ----------------------------------------------------------
-  // If this device holds an offline session (backend was unreachable at
-  // login), SMS is disabled. Try a silent re-login with the cached
-  // credentials; on success the cloud history syncs immediately.
 
   const autoHealAttempts = useRef(0);
   const autoHealTimer = useRef<number | undefined>(undefined);
@@ -356,8 +354,7 @@ export default function SMSmanagement() {
     }
 
     try {
-      // `true` = skip the 30 s cooldown, so a user click (or a
-      // scheduled auto-retry) always performs a real new attempt.
+      // true = skip the 30-second cooldown.
       const token = await tryReauthenticate(true);
       setSessionOk(Boolean(token));
       setHealNote(token ? "" : getReauthReason());
@@ -375,9 +372,6 @@ export default function SMSmanagement() {
   // ----------------------------------------------------------
   // SCHEDULED AUTO-RETRY
   // ----------------------------------------------------------
-  // Render's free tier can take ~1 min to wake up. While the session
-  // is still offline, retry the heal up to 3 times, 60 s apart, then
-  // stop (the banner with "Retry now" stays either way).
 
   const scheduleAutoHeal = useCallback(() => {
     if (hasValidAuth()) return;
@@ -418,12 +412,8 @@ export default function SMSmanagement() {
         await loadSentLogs();
 
         if (mounted) {
-          // Repair an offline session (if any) before syncing.
           await healSession();
-
-          // If the server was still waking up, keep retrying briefly.
           scheduleAutoHeal();
-
           await refreshFromCloud();
         }
       } catch (err) {
@@ -537,7 +527,11 @@ export default function SMSmanagement() {
     ];
 
     try {
-      const response = await sendSms(recipients, cleanMessage);
+      // UPDATED: sendSms accepts one payload object.
+      const response = await sendSms({
+        phone: recipients,
+        message: cleanMessage,
+      });
 
       const logs = createSmsLogs(
         recipients,
