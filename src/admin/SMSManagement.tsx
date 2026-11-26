@@ -1,35 +1,24 @@
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import {
+  useState,
+  useEffect,
+  useCallback,
+  useRef,
+} from "react";
 import type { CSSProperties, ReactNode } from "react";
 
 import { getUsers } from "../database/userDB";
 import { db } from "../database/db";
 import { sendSms } from "../api/smsApi";
+
 import {
-  hasValidAuth,
+  isRenderJwtToken,
+  tryReauthenticate,
+  getReauthReason,
   recordSmsLogs,
   syncUnsyncedSmsLogs,
   pullRemoteSmsLogs,
 } from "../auth/supabase";
-import * as supabaseModule from "../auth/supabase";
-
-/* ============ VERSION-PROOF AUTH BINDINGS ============
-   Compile against BOTH supabase.ts versions:
-   - current:  tryReauthenticate() without parameters, no
-               getReauthReason export
-   - upgraded: tryReauthenticate(force = false) + getReauthReason()
-   On the upgraded version the real failure reason is shown; on the
-   current version the optional argument is safely ignored and a
-   generic note is displayed instead. */
-
-const tryReauthenticate = supabaseModule.tryReauthenticate as unknown as (
-  force?: boolean
-) => Promise<string | null>;
-
-const getReauthReason: () => string =
-  (supabaseModule as { getReauthReason?: () => string }).getReauthReason ??
-  (() =>
-    "Silent re-login failed. Check your internet connection; if the device was idle, the server may be waking up (free tier) — wait about a minute and press Retry now. If it keeps failing, log out and sign in once.");
 
 // ============================================================
 // THEME
@@ -102,14 +91,15 @@ interface SmsLog {
 interface CurrentUser {
   id?: string;
   tenantId?: string;
+  tenant_id?: string;
 }
 
 // ============================================================
 // HELPERS
 // ============================================================
 
-const normalizePhone = (phone: string) =>
-  phone.replace(/\s+/g, "").trim();
+const normalizePhone = (phone: string): string =>
+  String(phone || "").replace(/\s+/g, "").trim();
 
 const getCurrentUser = (): CurrentUser => {
   try {
@@ -121,11 +111,31 @@ const getCurrentUser = (): CurrentUser => {
   }
 };
 
-const getLogDate = (log: SmsLog) =>
-  new Date(log.sentAt || log.sent_at || 0).getTime();
+const getTenantId = (user: CurrentUser): string | null => {
+  const id = user.tenantId || user.tenant_id;
 
-const sortLogs = (logs: SmsLog[]) =>
-  [...logs].sort((a, b) => getLogDate(b) - getLogDate(a));
+  return typeof id === "string" && id.trim()
+    ? id.trim()
+    : null;
+};
+
+const hasRenderSession = (): boolean =>
+  isRenderJwtToken(localStorage.getItem("authToken"));
+
+const getLogDate = (log: SmsLog): number => {
+  const value = log.sentAt || log.sent_at;
+
+  if (!value) return 0;
+
+  const timestamp = new Date(value).getTime();
+
+  return Number.isFinite(timestamp) ? timestamp : 0;
+};
+
+const sortLogs = (logs: SmsLog[]): SmsLog[] =>
+  [...logs].sort(
+    (a, b) => getLogDate(b) - getLogDate(a)
+  );
 
 const createSmsLogs = (
   recipients: string[],
@@ -134,23 +144,26 @@ const createSmsLogs = (
   serverLogs?: any[],
   sentAt = new Date().toISOString()
 ): SmsLog[] => {
-  if (serverLogs?.length) {
-    return serverLogs.map((log: any) => ({
-      id: log.id || crypto.randomUUID(),
-      tenant_id: log.tenant_id || currentUser.tenantId || null,
-      phone: log.phone,
-      message: log.message || message,
-      status: log.status || "Success",
-      sent_by: log.sent_by || currentUser.id || null,
-      sentAt: log.sent_at
-        ? new Date(log.sent_at).toISOString()
-        : sentAt,
-    }));
+  if (Array.isArray(serverLogs) && serverLogs.length > 0) {
+    return serverLogs
+      .filter((log: any) => log?.phone)
+      .map((log: any) => ({
+        id: log.id || crypto.randomUUID(),
+        tenant_id:
+          log.tenant_id || getTenantId(currentUser),
+        phone: normalizePhone(log.phone),
+        message: log.message || message,
+        status: log.status || "Success",
+        sent_by: log.sent_by || currentUser.id || null,
+        sentAt: log.sent_at
+          ? new Date(log.sent_at).toISOString()
+          : sentAt,
+      }));
   }
 
   return recipients.map((phone) => ({
     id: crypto.randomUUID(),
-    tenant_id: currentUser.tenantId || null,
+    tenant_id: getTenantId(currentUser),
     phone,
     message,
     status: "Success",
@@ -231,7 +244,11 @@ function Stat({
   );
 }
 
-function SectionLabel({ children }: { children: ReactNode }) {
+function SectionLabel({
+  children,
+}: {
+  children: ReactNode;
+}) {
   return (
     <p
       style={{
@@ -289,17 +306,23 @@ export default function SMSmanagement() {
   const [selectedPhones, setSelectedPhones] = useState<string[]>([]);
   const [message, setMessage] = useState("");
   const [manualPhone, setManualPhone] = useState("");
-
   const [sentLogs, setSentLogs] = useState<SmsLog[]>([]);
 
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState(false);
 
-  // Session state: null = still checking, true = online session OK,
-  // false = offline session (SMS disabled until re-login).
-  const [sessionOk, setSessionOk] = useState<boolean>(hasValidAuth());
+  // SMS requires a genuine Render JWT, not an offline token.
+  const [sessionOk, setSessionOk] = useState<boolean | null>(
+    () => hasRenderSession()
+  );
+
   const [healNote, setHealNote] = useState("");
+
+  const mountedRef = useRef(true);
+  const autoHealAttempts = useRef(0);
+  const autoHealTimer = useRef<number | undefined>(undefined);
+  const successTimer = useRef<number | undefined>(undefined);
 
   // ----------------------------------------------------------
   // LOAD SMS HISTORY
@@ -308,7 +331,10 @@ export default function SMSmanagement() {
   const loadSentLogs = useCallback(async () => {
     try {
       const logs = await db.smsLogs.toArray();
-      setSentLogs(sortLogs(logs as SmsLog[]));
+
+      if (mountedRef.current) {
+        setSentLogs(sortLogs(logs as SmsLog[]));
+      }
     } catch (err) {
       console.error("Failed to load SMS logs:", err);
     }
@@ -320,22 +346,23 @@ export default function SMSmanagement() {
 
   const refreshFromCloud = useCallback(async () => {
     const currentUser = getCurrentUser();
+    const tenantId = getTenantId(currentUser);
 
-    if (!currentUser.tenantId || !navigator.onLine) {
+    if (!tenantId || !navigator.onLine) return;
+
+    if (!hasRenderSession()) {
       return;
     }
 
     try {
-      // Upload locally stored logs that have not synchronized.
       await syncUnsyncedSmsLogs();
-
-      // Retrieve the tenant's remote SMS history.
-      await pullRemoteSmsLogs(currentUser.tenantId);
-
-      // Refresh the local history.
+      await pullRemoteSmsLogs(tenantId);
       await loadSentLogs();
     } catch (err) {
-      console.warn("SMS cloud synchronization failed:", err);
+      console.warn(
+        "SMS cloud synchronization failed:",
+        err
+      );
     }
   }, [loadSentLogs]);
 
@@ -343,29 +370,50 @@ export default function SMSmanagement() {
   // SESSION SELF-HEAL
   // ----------------------------------------------------------
 
-  const autoHealAttempts = useRef(0);
-  const autoHealTimer = useRef<number | undefined>(undefined);
-
   const healSession = useCallback(async () => {
-    if (hasValidAuth()) {
-      setSessionOk(true);
-      setHealNote("");
+    if (!navigator.onLine) {
+      if (mountedRef.current) {
+        setSessionOk(false);
+        setHealNote(
+          "An internet connection is required for SMS sending."
+        );
+      }
+      return;
+    }
+
+    // Do not accept offline application tokens here.
+    if (hasRenderSession()) {
+      if (mountedRef.current) {
+        setSessionOk(true);
+        setHealNote("");
+      }
+
+      await refreshFromCloud();
       return;
     }
 
     try {
-      // true = skip the 30-second cooldown.
       const token = await tryReauthenticate(true);
-      setSessionOk(Boolean(token));
-      setHealNote(token ? "" : getReauthReason());
+      const authenticated = isRenderJwtToken(token);
 
-      if (token) {
+      if (mountedRef.current) {
+        setSessionOk(authenticated);
+        setHealNote(
+          authenticated ? "" : getReauthReason()
+        );
+      }
+
+      if (authenticated) {
+        autoHealAttempts.current = 0;
         await refreshFromCloud();
       }
     } catch (err) {
-      console.warn("Session heal failed:", err);
-      setSessionOk(false);
-      setHealNote(getReauthReason());
+      console.warn("Session recovery failed:", err);
+
+      if (mountedRef.current) {
+        setSessionOk(false);
+        setHealNote(getReauthReason());
+      }
     }
   }, [refreshFromCloud]);
 
@@ -374,17 +422,26 @@ export default function SMSmanagement() {
   // ----------------------------------------------------------
 
   const scheduleAutoHeal = useCallback(() => {
-    if (hasValidAuth()) return;
+    if (hasRenderSession()) return;
+    if (!navigator.onLine) return;
     if (autoHealAttempts.current >= 3) return;
 
     autoHealAttempts.current += 1;
 
     window.clearTimeout(autoHealTimer.current);
 
-    autoHealTimer.current = window.setTimeout(async () => {
-      await healSession();
-      scheduleAutoHeal();
-    }, 60000);
+    autoHealTimer.current = window.setTimeout(
+      async () => {
+        await healSession();
+
+        if (!hasRenderSession()) {
+          scheduleAutoHeal();
+        } else {
+          autoHealAttempts.current = 0;
+        }
+      },
+      60000
+    );
   }, [healSession]);
 
   // ----------------------------------------------------------
@@ -392,50 +449,96 @@ export default function SMSmanagement() {
   // ----------------------------------------------------------
 
   useEffect(() => {
-    let mounted = true;
+    mountedRef.current = true;
 
     const loadInitialData = async () => {
       try {
         const localUsers = await getUsers();
 
-        if (!mounted) return;
+        if (!mountedRef.current) return;
 
         const registeredUsers = localUsers
-          .filter((user: any) => user.phone)
+          .filter(
+            (user: any) =>
+              typeof user.phone === "string" &&
+              user.phone.trim()
+          )
           .map((user: any) => ({
             ...user,
             phone: normalizePhone(user.phone),
           }));
 
-        setUsers(registeredUsers);
+        // Remove duplicate registered phone numbers.
+        const uniqueUsers = Array.from(
+          new Map(
+            registeredUsers.map((user: SmsUser) => [
+              user.phone,
+              user,
+            ])
+          ).values()
+        );
+
+        setUsers(uniqueUsers);
 
         await loadSentLogs();
 
-        if (mounted) {
-          await healSession();
+        if (!mountedRef.current) return;
+
+        await healSession();
+
+        if (mountedRef.current && !hasRenderSession()) {
           scheduleAutoHeal();
-          await refreshFromCloud();
         }
       } catch (err) {
-        console.error("Failed to load SMS management data:", err);
+        console.error(
+          "Failed to load SMS management data:",
+          err
+        );
       }
     };
 
     const handleOnline = () => {
-      healSession();
-      refreshFromCloud();
+      autoHealAttempts.current = 0;
+      void healSession();
     };
 
-    loadInitialData();
+    const handleAuthChanged = () => {
+      if (hasRenderSession()) {
+        setSessionOk(true);
+        setHealNote("");
+        void refreshFromCloud();
+      } else {
+        setSessionOk(false);
+        void healSession();
+      }
+    };
+
+    void loadInitialData();
 
     window.addEventListener("online", handleOnline);
+    window.addEventListener(
+      "authStateChanged",
+      handleAuthChanged
+    );
 
     return () => {
-      mounted = false;
+      mountedRef.current = false;
+
       window.removeEventListener("online", handleOnline);
+      window.removeEventListener(
+        "authStateChanged",
+        handleAuthChanged
+      );
+
       window.clearTimeout(autoHealTimer.current);
+      window.clearTimeout(successTimer.current);
     };
-  }, [loadSentLogs, refreshFromCloud, healSession, scheduleAutoHeal]);
+  }, [
+    loadSentLogs,
+    healSession,
+    scheduleAutoHeal,
+    refreshFromCloud,
+  ]);
 
   // ----------------------------------------------------------
   // RECIPIENT SELECTION
@@ -454,10 +557,24 @@ export default function SMSmanagement() {
   };
 
   const selectAll = () => {
-    if (selectedPhones.length === users.length && users.length > 0) {
-      setSelectedPhones([]);
+    const allPhones = users.map((user) => user.phone);
+
+    const allSelected =
+      allPhones.length > 0 &&
+      allPhones.every((phone) =>
+        selectedPhones.includes(phone)
+      );
+
+    if (allSelected) {
+      setSelectedPhones((previous) =>
+        previous.filter(
+          (phone) => !allPhones.includes(phone)
+        )
+      );
     } else {
-      setSelectedPhones(users.map((user) => user.phone));
+      setSelectedPhones((previous) => [
+        ...new Set([...previous, ...allPhones]),
+      ]);
     }
 
     setError("");
@@ -470,14 +587,23 @@ export default function SMSmanagement() {
   const addManualPhone = () => {
     const phone = normalizePhone(manualPhone);
 
-    if (!phone) return;
-
-    if (selectedPhones.includes(phone)) {
-      setError("This number is already in the recipient list.");
+    if (!phone) {
+      setError("Enter a phone number.");
       return;
     }
 
-    setSelectedPhones((previous) => [...previous, phone]);
+    if (selectedPhones.includes(phone)) {
+      setError(
+        "This number is already in the recipient list."
+      );
+      return;
+    }
+
+    setSelectedPhones((previous) => [
+      ...previous,
+      phone,
+    ]);
+
     setManualPhone("");
     setError("");
   };
@@ -489,11 +615,22 @@ export default function SMSmanagement() {
   const handleSendSms = async () => {
     if (sending) return;
 
-    if (!sessionOk) {
+    if (!navigator.onLine) {
       setError(
-        "Offline session — log out and sign in online to enable SMS."
+        "You're offline. Sending SMS requires an internet connection."
       );
       return;
+    }
+
+    if (!hasRenderSession()) {
+      setSessionOk(false);
+      setError(
+        "Your SMS session is not authenticated. Please retry authentication."
+      );
+
+      await healSession();
+
+      if (!hasRenderSession()) return;
     }
 
     if (selectedPhones.length === 0) {
@@ -508,10 +645,16 @@ export default function SMSmanagement() {
       return;
     }
 
-    if (!navigator.onLine) {
-      setError(
-        "You're offline — sending SMS requires an internet connection."
-      );
+    const recipients = [
+      ...new Set(
+        selectedPhones
+          .map(normalizePhone)
+          .filter(Boolean)
+      ),
+    ];
+
+    if (recipients.length === 0) {
+      setError("Please provide valid recipient numbers.");
       return;
     }
 
@@ -522,14 +665,10 @@ export default function SMSmanagement() {
     const currentUser = getCurrentUser();
     const sentAt = new Date().toISOString();
 
-    const recipients = [
-      ...new Set(selectedPhones.map(normalizePhone)),
-    ];
-
     try {
-      // UPDATED: sendSms accepts one payload object.
+      // IMPORTANT: backend expects recipients, not phone.
       const response = await sendSms({
-        phone: recipients,
+        recipients,
         message: cleanMessage,
       });
 
@@ -541,43 +680,43 @@ export default function SMSmanagement() {
         sentAt
       );
 
-      // Save SMS history locally first.
+      // Save returned server records locally.
       await recordSmsLogs(logs);
+
+      if (!mountedRef.current) return;
 
       setSuccess(true);
       setMessage("");
       setSelectedPhones([]);
 
-      window.setTimeout(() => setSuccess(false), 3000);
+      window.clearTimeout(successTimer.current);
 
-      // Attempt cloud synchronization without blocking the UI.
+      successTimer.current = window.setTimeout(() => {
+        if (mountedRef.current) {
+          setSuccess(false);
+        }
+      }, 3000);
+
       void refreshFromCloud();
     } catch (err: any) {
       console.error("SMS sending failed:", err);
 
-      setError(
-        err?.message || "Failed to send SMS. Please check your connection."
-      );
+      if (mountedRef.current) {
+        setError(
+          err?.message ||
+            "Failed to send SMS. Please check your connection."
+        );
 
-      // Preserve successful server-side delivery records.
-      if (err?.logs?.length) {
-        try {
-          const successfulLogs = createSmsLogs(
-            [],
-            cleanMessage,
-            currentUser,
-            err.logs,
-            sentAt
-          );
-
-          await recordSmsLogs(successfulLogs);
-        } catch (logError) {
-          console.error("Failed to save partial SMS logs:", logError);
+        if (!hasRenderSession()) {
+          setSessionOk(false);
+          setHealNote(getReauthReason());
         }
       }
     } finally {
-      setSending(false);
-      await loadSentLogs();
+      if (mountedRef.current) {
+        setSending(false);
+        await loadSentLogs();
+      }
     }
   };
 
@@ -587,13 +726,26 @@ export default function SMSmanagement() {
 
   const selectedCount = selectedPhones.length;
 
-  const successCount = sentLogs.filter(
-    (log) => (log.status || "").toLowerCase() === "success"
-  ).length;
+  const successCount = sentLogs.filter((log) => {
+    const status = (log.status || "").toLowerCase();
+
+    return [
+      "success",
+      "sent",
+      "delivered",
+    ].includes(status);
+  }).length;
 
   const customPhones = selectedPhones.filter(
-    (phone) => !users.some((user) => user.phone === phone)
+    (phone) =>
+      !users.some((user) => user.phone === phone)
   );
+
+  const allRegisteredSelected =
+    users.length > 0 &&
+    users.every((user) =>
+      selectedPhones.includes(user.phone)
+    );
 
   // ----------------------------------------------------------
   // RENDER
@@ -687,7 +839,7 @@ export default function SMSmanagement() {
               fontFamily: FONT,
             }}
           >
-            {selectedCount === users.length && users.length > 0
+            {allRegisteredSelected
               ? "Deselect All"
               : "Select All"}
           </button>
@@ -725,7 +877,7 @@ export default function SMSmanagement() {
               marginBottom: 16,
             }}
           >
-            SMS Sent Successfully!
+            SMS request processed successfully.
           </div>
         )}
 
@@ -748,8 +900,8 @@ export default function SMSmanagement() {
             }}
           >
             <span>
-              Offline session — SMS sending is disabled. Log out and sign in
-              again with internet on this device.
+              SMS authentication is unavailable. An online
+              Render session is required.
               {healNote && (
                 <span
                   style={{
@@ -767,7 +919,10 @@ export default function SMSmanagement() {
 
             <button
               type="button"
-              onClick={healSession}
+              onClick={() => {
+                autoHealAttempts.current = 0;
+                void healSession();
+              }}
               style={{
                 background: C.red,
                 color: "#FFFFFF",
@@ -783,6 +938,22 @@ export default function SMSmanagement() {
             >
               Retry now
             </button>
+          </div>
+        )}
+
+        {sessionOk === null && (
+          <div
+            role="status"
+            style={{
+              background: C.blueBg,
+              color: C.blue,
+              padding: "12px 16px",
+              borderRadius: 12,
+              fontSize: 14,
+              marginBottom: 16,
+            }}
+          >
+            Checking SMS authentication...
           </div>
         )}
 
@@ -833,7 +1004,7 @@ export default function SMSmanagement() {
             }
             bg={C.greenBg}
             fg={C.green}
-            label="SMS Sent (all time)"
+            label="SMS Records"
             value={sentLogs.length}
           />
 
@@ -902,17 +1073,21 @@ export default function SMSmanagement() {
             {/* CUSTOM PHONE */}
 
             <div style={{ ...panel, padding: 16 }}>
-              <SectionLabel>Add Custom Number</SectionLabel>
+              <SectionLabel>
+                Add Custom Number
+              </SectionLabel>
 
               <div style={{ display: "flex", gap: 8 }}>
                 <input
                   type="tel"
                   placeholder="+256712345678"
                   value={manualPhone}
-                  onChange={(e) => setManualPhone(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.preventDefault();
+                  onChange={(event) =>
+                    setManualPhone(event.target.value)
+                  }
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
                       addManualPhone();
                     }
                   }}
@@ -1000,7 +1175,9 @@ export default function SMSmanagement() {
                   gap: 8,
                 }}
               >
-                <span>Registered Users ({users.length})</span>
+                <span>
+                  Registered Users ({users.length})
+                </span>
 
                 {selectedCount > 0 && (
                   <span
@@ -1027,15 +1204,23 @@ export default function SMSmanagement() {
                   No registered users found.
                 </div>
               ) : (
-                <div style={{ maxHeight: 380, overflowY: "auto" }}>
+                <div
+                  style={{
+                    maxHeight: 380,
+                    overflowY: "auto",
+                  }}
+                >
                   {users.map((user, index) => {
-                    const selected = selectedPhones.includes(user.phone);
+                    const selected =
+                      selectedPhones.includes(user.phone);
 
                     return (
                       <button
                         key={user.id}
                         type="button"
-                        onClick={() => toggleSelect(user.phone)}
+                        onClick={() =>
+                          toggleSelect(user.phone)
+                        }
                         style={{
                           display: "flex",
                           alignItems: "center",
@@ -1047,13 +1232,20 @@ export default function SMSmanagement() {
                             index < users.length - 1
                               ? `1px solid ${C.separator}`
                               : "none",
-                          background: selected ? C.medBlueBg : "transparent",
+                          background: selected
+                            ? C.medBlueBg
+                            : "transparent",
                           cursor: "pointer",
                           fontFamily: FONT,
                           minWidth: 0,
                         }}
                       >
-                        <div style={{ flex: 1, minWidth: 0 }}>
+                        <div
+                          style={{
+                            flex: 1,
+                            minWidth: 0,
+                          }}
+                        >
                           <div
                             style={{
                               fontSize: 15,
@@ -1084,9 +1276,13 @@ export default function SMSmanagement() {
                             height: 24,
                             borderRadius: "50%",
                             border: `2px solid ${
-                              selected ? C.medBlue : C.separator
+                              selected
+                                ? C.medBlue
+                                : C.separator
                             }`,
-                            background: selected ? C.medBlue : "transparent",
+                            background: selected
+                              ? C.medBlue
+                              : "transparent",
                             display: "flex",
                             alignItems: "center",
                             justifyContent: "center",
@@ -1140,7 +1336,9 @@ export default function SMSmanagement() {
               <textarea
                 placeholder="Type your message here..."
                 value={message}
-                onChange={(e) => setMessage(e.target.value)}
+                onChange={(event) =>
+                  setMessage(event.target.value)
+                }
                 style={{
                   width: "100%",
                   minHeight: 220,
@@ -1165,11 +1363,22 @@ export default function SMSmanagement() {
                   gap: 8,
                 }}
               >
-                <span style={{ fontSize: 12, color: C.textTertiary }}>
-                  {selectedCount} recipient{selectedCount === 1 ? "" : "s"}
+                <span
+                  style={{
+                    fontSize: 12,
+                    color: C.textTertiary,
+                  }}
+                >
+                  {selectedCount} recipient
+                  {selectedCount === 1 ? "" : "s"}
                 </span>
 
-                <span style={{ fontSize: 12, color: C.textTertiary }}>
+                <span
+                  style={{
+                    fontSize: 12,
+                    color: C.textTertiary,
+                  }}
+                >
                   {message.length} characters
                 </span>
               </div>
@@ -1178,24 +1387,43 @@ export default function SMSmanagement() {
             <button
               type="button"
               onClick={handleSendSms}
-              disabled={sending || sessionOk === false}
+              disabled={
+                sending ||
+                sessionOk !== true ||
+                !navigator.onLine
+              }
               style={{
                 width: "100%",
                 minHeight: 54,
-                background: sending ? "#A0A0A0" : C.medBlue,
+                background:
+                  sending ||
+                  sessionOk !== true ||
+                  !navigator.onLine
+                    ? "#A0A0A0"
+                    : C.medBlue,
                 color: "#FFFFFF",
                 border: "none",
                 borderRadius: 12,
                 fontSize: 16,
                 fontWeight: 600,
                 fontFamily: FONT,
-                cursor: sending ? "not-allowed" : "pointer",
-                boxShadow: "0 3px 10px rgba(10,132,255,0.18)",
+                cursor:
+                  sending ||
+                  sessionOk !== true ||
+                  !navigator.onLine
+                    ? "not-allowed"
+                    : "pointer",
+                boxShadow:
+                  "0 3px 10px rgba(10,132,255,0.18)",
               }}
             >
               {sending
                 ? "Sending..."
-                : `Send SMS${selectedCount > 0 ? ` to ${selectedCount}` : ""}`}
+                : `Send SMS${
+                    selectedCount > 0
+                      ? ` to ${selectedCount}`
+                      : ""
+                  }`}
             </button>
           </div>
         </div>
@@ -1245,8 +1473,15 @@ export default function SMSmanagement() {
             </div>
           ) : (
             sentLogs.map((log, index) => {
-              const isSuccess =
-                (log.status || "").toLowerCase() === "success";
+              const status = (
+                log.status || "Unknown"
+              ).toLowerCase();
+
+              const isSuccess = [
+                "success",
+                "sent",
+                "delivered",
+              ].includes(status);
 
               return (
                 <div
@@ -1288,7 +1523,9 @@ export default function SMSmanagement() {
                         fontSize: 11,
                         fontWeight: 700,
                         color: isSuccess ? C.green : C.red,
-                        background: isSuccess ? C.greenBg : C.redBg,
+                        background: isSuccess
+                          ? C.greenBg
+                          : C.redBg,
                         padding: "4px 8px",
                         borderRadius: 6,
                         textTransform: "uppercase",
@@ -1317,8 +1554,10 @@ export default function SMSmanagement() {
                       color: C.textTertiary,
                     }}
                   >
-                    {Number.isFinite(getLogDate(log))
-                      ? new Date(getLogDate(log)).toLocaleString()
+                    {getLogDate(log)
+                      ? new Date(
+                          getLogDate(log)
+                        ).toLocaleString()
                       : "Date unavailable"}
                   </span>
                 </div>

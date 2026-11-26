@@ -5,13 +5,37 @@ import {
   isRenderJwtToken,
 } from "../auth/supabase";
 
-const API_BASE = import.meta.env.VITE_API_URL
-  ? String(import.meta.env.VITE_API_URL).replace(/\/+$/, "")
-  : import.meta.env.PROD
+// ==========================================
+// API CONFIGURATION
+// ==========================================
+
+const API_BASE = (
+  (import.meta.env.VITE_API_URL as string) ||
+  (import.meta.env.PROD
     ? "https://medstat-3rxl.onrender.com"
-    : "http://localhost:10000";
+    : "http://localhost:10000")
+)
+  .trim()
+  .replace(/\/+$/, "");
 
 const SMS_TIMEOUT = 90000;
+
+// ==========================================
+// TYPES
+// ==========================================
+
+export interface SendSmsPayload {
+  recipients: string[];
+  message: string;
+}
+
+export interface SendSmsResult {
+  success?: boolean;
+  message?: string;
+  error?: string;
+  logs?: any[];
+  [key: string]: any;
+}
 
 // ==========================================
 // BACKEND WAKE-UP
@@ -79,68 +103,10 @@ function getErrorMessage(
 }
 
 // ==========================================
-// SMS SENDING
+// AUTHENTICATION
 // ==========================================
 
-export interface SendSmsPayload {
-  phone: string | string[];
-  message: string;
-  [key: string]: any;
-}
-
-export interface SendSmsResult {
-  success?: boolean;
-  message?: string;
-  error?: string;
-  logs?: any[];
-  [key: string]: any;
-}
-
-/**
- * Send SMS through the authenticated Render backend.
- *
- * Offline/session marker tokens are not accepted.
- * A genuine Render JWT is required.
- *
- * If the JWT has expired, the app attempts one silent
- * re-authentication and retries the SMS request once.
- */
-export async function sendSms(
-  payload: SendSmsPayload
-): Promise<SendSmsResult> {
-  if (!payload || !payload.phone || !payload.message?.trim()) {
-    throw new Error("Phone number and message are required.");
-  }
-
-  if (
-    Array.isArray(payload.phone) &&
-    payload.phone.length === 0
-  ) {
-    throw new Error("At least one recipient is required.");
-  }
-
-  if (
-    Array.isArray(payload.phone) &&
-    payload.phone.some(
-      (phone) => typeof phone !== "string" || !phone.trim()
-    )
-  ) {
-    throw new Error("One or more recipient phone numbers are invalid.");
-  }
-
-  if (
-    typeof payload.phone === "string" &&
-    !payload.phone.trim()
-  ) {
-    throw new Error("A valid recipient phone number is required.");
-  }
-
-  if (typeof navigator !== "undefined" && !navigator.onLine) {
-    throw new Error(
-      "You must be online and logged in to send SMS."
-    );
-  }
-
+async function getSmsAuthToken(): Promise<string> {
   let token = localStorage.getItem("authToken");
 
   if (!isRenderJwtToken(token)) {
@@ -153,13 +119,68 @@ export async function sendSms(
     );
   }
 
+  return token;
+}
+
+// ==========================================
+// SMS SENDING
+// ==========================================
+
+/**
+ * Send SMS through the authenticated Render backend.
+ *
+ * Requires a genuine Render JWT.
+ * If the server rejects an expired JWT with 401,
+ * the app attempts one silent re-authentication
+ * and retries the request once.
+ */
+export async function sendSms(
+  payload: SendSmsPayload
+): Promise<SendSmsResult> {
+  if (
+    !payload ||
+    !Array.isArray(payload.recipients) ||
+    typeof payload.message !== "string" ||
+    !payload.message.trim()
+  ) {
+    throw new Error(
+      "Recipient phone numbers and message are required."
+    );
+  }
+
+  if (payload.recipients.length === 0) {
+    throw new Error("At least one recipient is required.");
+  }
+
+  const recipients = payload.recipients.map((phone) => {
+    if (typeof phone !== "string" || !phone.trim()) {
+      throw new Error(
+        "One or more recipient phone numbers are invalid."
+      );
+    }
+
+    return phone.trim();
+  });
+
+  if (
+    typeof navigator !== "undefined" &&
+    !navigator.onLine
+  ) {
+    throw new Error(
+      "You must be online and logged in to send SMS."
+    );
+  }
+
+  const token = await getSmsAuthToken();
+
   const requestBody = {
-    ...payload,
-    phone: Array.isArray(payload.phone)
-      ? payload.phone.map((phone) => phone.trim())
-      : payload.phone.trim(),
+    recipients,
     message: payload.message.trim(),
   };
+
+  // ------------------------------------------
+  // AUTHENTICATED REQUEST
+  // ------------------------------------------
 
   const makeRequest = async (
     authToken: string
@@ -210,7 +231,10 @@ export async function sendSms(
     throw error;
   }
 
-  // Retry exactly once if the JWT has expired.
+  // ------------------------------------------
+  // RETRY ONCE AFTER 401
+  // ------------------------------------------
+
   if (response.status === 401) {
     const refreshedToken = await tryReauthenticate(true);
 
@@ -246,10 +270,16 @@ export async function sendSms(
     }
   }
 
+  // ------------------------------------------
+  // PROCESS RESPONSE
+  // ------------------------------------------
+
   const result = await readResponse(response);
 
   if (!response.ok) {
-    throw new Error(getErrorMessage(result, response.status));
+    throw new Error(
+      getErrorMessage(result, response.status)
+    );
   }
 
   if (result?.success === false) {
