@@ -1,429 +1,34 @@
+
+// src/screens/PhoneEntry.tsx
+//
+// Step 1 of institution registration.
+// Supabase checks whether the institution phone number already exists.
+// Render is used only to send the OTP through Africa's Talking.
+
 import { useState } from "react";
-import type { FormEvent, ReactNode } from "react";
+import type { FormEvent } from "react";
+
 import { sendATCode } from "../api/authApi";
 import { supabase } from "../auth/supabase";
 
-/* -------------------------------------------------------------------------- */
-/* Material Design 3 design tokens                                             */
-/* -------------------------------------------------------------------------- */
-
 const C = {
   primary: "#0B57D0",
-  onSurface: "#1F1F1F",
-  onSurfaceVariant: "#444746",
-  outlineVariant: "#C4C7C5",
+  text: "#1F1F1F",
+  secondary: "#444746",
+  outline: "#C4C7C5",
   red: "#B3261E",
   redBg: "#F9DEDC",
 };
 
 const FONT =
-  "'Google Sans', 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif";
+  "'Google Sans', 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
 
-/* -------------------------------------------------------------------------- */
-/* Styles                                                                      */
-/* -------------------------------------------------------------------------- */
-
-const PE_CSS = `
-.pe-root {
-  min-height: 100vh;
-  min-height: 100dvh;
-  box-sizing: border-box;
-  display: flex;
-  overflow-y: auto;
-  align-items: center;
-  justify-content: center;
-  background: radial-gradient(120% 90% at 50% 0%, #FFFFFF 0%, #F8FAFD 55%, #EEF3FB 100%);
-  font-family: ${FONT};
-  color: ${C.onSurface};
-  padding: env(safe-area-inset-top) env(safe-area-inset-right)
-           env(safe-area-inset-bottom) env(safe-area-inset-left);
-  -webkit-tap-highlight-color: transparent;
-  position: relative;
-}
-
-.pe-root * {
-  box-sizing: border-box;
-}
-
-.pe-back {
-  position: absolute;
-  top: calc(16px + env(safe-area-inset-top));
-  left: calc(16px + env(safe-area-inset-left));
-  width: 44px;
-  height: 44px;
-  border: none;
-  border-radius: 50%;
-  background: transparent;
-  color: ${C.primary};
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  transition: background .2s cubic-bezier(.2, 0, 0, 1);
-  z-index: 10;
-}
-
-.pe-back:hover {
-  background: rgba(11, 87, 208, .08);
-}
-
-.pe-panel {
-  width: 100%;
-  max-width: 460px;
-  margin: auto;
-  display: flex;
-  flex-direction: column;
-  padding: clamp(14px, 3vh, 32px) clamp(16px, 4vw, 28px);
-}
-
-.pe-card {
-  width: 100%;
-  background: #FFFFFF;
-  border-radius: 28px;
-  box-shadow: 0 1px 2px 0 rgba(0,0,0,.12),
-              0 2px 6px 2px rgba(0,0,0,.08);
-  padding: clamp(22px, 5vw, 36px);
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.pe-card-title {
-  font-size: clamp(21px, 5.6vw, 26px);
-  font-weight: 600;
-  margin: 2px 0 0;
-  letter-spacing: .1px;
-  line-height: 1.25;
-}
-
-.pe-card-sub {
-  font-size: 14px;
-  color: ${C.onSurfaceVariant};
-  margin: 0 0 4px;
-  line-height: 1.5;
-}
-
-.pe-form {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.pe-field {
-  position: relative;
-  display: flex;
-  align-items: center;
-  height: 56px;
-  border-radius: 12px;
-  background: #FFFFFF;
-  border: 1px solid ${C.outlineVariant};
-  transition: all .2s cubic-bezier(.2, 0, 0, 1);
-}
-
-.pe-field:focus-within {
-  border-color: ${C.primary};
-  box-shadow: inset 0 0 0 1px ${C.primary};
-}
-
-.pe-field.pe-invalid {
-  border-color: ${C.red};
-  box-shadow: inset 0 0 0 1px ${C.red};
-}
-
-.pe-field.pe-invalid:focus-within {
-  border-color: ${C.red};
-  box-shadow: inset 0 0 0 1px ${C.red};
-}
-
-.pe-lead {
-  position: absolute;
-  left: 14px;
-  display: flex;
-  color: ${C.onSurfaceVariant};
-  transition: all .2s cubic-bezier(.2, 0, 0, 1);
-}
-
-.pe-field:focus-within .pe-lead {
-  color: ${C.primary};
-}
-
-.pe-field.pe-invalid .pe-lead,
-.pe-field.pe-invalid:focus-within .pe-lead {
-  color: ${C.red};
-}
-
-.pe-input {
-  flex: 1;
-  min-width: 0;
-  height: 100%;
-  border: none;
-  outline: none;
-  background: transparent;
-  padding: 0 46px;
-  font-family: inherit;
-  font-size: 16px;
-  color: ${C.onSurface};
-}
-
-.pe-input:disabled {
-  opacity: .55;
-}
-
-.pe-float {
-  position: absolute;
-  left: 46px;
-  top: 50%;
-  transform: translateY(-50%);
-  color: ${C.onSurfaceVariant};
-  font-size: 15px;
-  pointer-events: none;
-  transition: all .2s cubic-bezier(.2, 0, 0, 1);
-  white-space: nowrap;
-}
-
-.pe-float.pe-floated {
-  top: 0;
-  transform: translateY(-50%) scale(.76);
-  transform-origin: left center;
-  background: #FFFFFF;
-  padding: 0 5px;
-  margin-left: -5px;
-  color: ${C.onSurfaceVariant};
-}
-
-.pe-field:focus-within .pe-float.pe-floated {
-  color: ${C.primary};
-}
-
-.pe-field.pe-invalid .pe-float.pe-floated,
-.pe-field.pe-invalid:focus-within .pe-float.pe-floated {
-  color: ${C.red};
-}
-
-.pe-btn {
-  position: relative;
-  height: 48px;
-  width: 100%;
-  border: none;
-  border-radius: 999px;
-  font-family: inherit;
-  font-size: 15px;
-  font-weight: 600;
-  letter-spacing: .2px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 9px;
-  cursor: pointer;
-  transition: all .2s cubic-bezier(.2, 0, 0, 1);
-}
-
-.pe-btn:active:not(:disabled) {
-  transform: scale(.985);
-}
-
-.pe-btn:disabled {
-  opacity: .42;
-  cursor: default;
-}
-
-.pe-btn-filled {
-  background: ${C.primary};
-  color: #FFFFFF;
-  box-shadow: 0 1px 2px 0 rgba(0,0,0,.10),
-              0 1px 3px 1px rgba(0,0,0,.07);
-}
-
-.pe-btn-filled:hover:not(:disabled) {
-  box-shadow: 0 1px 2px 0 rgba(0,0,0,.12),
-              0 2px 6px 2px rgba(0,0,0,.08);
-}
-
-.pe-banner {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  border-radius: 12px;
-  padding: 11px 13px;
-  font-size: 13.5px;
-  line-height: 1.5;
-}
-
-.pe-banner svg {
-  flex-shrink: 0;
-  margin-top: 1px;
-}
-
-.pe-spinner {
-  width: 18px;
-  height: 18px;
-  flex-shrink: 0;
-  border-radius: 50%;
-  border: 2.5px solid currentColor;
-  border-top-color: transparent;
-  animation: peSpin .8s linear infinite;
-}
-
-@keyframes peSpin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-.pe-focusable:focus-visible {
-  outline: 2px solid ${C.primary};
-  outline-offset: 2px;
-}
-
-@media (max-width: 374px) {
-  .pe-field {
-    height: 52px;
-  }
-
-  .pe-float {
-    left: 42px;
-  }
-}
-
-@media (max-height: 520px) and (orientation: landscape) {
-  .pe-panel {
-    padding-top: 10px;
-    padding-bottom: 10px;
-  }
-
-  .pe-card {
-    padding: 16px 22px;
-    gap: 9px;
-    border-radius: 20px;
-  }
-
-  .pe-field {
-    height: 48px;
-  }
-
-  .pe-btn {
-    height: 42px;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .pe-root *,
-  .pe-root *::before,
-  .pe-root *::after {
-    transition: none !important;
-    animation-duration: .01ms !important;
-    animation-iteration-count: 1 !important;
-  }
-}
-`;
-
-/* -------------------------------------------------------------------------- */
-/* SVG icons                                                                   */
-/* -------------------------------------------------------------------------- */
-
-const iconProps = {
-  fill: "none",
-  stroke: "currentColor",
-  strokeWidth: 1.8,
-  strokeLinecap: "round" as const,
-  strokeLinejoin: "round" as const,
-};
-
-function IconChevronLeft({ size = 22 }: { size?: number }) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2.2}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <polyline points="15 18 9 12 15 6" />
-    </svg>
-  );
-}
-
-function IconPhone({ size = 20 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" {...iconProps} aria-hidden="true">
-      <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.79 19.79 0 0 1 2.12 4.18 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92z" />
-    </svg>
-  );
-}
-
-function IconAlert({ size = 20 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" {...iconProps} aria-hidden="true">
-      <circle cx="12" cy="12" r="9" />
-      <line x1="12" y1="7.5" x2="12" y2="13" />
-      <line x1="12" y1="16.2" x2="12" y2="16.3" />
-    </svg>
-  );
-}
-
-function IconArrowRight({ size = 18 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" {...iconProps} aria-hidden="true">
-      <line x1="5" y1="12" x2="19" y2="12" />
-      <polyline points="12 5 19 12 12 19" />
-    </svg>
-  );
-}
-
-/* -------------------------------------------------------------------------- */
-/* MD3 floating-label field                                                    */
-/* -------------------------------------------------------------------------- */
-
-function PeField(props: {
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-  type?: string;
-  icon: ReactNode;
-  autoComplete?: string;
-  autoFocus?: boolean;
-  invalid?: boolean;
-  describedBy?: string;
-}) {
-  const [focused, setFocused] = useState(false);
-  const floated = focused || props.value.length > 0;
-
-  return (
-    <div className={`pe-field${props.invalid ? " pe-invalid" : ""}`}>
-      <span className="pe-lead">{props.icon}</span>
-
-      <input
-        className="pe-input"
-        type={props.type ?? "text"}
-        value={props.value}
-        placeholder=" "
-        autoComplete={props.autoComplete}
-        autoFocus={props.autoFocus}
-        spellCheck={false}
-        onChange={(e) => props.onChange(e.target.value)}
-        onFocus={() => setFocused(true)}
-        onBlur={() => setFocused(false)}
-        aria-label={props.label}
-        aria-invalid={props.invalid}
-        aria-describedby={props.describedBy}
-      />
-
-      <label className={`pe-float${floated ? " pe-floated" : ""}`}>
-        {props.label}
-      </label>
-    </div>
-  );
-}
-
-/* -------------------------------------------------------------------------- */
-/* Phone entry screen                                                          */
-/* -------------------------------------------------------------------------- */
-
+// Accept international numbers, with or without a leading plus.
 const PHONE_PATTERN = /^\+?\d{10,15}$/;
+
+function normalizePhone(value: string): string {
+  return value.replace(/[\s()-]/g, "").trim();
+}
 
 export default function PhoneEntry({
   onSent,
@@ -436,14 +41,14 @@ export default function PhoneEntry({
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  async function handleSend(e: FormEvent<HTMLFormElement>) {
-    e.preventDefault();
+  const cleanPhone = normalizePhone(phone);
+  const validPhone = PHONE_PATTERN.test(cleanPhone);
 
-    const cleanPhone = phone.replace(/\s/g, "").trim();
+  async function handleSend(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
 
-    // Accept international numbers with or without a leading +.
-    if (cleanPhone.length < 10 || !PHONE_PATTERN.test(cleanPhone)) {
-      setError("Please enter a valid phone number (e.g., +256712345678)");
+    if (!validPhone) {
+      setError("Enter a valid international phone number, e.g. +256712345678.");
       return;
     }
 
@@ -451,116 +56,294 @@ export default function PhoneEntry({
     setError("");
 
     try {
-      const { data: existingTenant, error: checkError } = await supabase
+      // Check Supabase before sending an OTP.
+      // Do not continue if the institution lookup fails.
+      const { data: existingTenant, error: lookupError } = await supabase
         .from("tenants")
         .select("id, business_name")
         .eq("phone", cleanPhone)
         .maybeSingle();
 
-      if (checkError) {
-        console.warn("Tenant check failed:", checkError);
-      } else if (existingTenant) {
-        setError(
-          `This phone is already registered${
+      if (lookupError) {
+        throw new Error(
+          `Could not check the institution in Supabase: ${lookupError.message}`,
+        );
+      }
+
+      if (existingTenant) {
+        throw new Error(
+          `This phone number is already registered${
             existingTenant.business_name
               ? ` for "${existingTenant.business_name}"`
               : ""
-          }. Please login instead.`,
+          }. Please log in instead.`,
         );
-        // `finally` resets loading — no need to do it here.
-        return;
       }
 
+      // Render handles SMS delivery only.
       await sendATCode(cleanPhone);
+
+      // Move to VerifyCode screen only after successful SMS request.
       onSent(cleanPhone);
-    } catch (err: unknown) {
+    } catch (cause) {
       setError(
-        err instanceof Error
-          ? err.message
-          : "Failed to send verification code. Check your network.",
+        cause instanceof Error
+          ? cause.message
+          : "Could not send the verification code. Please try again.",
       );
     } finally {
       setLoading(false);
     }
   }
 
-  // Mirror the submit handler's cleaning so the button's disabled state
-  // matches what will actually be validated, not the raw (possibly
-  // space-containing) input.
-  const cleanPhone = phone.replace(/\s/g, "").trim();
-  const submitDisabled = loading || !PHONE_PATTERN.test(cleanPhone);
-
   return (
     <div className="pe-root">
-      <style>{PE_CSS}</style>
+      <style>{`
+        .pe-root {
+          min-height: 100vh;
+          min-height: 100dvh;
+          box-sizing: border-box;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          overflow-y: auto;
+          padding: 24px;
+          background: radial-gradient(
+            120% 90% at 50% 0%,
+            #fff 0%,
+            #f8fafd 55%,
+            #eef3fb 100%
+          );
+          color: ${C.text};
+          font-family: ${FONT};
+          -webkit-tap-highlight-color: transparent;
+        }
+
+        .pe-root * {
+          box-sizing: border-box;
+        }
+
+        .pe-back {
+          position: fixed;
+          top: 20px;
+          left: 20px;
+          width: 44px;
+          height: 44px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          border: 0;
+          border-radius: 50%;
+          background: transparent;
+          color: ${C.primary};
+          font-size: 28px;
+          cursor: pointer;
+        }
+
+        .pe-back:hover {
+          background: rgba(11, 87, 208, .08);
+        }
+
+        .pe-panel {
+          width: 100%;
+          max-width: 460px;
+          margin: auto;
+        }
+
+        .pe-card {
+          display: flex;
+          flex-direction: column;
+          gap: 18px;
+          padding: clamp(24px, 5vw, 36px);
+          background: #fff;
+          border-radius: 28px;
+          box-shadow:
+            0 1px 2px rgba(0,0,0,.12),
+            0 2px 6px 2px rgba(0,0,0,.08);
+        }
+
+        .pe-title {
+          margin: 0 0 8px;
+          font-size: clamp(22px, 5.6vw, 26px);
+          font-weight: 600;
+          line-height: 1.25;
+        }
+
+        .pe-subtitle {
+          margin: 0;
+          color: ${C.secondary};
+          font-size: 14px;
+          line-height: 1.5;
+        }
+
+        .pe-form {
+          display: flex;
+          flex-direction: column;
+          gap: 14px;
+        }
+
+        .pe-field {
+          position: relative;
+          display: flex;
+          align-items: center;
+          height: 56px;
+          border: 1px solid ${C.outline};
+          border-radius: 12px;
+          background: #fff;
+        }
+
+        .pe-field:focus-within {
+          border-color: ${C.primary};
+          box-shadow: inset 0 0 0 1px ${C.primary};
+        }
+
+        .pe-input {
+          width: 100%;
+          height: 100%;
+          padding: 0 16px;
+          border: 0;
+          outline: 0;
+          border-radius: inherit;
+          background: transparent;
+          color: ${C.text};
+          font: inherit;
+          font-size: 16px;
+        }
+
+        .pe-input::placeholder {
+          color: #777;
+        }
+
+        .pe-button {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 10px;
+          width: 100%;
+          min-height: 50px;
+          padding: 12px 20px;
+          border: 0;
+          border-radius: 999px;
+          background: ${C.primary};
+          color: #fff;
+          font: inherit;
+          font-size: 15px;
+          font-weight: 600;
+          cursor: pointer;
+        }
+
+        .pe-button:hover:not(:disabled) {
+          filter: brightness(.95);
+        }
+
+        .pe-button:disabled {
+          opacity: .45;
+          cursor: not-allowed;
+        }
+
+        .pe-error {
+          display: flex;
+          align-items: flex-start;
+          gap: 10px;
+          padding: 12px;
+          border-radius: 12px;
+          background: ${C.redBg};
+          color: ${C.red};
+          font-size: 13.5px;
+          line-height: 1.5;
+          overflow-wrap: anywhere;
+        }
+
+        .pe-spinner {
+          width: 18px;
+          height: 18px;
+          flex-shrink: 0;
+          border: 2.5px solid currentColor;
+          border-top-color: transparent;
+          border-radius: 50%;
+          animation: peSpin .8s linear infinite;
+        }
+
+        @keyframes peSpin {
+          to { transform: rotate(360deg); }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+          .pe-spinner {
+            animation: none;
+          }
+        }
+      `}</style>
 
       <button
         type="button"
-        className="pe-back pe-focusable"
+        className="pe-back"
         onClick={onBack}
-        aria-label="Back"
+        aria-label="Go back"
       >
-        <IconChevronLeft />
+        ‹
       </button>
 
       <main className="pe-panel">
-        <div className="pe-card">
+        <section className="pe-card">
           <div>
-            <h1 className="pe-card-title">Create Account</h1>
-
-            <p className="pe-card-sub">
-              Enter your phone number to get started — we'll text you a
-              verification code.
+            <h1 className="pe-title">Create Account</h1>
+            <p className="pe-subtitle">
+              Enter your institution's phone number. We will send you a
+              verification code by SMS.
             </p>
           </div>
 
           {error && (
-            <div
-              id="pe-error"
-              className="pe-banner"
-              style={{ background: C.redBg, color: C.red }}
-              role="alert"
-            >
-              <IconAlert size={18} />
+            <div className="pe-error" role="alert">
+              <span aria-hidden="true">⚠</span>
               <span>{error}</span>
             </div>
           )}
 
-          <form className="pe-form" onSubmit={handleSend} aria-busy={loading}>
-            <PeField
-              label="Phone number"
-              value={phone}
-              onChange={(v) => {
-                setPhone(v);
-                setError("");
-              }}
-              type="tel"
-              autoComplete="tel"
-              autoFocus
-              icon={<IconPhone />}
-              invalid={!!error}
-              describedBy={error ? "pe-error" : undefined}
-            />
+          <form
+            className="pe-form"
+            onSubmit={handleSend}
+            aria-busy={loading}
+          >
+            <div className="pe-field">
+              <input
+                className="pe-input"
+                type="tel"
+                inputMode="tel"
+                autoComplete="tel"
+                placeholder="+256712345678"
+                value={phone}
+                onChange={(event) => {
+                  setPhone(event.target.value);
+                  setError("");
+                }}
+                aria-label="Institution phone number"
+                aria-invalid={Boolean(error)}
+                required
+                autoFocus
+              />
+            </div>
 
             <button
               type="submit"
-              className="pe-btn pe-btn-filled pe-focusable"
-              disabled={submitDisabled}
+              className="pe-button"
+              disabled={loading || !validPhone}
             >
               {loading ? (
                 <>
                   <span className="pe-spinner" aria-hidden="true" />
-                  Sending...
+                  Sending code...
                 </>
               ) : (
                 <>
-                  Send Code
-                  <IconArrowRight />
+                  Send verification code
+                  <span aria-hidden="true">→</span>
                 </>
               )}
             </button>
           </form>
-        </div>
+        </section>
       </main>
     </div>
   );
