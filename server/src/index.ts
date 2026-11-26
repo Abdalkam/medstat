@@ -1,16 +1,4 @@
-// index.ts — MedStat API
-
-// Express + Supabase (Postgres) + Africa's Talking SMS + MTN MoMo prepaid wallet.
-
-// Deployed on Render. Pairs with wallet_fix.sql (run once in the Supabase SQL
-
-// Editor): it guarantees every tenant has a wallet, backfills wallet_id, and
-
-// adds a BEFORE INSERT trigger on wallet_transactions so the NOT NULL
-
-// constraint on wallet_id can never be violated again.
-
-
+// index.ts — Medstat API
 
 import express, { Request, Response, NextFunction } from "express";
 

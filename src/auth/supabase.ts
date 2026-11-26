@@ -1,30 +1,5 @@
 // src/auth/supabase.ts
-// Direct Supabase synchronization.
-// Render backend is used only for settings.
-//
-// Local User objects use camelCase:
-//   assignedCourses, assignedDepartments, tenantId, profilePic
-//
-// Supabase public.users uses:
-//   assigned_courses, assignedDepartments, tenant_id, profile_pic
-//
-// Supabase public.enrollments uses:
-//   id (text), tenant_id, user_id, course_id, role, status,
-//   enrolled_at, created_at, deleted_at
-//
-// ============================================================
-// SESSION SELF-HEAL (2026-11 update)
-// ------------------------------------------------------------
-// A device can end up holding a NON-JWT session token:
-//   - "offline-mode-pending-sync"  (login fell back to the local DB)
-//   - "local-<id>"                 (login flow returned no authToken)
-// In that state SMS (401) and cloud pulls were silently disabled forever.
-// Now:
-//   - Only real JWTs ("eyJ...") count as authenticated.
-//   - tryReauthenticate() silently re-logs-in with the cached
-//     credentials and repairs the session.
-//   - The periodic pull, syncUp, pullAllTenantData and the settings
-//     API all attempt the self-heal before giving up.
+
 // ============================================================
 
 import { createClient } from "@supabase/supabase-js";
@@ -44,24 +19,6 @@ if (!supabaseUrl || !supabaseAnonKey) {
   );
 }
 
-// ==========================================
-// SESSIONLESS SUPABASE CLIENT (2026-11 update — fixes the 401 storm)
-// ------------------------------------------------------------
-// This app authenticates with its OWN backend JWT (localStorage
-// "authToken") — it NEVER signs in through supabase.auth. But the default
-// persistSession meant that any GoTrue session ever written under
-// sb-<ref>-auth-token (older builds, duplicate clients calling setSession)
-// is loaded on boot and sent as `Authorization: Bearer ...` on EVERY REST
-// call. Once that token is expired/invalid (it always is — it was never a
-// real Supabase JWT), PostgREST answers 401 to every read: sms_logs,
-// users, courses, live-class tables... even though the anon key alone
-// would have worked fine.
-//
-// Fix: run the client sessionless (pure anon reads, exactly what the RLS
-// policies allow) and purge stale session keys from localStorage once.
-// This also neutralizes the "Multiple GoTrueClient instances" warning —
-// sessionless instances have no session to clobber.
-// ============================================================
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
     persistSession: false,

@@ -1,42 +1,5 @@
 // src/admin/UserManagement.tsx — v5: Material Android UI + schema-exact CRUD
 //
-// Changes vs v4 (the full v4 list below is preserved — nothing regressed):
-//  • handleDelete reads the row BEFORE the local cascade: a user that was
-//    never confirmed in the cloud (synced === false — created offline with
-//    every push failing, or no institution linked) skips the cloud delete
-//    and the tombstone is lifted immediately. deleteUserRowFromSupabase
-//    throws "Cloud delete matched no user row" for cloud-absent rows, which
-//    used to strand an immortal "failed" tombstone that the retry loop
-//    chased on every sync tick.
-// Changes vs v3 (the v3 fix list is preserved — nothing regressed):
-//  UI — professional Android (Material) look:
-//   • sticky top app bar with icon actions (refresh, export CSV)
-//   • extended FAB for "+ Add user", docked search bar, role choice chips
-//   • stat pills, list items with avatars/badges (the desktop-only table is
-//     gone — the list works on any screen width)
-//   • the form renders as a bottom sheet on phones and a centered dialog on
-//     ≥640px screens; notices are snackbars (auto-dismiss 6s)
-//   • injected stylesheet adds focus rings, pressed states, animations —
-//     inline styles alone can't express pseudo-classes
-//  Creation/editing — "create users effectively":
-//   • role is a segmented button (Admin | Trainer | Trainee)
-//   • courses and departments are searchable multi-select pickers fed from
-//     the local Dexie tables — raw UUID typing is gone. When a table hasn't
-//     synced yet (fresh device) the picker falls back to a paste field so
-//     creation never blocks; ids already assigned but missing from the list
-//     show as removable "pinned" chips
-//   • password visibility toggle on the password field
-//  Schema alignment (matches public.users DDL exactly):
-//   • cloud pushes go through supabaseUserSync.pushUserRowToSupabase —
-//     explicit column whitelist, camelCase "assignedDepartments" column,
-//     snake_case remuneration jsonb, CHECK-safe role (see that file)
-//   • local rows consolidate departments to the camelCase key (the legacy
-//     assigned_departments key is removed on update) and stamp updated_at
-//   • soft-deletes go through deleteUserRowFromSupabase (verifies row count)
-//  Preserved from v3: username/phone/email tenant-scoped uniqueness, password
-//  length on create AND edit, role-change ledger wipe, tombstone-aware
-//  delete cascade (incl. chatMessages.senderId + schedules.traineeId),
-//  CSV export with departments column, offline + pending-sync semantics.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { CSSProperties } from "react";
