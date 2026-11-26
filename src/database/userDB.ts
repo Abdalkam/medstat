@@ -1,58 +1,21 @@
-// src/database/userDB.ts — v3: BACKEND-FIRST login (RLS-proof JWT)
+// src/database/userDB.ts
 //
-// v3 change: loginWithIdentifier now calls loginTenant (Render backend)
-// BEFORE falling back to the direct-Supabase path. The backend uses the
-// service-role key (bypasses RLS) to read the user row, bcrypt.compare
-// the password, and issue a real JWT ("eyJ..."). This fixes three bugs
-// that blocked login on any device where the user hadn't signed in before:
+// Clean architecture:
+// - Login: Supabase `verify_login` SECURITY DEFINER RPC (RLS-proof, bcrypt via
+//   pgcrypto). Dexie local cache is an offline fallback only.
+// - Tenant resolution: Supabase `resolve_tenant` RPC.
+// - New institution registration: NOT here. RegisterAdmin calls
+//   authApi.registerTenant, which hits the Supabase `register_tenant` RPC
+//   (OTP JWT verified server-side). Render's only job is SMS send/verify.
+// - User creation by an admin: local Dexie write (pending), pushed to Supabase
+//   by the sync engine. Render is never involved in user creation.
 //
-//   1. RLS: Supabase enables RLS by default. With no policy on
-//      public.users, an anon select returns ZERO rows (password hashes
-//      must NOT be anon-readable). The old direct-Supabase read path
-//      always saw row:null -> "Invalid username or password." even for
-//      correct credentials. Fixed by routing login through the Supabase
-//      SECURITY DEFINER function verify_login (see supabase_auth.sql).
-//   2. Fake token: the v2 Supabase path set authToken = `session-<id>`
-//      (not a JWT). isRealBackendToken() / hasValidAuth() returned false
-//      -> every cloud push/pull was blocked or degraded.
-//   3. Hash cached as password: v2 cached the bcrypt HASH in currentUser.
-//      tryReauthenticate() sent the hash to /api/auth/login as the
-//      "password" -> bcrypt.compare(hash, hash) always failed -> the
-//      session self-heal never worked.
-//
-// v3 fixes all three: the backend issues a real JWT, and the PLAINTEXT
-// password (the one the user typed) is cached in currentUser + Dexie so
-// tryReauthenticate can silently re-login on a dead session and offline
-// login (verifyPassword) still works (it falls through to compareSync
-// when the stored value is a hash, or plaintext-match when it's not).
-//
-// The v2 direct-Supabase + local-cache path is RETAINED as a fallback
-// for when the Render backend is unreachable (offline / DNS-blocked).
-//
-// v2 changes preserved:
-//   - deleteUser's tombstone is now tenant-scoped.
-//   - Business identifier resolution (UUID | phone | business name) is
-//     done HERE against the tenants table (needs the RLS policy in
-//     rls_policies.sql for anon reads on id/phone/business_name).
-//   - Passwords are verified bcrypt-aware.
-//   - Every successful login caches the full row in Dexie for offline.
-//   - A cached-session fallback signs the user in when both the backend
-//     and Supabase are unreachable.
+// NO RENDER BACKEND — Supabase RPC + Dexie only.
+
 
 import { db } from "./db";
 import type { User } from "../types";
 import { compareSync } from "bcryptjs";
-
-/* -------------------------------------------------------------------------- */
-/* API configuration                                                          */
-/* -------------------------------------------------------------------------- */
-
-const API_BASE = (
-  import.meta.env.VITE_API_URL ||
-  (import.meta.env.PROD
-    ? "https://medstat-3rxl.onrender.com"
-    : "http://localhost:3001")
-).replace(/\/+$/, "");
 
 /* -------------------------------------------------------------------------- */
 /* Types                                                                      */
@@ -109,6 +72,8 @@ export interface NewUserInput {
   remuneration?: { net_salary: number; per_diem: number };
   businessName?: string;
   business_name?: string;
+  /** Unused since registration moved to authApi.registerTenant. Kept for
+   *  callers that may still pass it; it is ignored here. */
   tempToken?: string;
 }
 
@@ -165,59 +130,6 @@ export function clearSession(): void {
   } catch {
     // Ignore unavailable storage.
   }
-}
-
-/* -------------------------------------------------------------------------- */
-/* HTTP helper (backend — tenant registration only)                           */
-/* -------------------------------------------------------------------------- */
-
-class BackendOfflineError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "BackendOfflineError";
-  }
-}
-
-async function api<T>(
-  path: string,
-  init?: {
-    method?: "GET" | "POST" | "PUT" | "DELETE";
-    body?: unknown;
-    token?: string | null;
-  },
-): Promise<T> {
-  const token = init?.token === undefined ? getToken() : init.token;
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-  };
-
-  if (token) headers.Authorization = `Bearer ${token}`;
-
-  let response: Response;
-
-  try {
-    response = await fetch(`${API_BASE}${path}`, {
-      method: init?.method || "POST",
-      headers,
-      body: init?.body == null ? undefined : JSON.stringify(init.body),
-    });
-  } catch (error: any) {
-    throw new BackendOfflineError(
-      `Cannot reach the backend at ${API_BASE}: ${
-        error?.message || "network error"
-      }`,
-    );
-  }
-
-  const data = await response.json().catch(() => ({}));
-
-  if (!response.ok) {
-    throw new Error(
-      (data as any)?.error || `Request failed (${response.status})`,
-    );
-  }
-
-  return data as T;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -719,9 +631,22 @@ function isNetworkError(error: string | Error | any): boolean {
 }
 
 /* -------------------------------------------------------------------------- */
-/* Add user                                                                   */
+/* Add user — admin user creation (NO Render; cloud push via sync engine)     */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * Adds (or merges) a user into the local Dexie cache for an admin action.
+ *
+ * Registration of a NEW institution + first admin is NOT done here — that
+ * goes through authApi.registerTenant (Supabase `register_tenant` RPC, OTP
+ * JWT verified server-side). This function is only for an already-signed-in
+ * admin adding/merging users within their institution.
+ *
+ * Cloud creation is performed by the sync engine (pushUserRowToSupabase),
+ * which handles password hashing correctly. We do not push the password
+ * column directly from here to avoid double-hashing the mixed-format
+ * (plaintext / hash) rows that live in Dexie.
+ */
 export async function addUser(
   input: NewUserInput,
 ): Promise<MedStatUser> {
@@ -788,37 +713,7 @@ export async function addUser(
   try {
     await (db as any).users.put(localRow);
   } catch {
-    // The caller may still perform the cloud operation.
-  }
-
-  // First-run tenant registration (the ONLY remaining backend call).
-  if (!token && input.tempToken) {
-    const businessName = input.businessName ?? input.business_name;
-
-    if (businessName) {
-      const response = await api<{
-        authToken: string;
-        user: MedStatUser;
-      }>("/api/auth/register-tenant", {
-        body: {
-          phone: input.phone,
-          tempToken: input.tempToken,
-          businessName,
-          username: input.username,
-          password: input.password,
-        },
-        token: null,
-      });
-
-      return setSession(
-        response.authToken,
-        normalizeUser({
-          ...response.user,
-          tenant_id:
-            response.user.tenant_id || response.user.tenantId || "",
-        }),
-      );
-    }
+    // The sync engine may still perform the cloud operation.
   }
 
   if (token) return normalizeUser(localRow);

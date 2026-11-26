@@ -7,7 +7,6 @@ import { getVersion } from "@tauri-apps/api/app";
 
 const MEDICAL_BLUE = "#007AFF";
 const IOS_RED = "#FF3B30";
-const IOS_GREEN = "#34C759";
 const IOS_GRAY = "#8E8E93";
 const iosFont = "-apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif";
 
@@ -250,8 +249,10 @@ function Field({
 }
 
 /* -------------------------------------------------------------------------- */
-/* RegisterAdmin — creates the tenant + admin via Supabase RPC.               */
-/* Phone is already OTP-verified by VerifyCode; tempToken arrives as a prop.  */
+/* RegisterAdmin — creates the tenant + admin.
+/* Phone is already OTP-verified by VerifyCode (Render SMS path); tempToken
+/* arrives as a prop as proof. User/account creation itself must go through
+/* Supabase only — the Render backend is reserved for SMS verification.
 /* -------------------------------------------------------------------------- */
 
 export default function RegisterAdmin({
@@ -280,22 +281,15 @@ export default function RegisterAdmin({
     getVersion().then(v => setAppVersion(v)).catch(() => {});
   }, []);
 
-  const pwRulesOk = [
-    { ok: password.length >= 8, text: "8+ characters" },
-    { ok: /[A-Za-z]/.test(password) && /\d/.test(password), text: "Letter + number" },
-  ];
-  const pwScore =
-    (password.length >= 8 ? 1 : 0) +
-    (/[A-Za-z]/.test(password) && /\d/.test(password) ? 1 : 0) +
-    (password.length >= 12 || /[^A-Za-z0-9]/.test(password) ? 1 : 0);
-
+  // Password policy: NONE. The user may choose any password they like —
+  // no minimum length, no required character classes. The only checks are
+  // "not empty" and "confirm matches" (a correctness check, not a rule).
   function validate(): boolean {
     const fe: typeof fieldErrors = {};
     if (businessName.trim().length < 2) fe.businessName = "Enter your institution's name.";
     if (!USERNAME_RE.test(username.trim()))
       fe.username = "3–20 characters: letters, numbers, dots, dashes or underscores.";
-    if (password.length < 8 || !/[A-Za-z]/.test(password) || !/\d/.test(password))
-      fe.password = "Use 8+ characters with at least one letter and one number.";
+    if (!password) fe.password = "Enter a password.";
     if (confirm !== password) fe.confirm = "Passwords don't match.";
     setFieldErrors(fe);
     return Object.keys(fe).length === 0;
@@ -397,7 +391,7 @@ export default function RegisterAdmin({
             type={showPw ? "text" : "password"}
             autoComplete="new-password"
             error={fieldErrors.password}
-            describedBy="pw-rules"
+            hint="Choose any password you like — there are no restrictions."
             trailing={
               <button type="button" onClick={() => setShowPw((s) => !s)}
                 aria-label={showPw ? "Hide password" : "Show password"}
@@ -406,26 +400,6 @@ export default function RegisterAdmin({
               </button>
             }
           />
-          {password.length > 0 && (
-            <div id="pw-rules" style={{ margin: "-6px 0 14px" }}>
-              <div style={{ display: "flex", gap: 4, marginBottom: 6 }}>
-                {[0, 1, 2].map((i) => (
-                  <div key={i} style={{
-                    height: 4, flex: 1, borderRadius: 2,
-                    background: pwScore > i ? (pwScore === 1 ? "#FF9500" : pwScore === 2 ? "#FFCC00" : IOS_GREEN) : "#D1D1D6",
-                    transition: "background .2s ease",
-                  }} />
-                ))}
-              </div>
-              <div style={{ display: "flex", gap: 12 }}>
-                {pwRulesOk.map((r) => (
-                  <span key={r.text} style={{ fontSize: 12, color: r.ok ? "#248A3D" : IOS_GRAY, fontWeight: 500 }}>
-                    {r.ok ? "✓" : "•"} {r.text}
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
 
           <Field
             label="Confirm password"
