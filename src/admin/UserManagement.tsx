@@ -1,5 +1,4 @@
-// src/admin/UserManagement.tsx — v5: Material Android UI + schema-exact CRUD
-//
+// src/admin/UserManagement.tsx — v6: Material 3 (Android) UI, no button
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { CSSProperties } from "react";
@@ -96,10 +95,11 @@ function readSessionUserId(): string {
 type RoleKey = "admin" | "trainer" | "trainee";
 const ROLE_KEYS: RoleKey[] = ["admin", "trainer", "trainee"];
 
+// Material 3 container colours — bg is the *-container, fg is on-*-container.
 const ROLE_BADGES: Record<RoleKey, { label: string; bg: string; fg: string }> = {
-  admin: { label: "Admin", bg: "#ede9fe", fg: "#5b21b6" },
-  trainer: { label: "Trainer", bg: "#dbeafe", fg: "#1d4ed8" },
-  trainee: { label: "Trainee", bg: "#dcfce7", fg: "#166534" },
+  admin: { label: "Admin", bg: "#e9def8", fg: "#25005a" },
+  trainer: { label: "Trainer", bg: "#d8e2ff", fg: "#00164f" },
+  trainee: { label: "Trainee", bg: "#cdf3e4", fg: "#003a26" },
 };
 
 function roleBadge(role: unknown): { label: string; bg: string; fg: string } {
@@ -107,11 +107,11 @@ function roleBadge(role: unknown): { label: string; bg: string; fg: string } {
   if ((ROLE_KEYS as string[]).includes(key)) {
     return ROLE_BADGES[key as RoleKey];
   }
-  return { label: s(role) || "Unknown", bg: "#e2e8f0", fg: "#334155" };
+  return { label: s(role) || "Unknown", bg: "#e2e2e9", fg: "#2b2b33" };
 }
 
-const SYNCED_BADGE = { label: "Synced", bg: "#dcfce7", fg: "#166534" };
-const PENDING_BADGE = { label: "Pending sync", bg: "#fef3c7", fg: "#92400e" };
+const SYNCED_BADGE = { label: "Synced", bg: "#cdf3e4", fg: "#003a26" };
+const PENDING_BADGE = { label: "Pending sync", bg: "#ffdcbe", fg: "#2a1700" };
 
 function syncBadge(synced: unknown): { label: string; bg: string; fg: string } {
   return synced === false ? PENDING_BADGE : SYNCED_BADGE;
@@ -123,8 +123,8 @@ function initials(username: unknown): string {
 }
 
 const AVATAR_COLORS = [
-  "#0ea5e9", "#8b5cf6", "#f59e0b", "#10b981",
-  "#ef4444", "#3b82f6", "#6366f1", "#ec4899",
+  "#3b6fd4", "#7b4ec9", "#c47b00", "#1f8a5b",
+  "#cc3b3b", "#2b6cb0", "#4f5bd5", "#b83b8c",
 ];
 
 function avatarColor(username: unknown): string {
@@ -221,136 +221,231 @@ function parseIdList(raw: string): string[] {
 }
 
 /* -------------------------------------------------------------------------- */
-/* Injected stylesheet — pseudo-class states, animations, responsive sheet    */
+/* Injected stylesheet — Material 3 tokens, states, animations                */
 /* -------------------------------------------------------------------------- */
 
 const UMS_CSS = `
-.ums-root{font-family:Roboto,'Segoe UI',system-ui,-apple-system,sans-serif;}
+.ums-root{
+  font-family:Roboto,'Segoe UI',system-ui,-apple-system,sans-serif;
+  --m3-primary:#2563eb; --m3-on-primary:#ffffff;
+  --m3-primary-container:#dbeafe; --m3-on-primary-container:#001a41;
+  --m3-secondary:#5b5bd6;
+  --m3-surface:#ffffff; --m3-surface-dim:#f3f3f7;
+  --m3-surface-container:#eeeeef; --m3-surface-container-high:#f8f8f9;
+  --m3-on-surface:#1a1c1e; --m3-on-surface-variant:#44474e;
+  --m3-outline:#74777f; --m3-outline-variant:#c4c6d0;
+  --m3-error:#ba1a1a; --m3-error-container:#ffdad6; --m3-on-error-container:#410002;
+  --m3-scrim:rgba(0,0,0,.4);
+  --m3-elev-1:0 1px 2px rgba(0,0,0,.08),0 1px 3px rgba(0,0,0,.06);
+  --m3-elev-2:0 1px 2px rgba(0,0,0,.10),0 2px 6px rgba(0,0,0,.08);
+  --m3-elev-3:0 4px 8px rgba(0,0,0,.12),0 1px 3px rgba(0,0,0,.08);
+  --m3-elev-fab:0 4px 10px rgba(0,0,0,.18),0 2px 5px rgba(0,0,0,.12);
+  color:var(--m3-on-surface);
+}
 .ums-root *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
-.ums-iconbtn{border:none;background:transparent;border-radius:999px;width:40px;height:40px;
-  display:inline-flex;align-items:center;justify-content:center;cursor:pointer;color:#334155;flex-shrink:0;}
-.ums-iconbtn:hover{background:#e2e8f0;}
-.ums-iconbtn:disabled{opacity:.35;cursor:default;}
+.ums-root{overflow-x:hidden;}
+
+/* Icon buttons — 40px touch target, circular, ripple-free press state */
+.ums-iconbtn{
+  border:none;background:transparent;border-radius:999px;
+  width:40px;height:40px;
+  display:inline-flex;align-items:center;justify-content:center;
+  cursor:pointer;color:var(--m3-on-surface-variant);flex-shrink:0;
+  transition:background .12s ease;
+}
+.ums-iconbtn:hover{background:var(--m3-surface-container);}
+.ums-iconbtn:active{background:var(--m3-surface-container-high);}
+.ums-iconbtn:disabled{opacity:.38;cursor:default;}
 .ums-iconbtn:disabled:hover{background:transparent;}
-.ums-iconbtn--ondark{color:#f8fafc;}
-.ums-iconbtn--ondark:hover{background:rgba(255,255,255,.14);}
-.ums-btn{transition:transform .06s ease;}
-.ums-btn:active:not(:disabled){transform:scale(.97);}
+.ums-iconbtn--ondark{color:#fff;}
+.ums-iconbtn--ondark:hover{background:rgba(255,255,255,.16);}
+
+/* Press feedback for material buttons */
+.ums-btn{transition:filter .08s ease,transform .06s ease;}
+.ums-btn:active:not(:disabled){transform:scale(.97);filter:brightness(.96);}
 .ums-btn:disabled{opacity:.5;cursor:default;}
-.ums-field:focus-within{border-color:#2563eb !important;box-shadow:inset 0 0 0 1px #2563eb;}
+
+/* Outlined text field focus */
+.ums-field{transition:border-color .15s ease,box-shadow .15s ease;}
+.ums-field:focus-within{border-color:var(--m3-primary) !important;
+  box-shadow:inset 0 0 0 1px var(--m3-primary);}
 .ums-field input:focus{outline:none;}
+
+/* Filter chips */
 .ums-chip{transition:background .15s ease,color .15s ease,border-color .15s ease;}
-.ums-seg{flex:1;padding:10px 8px;font-size:13px;font-weight:600;border:1px solid #cbd5e1;
-  background:#ffffff;color:#334155;cursor:pointer;transition:background .15s ease,color .15s ease;}
+
+/* Segmented buttons (role selector) — M3 segmented button */
+.ums-seg{
+  flex:1;padding:10px 8px;font-size:13px;font-weight:600;
+  border:1px solid var(--m3-outline-variant);background:transparent;
+  color:var(--m3-on-surface);cursor:pointer;
+  transition:background .15s ease,color .15s ease;
+  min-height:40px;
+}
 .ums-seg:first-child{border-radius:999px 0 0 999px;}
 .ums-seg:last-child{border-radius:0 999px 999px 0;}
 .ums-seg+.ums-seg{margin-left:-1px;}
-.ums-seg--on{background:#dbeafe;color:#1e40af;border-color:#2563eb;position:relative;z-index:1;}
+.ums-seg--on{background:var(--m3-primary-container);color:var(--m3-on-primary-container);
+  border-color:var(--m3-primary);position:relative;z-index:1;}
+
+/* List item press feedback */
 .ums-rowitem{transition:background .12s ease;}
-.ums-rowitem:hover{background:#f8fafc;}
-.ums-cb{appearance:none;-webkit-appearance:none;width:18px;height:18px;border:2px solid #94a3b8;
-  border-radius:4px;margin:0;cursor:pointer;flex-shrink:0;padding:0;}
-.ums-cb:checked{background-color:#2563eb;border-color:#2563eb;
+.ums-rowitem:hover{background:var(--m3-surface-container-high);}
+
+/* Checkbox — M3 style */
+.ums-cb{
+  appearance:none;-webkit-appearance:none;
+  width:20px;height:20px;border:2px solid var(--m3-outline);
+  border-radius:4px;margin:0;cursor:pointer;flex-shrink:0;padding:0;
+  transition:background-color .12s ease,border-color .12s ease;
+}
+.ums-cb:checked{background-color:var(--m3-primary);border-color:var(--m3-primary);
   background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%23ffffff' d='M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z'/%3E%3C/svg%3E");
   background-size:14px 14px;background-position:center;background-repeat:no-repeat;}
-.ums-cb:focus-visible{outline:2px solid #93c5fd;outline-offset:2px;}
-.ums-shell{position:fixed;inset:0;z-index:60;background:rgba(15,23,42,.45);
-  display:flex;align-items:flex-end;justify-content:center;padding:0;}
-.ums-shell>.ums-sheet{position:relative;width:100%;max-height:92vh;
-  border-radius:28px 28px 0 0;animation:ums-sheet-in .22s cubic-bezier(.2,.8,.3,1);}
+.ums-cb:focus-visible{outline:2px solid var(--m3-primary);outline-offset:2px;}
+
+/* Modal shells — bottom sheet (mobile) / dialog (desktop) */
+.ums-shell{
+  position:fixed;inset:0;z-index:60;background:var(--m3-scrim);
+  display:flex;align-items:flex-end;justify-content:center;padding:0;
+  animation:ums-scrim-in .18s ease-out;
+}
+.ums-shell>.ums-sheet{
+  position:relative;width:100%;max-height:92vh;
+  border-radius:28px 28px 0 0;
+  animation:ums-sheet-in .24s cubic-bezier(.2,.8,.3,1);
+  padding-bottom:env(safe-area-inset-bottom,0px);
+}
+.ums-shell--center{align-items:center;padding:24px;}
+.ums-shell--center>.ums-sheet{
+  width:min(420px,calc(100vw - 48px));max-height:88vh;border-radius:28px;
+  animation:ums-dialog-in .18s ease-out;padding-bottom:24px;
+}
 @media (min-width:640px){
   .ums-shell{align-items:center;padding:24px;}
-  .ums-shell>.ums-sheet{width:600px;max-height:88vh;border-radius:28px;animation:ums-dialog-in .18s ease-out;}
+  .ums-shell>.ums-sheet{width:600px;max-height:88vh;border-radius:28px;
+    animation:ums-dialog-in .18s ease-out;}
 }
-@keyframes ums-sheet-in{from{transform:translateY(48px);opacity:.5;}to{transform:translateY(0);opacity:1;}}
-@keyframes ums-dialog-in{from{transform:scale(.96);opacity:0;}to{transform:scale(1);opacity:1;}}
+@keyframes ums-scrim-in{from{opacity:0;}to{opacity:1;}}
+@keyframes ums-sheet-in{from{transform:translateY(56px);opacity:.4;}to{transform:translateY(0);opacity:1;}}
+@keyframes ums-dialog-in{from{transform:scale(.94);opacity:0;}to{transform:scale(1);opacity:1;}}
+
+/* Snackbar */
 .ums-snack{animation:ums-snack-in .2s ease-out;}
-@keyframes ums-snack-in{from{transform:translateY(16px);opacity:0;}to{transform:translateY(0);opacity:1;}}
+@keyframes ums-snack-in{from{transform:translateY(24px);opacity:0;}to{transform:translateY(0);opacity:1;}}
+
+/* Scrollbars */
 .ums-scroll::-webkit-scrollbar{width:8px;height:8px;}
-.ums-scroll::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:8px;}
+.ums-scroll::-webkit-scrollbar-thumb{background:var(--m3-outline-variant);border-radius:8px;}
+.ums-scroll{scrollbar-width:thin;scrollbar-color:var(--m3-outline-variant) transparent;}
 `;
 
 /* -------------------------------------------------------------------------- */
-/* Styles                                                                     */
+/* Styles — Material 3                                                        */
 /* -------------------------------------------------------------------------- */
 
 const S: Record<string, CSSProperties> = {
   screen: {
     minHeight: "100%",
-    background: "#f1f5f9",
-    color: "#0f172a",
-    paddingBottom: 96,
+    background: "var(--m3-surface-dim)",
+    color: "var(--m3-on-surface)",
+    paddingBottom: 112, // room for FAB + snackbar lane
+    overflowX: "hidden",
   },
   appbar: {
     position: "sticky",
     top: 0,
     zIndex: 20,
-    background: "#ffffff",
-    borderBottom: "1px solid #e2e8f0",
-    padding: "10px 12px",
+    background: "var(--m3-surface)",
+    borderBottom: "1px solid var(--m3-outline-variant)",
+    padding: "8px 12px",
     display: "flex",
     alignItems: "center",
-    gap: 10,
+    gap: 4,
+    minHeight: 56,
+    paddingLeft: "max(12px, env(safe-area-inset-left, 0px))",
+    paddingRight: "max(12px, env(safe-area-inset-right, 0px))",
   },
   appbarTitles: { flex: 1, minWidth: 0 },
-  appbarTitle: { fontSize: 20, fontWeight: 700, margin: 0, lineHeight: 1.2 },
-  appbarSubtitle: { fontSize: 12, color: "#64748b", marginTop: 2 },
+  appbarTitle: {
+    fontSize: 20,
+    fontWeight: 500,
+    margin: 0,
+    lineHeight: 1.2,
+    color: "var(--m3-on-surface)",
+    whiteSpace: "nowrap",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+  },
+  appbarSubtitle: { fontSize: 12, color: "var(--m3-on-surface-variant)", marginTop: 2 },
   shell: { maxWidth: 860, margin: "0 auto", padding: "16px 16px 0" },
-  actionsRow: { display: "flex", gap: 8, flexWrap: "wrap" },
+  actionsRow: { display: "flex", gap: 4, flexShrink: 0 },
   bannerOffline: {
-    background: "#fef3c7",
-    border: "1px solid #fde68a",
-    color: "#92400e",
+    background: "var(--m3-surface-container)",
+    border: "1px solid #fcd9a3",
+    borderLeft: "4px solid #c47b00",
+    color: "#5c3a00",
     borderRadius: 12,
-    padding: "10px 12px",
+    padding: "10px 14px",
     fontSize: 13,
-    marginBottom: 10,
+    lineHeight: 1.5,
+    marginBottom: 12,
   },
   bannerError: {
-    background: "#fef2f2",
-    border: "1px solid #fecaca",
-    color: "#b91c1c",
+    background: "var(--m3-error-container)",
+    border: "1px solid #ffb4ab",
+    borderLeft: "4px solid var(--m3-error)",
+    color: "var(--m3-on-error-container)",
     borderRadius: 12,
-    padding: "10px 12px",
+    padding: "10px 14px",
     fontSize: 13,
-    marginBottom: 10,
+    lineHeight: 1.5,
+    marginBottom: 12,
   },
   bannerNotice: {
-    background: "#eff6ff",
-    border: "1px solid #bfdbfe",
-    color: "#1d4ed8",
+    background: "var(--m3-primary-container)",
+    border: "1px solid #aab7ff",
+    borderLeft: "4px solid var(--m3-primary)",
+    color: "var(--m3-on-primary-container)",
     borderRadius: 12,
-    padding: "10px 12px",
+    padding: "10px 14px",
     fontSize: 13,
-    marginBottom: 10,
+    lineHeight: 1.5,
+    marginBottom: 12,
   },
-  statsRow: {
-    display: "flex",
+  // Stat tiles — responsive WRAPPING grid (no horizontal scroll).
+  statsGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(96px, 1fr))",
     gap: 8,
-    overflowX: "auto",
-    paddingBottom: 4,
     marginBottom: 12,
   },
   pill: {
-    background: "#ffffff",
-    border: "1px solid #e2e8f0",
-    borderRadius: 12,
-    padding: "8px 14px",
-    minWidth: 88,
-    flexShrink: 0,
+    background: "var(--m3-surface)",
+    border: "1px solid var(--m3-outline-variant)",
+    borderRadius: 16,
+    padding: "10px 12px",
+    minWidth: 0,
   },
-  pillValue: { display: "block", fontSize: 20, fontWeight: 700, lineHeight: 1.2 },
-  pillLabel: { display: "block", fontSize: 11, color: "#64748b", marginTop: 2 },
+  pillValue: {
+    display: "block",
+    fontSize: 20,
+    fontWeight: 600,
+    lineHeight: 1.2,
+    color: "var(--m3-on-surface)",
+  },
+  pillLabel: { display: "block", fontSize: 11, color: "var(--m3-on-surface-variant)", marginTop: 2 },
   searchWrap: {
     display: "flex",
     alignItems: "center",
     gap: 6,
-    background: "#ffffff",
-    border: "1px solid #e2e8f0",
+    background: "var(--m3-surface-container)",
+    border: "1px solid var(--m3-outline-variant)",
     borderRadius: 999,
-    padding: "2px 6px 2px 12px",
-    marginBottom: 10,
-    boxShadow: "0 1px 2px rgba(15, 23, 42, 0.06)",
+    padding: "0 4px 0 16px",
+    marginBottom: 12,
+    height: 48,
+    boxShadow: "var(--m3-elev-1)",
   },
   searchInput: {
     flex: 1,
@@ -358,38 +453,41 @@ const S: Record<string, CSSProperties> = {
     border: "none",
     outline: "none",
     background: "transparent",
-    fontSize: 14,
-    padding: "10px 0",
-    color: "#0f172a",
+    fontSize: 15,
+    color: "var(--m3-on-surface)",
   },
   chipsRow: { display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 },
   chip: {
-    border: "1px solid #cbd5e1",
-    background: "#ffffff",
-    color: "#334155",
+    border: "1px solid var(--m3-outline-variant)",
+    background: "var(--m3-surface)",
+    color: "var(--m3-on-surface-variant)",
     borderRadius: 999,
-    padding: "7px 14px",
+    padding: "8px 14px",
     fontSize: 13,
-    fontWeight: 600,
+    fontWeight: 500,
     cursor: "pointer",
+    minHeight: 36,
+    display: "inline-flex",
+    alignItems: "center",
   },
   chipOn: {
-    border: "1px solid #2563eb",
-    background: "#dbeafe",
-    color: "#1e40af",
+    border: "1px solid var(--m3-primary)",
+    background: "var(--m3-primary-container)",
+    color: "var(--m3-on-primary-container)",
   },
   card: {
-    background: "#ffffff",
-    border: "1px solid #e2e8f0",
+    background: "var(--m3-surface)",
+    border: "1px solid var(--m3-outline-variant)",
     borderRadius: 16,
     overflow: "hidden",
+    boxShadow: "var(--m3-elev-1)",
   },
   item: {
     display: "flex",
     gap: 12,
     alignItems: "flex-start",
-    padding: "12px 14px",
-    borderBottom: "1px solid #f1f5f9",
+    padding: "12px 16px",
+    borderBottom: "1px solid var(--m3-surface-container)",
   },
   avatar: {
     width: 40,
@@ -400,126 +498,177 @@ const S: Record<string, CSSProperties> = {
     alignItems: "center",
     justifyContent: "center",
     fontSize: 14,
-    fontWeight: 700,
+    fontWeight: 600,
     flexShrink: 0,
     marginTop: 2,
   },
   itemBody: { flex: 1, minWidth: 0 },
   titleRow: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
-  itemTitle: { fontSize: 15, fontWeight: 600, wordBreak: "break-word" },
-  itemSub: { fontSize: 12, color: "#64748b", marginTop: 2, wordBreak: "break-word" },
-  itemMeta: { display: "flex", alignItems: "center", gap: 8, marginTop: 6, flexWrap: "wrap" },
-  metaText: { fontSize: 12, color: "#64748b" },
-  itemActions: { display: "flex", gap: 2, flexShrink: 0 },
-  loadingRow: { padding: 28, textAlign: "center", color: "#64748b", fontSize: 13 },
-  emptyTitle: { fontSize: 14, fontWeight: 600, color: "#334155", margin: 0 },
-  emptyBody: { fontSize: 13, color: "#64748b", margin: "6px auto 0", maxWidth: 420, lineHeight: 1.5 },
-  emptyState: { padding: "36px 20px", textAlign: "center" },
-  fab: {
-    position: "fixed",
-    right: 20,
-    bottom: 20,
-    zIndex: 50,
+  itemTitle: {
+    fontSize: 15,
+    fontWeight: 500,
+    wordBreak: "break-word",
+    color: "var(--m3-on-surface)",
+  },
+  itemSub: {
+    fontSize: 12,
+    color: "var(--m3-on-surface-variant)",
+    marginTop: 2,
+    wordBreak: "break-word",
+  },
+  itemMeta: {
     display: "flex",
     alignItems: "center",
     gap: 8,
-    background: "#2563eb",
-    color: "#ffffff",
+    marginTop: 8,
+    flexWrap: "wrap",
+  },
+  metaText: { fontSize: 12, color: "var(--m3-on-surface-variant)" },
+  itemActions: { display: "flex", gap: 0, flexShrink: 0 },
+  loadingRow: {
+    padding: 32,
+    textAlign: "center",
+    color: "var(--m3-on-surface-variant)",
+    fontSize: 14,
+  },
+  emptyTitle: {
+    fontSize: 15,
+    fontWeight: 500,
+    color: "var(--m3-on-surface)",
+    margin: 0,
+  },
+  emptyBody: {
+    fontSize: 13,
+    color: "var(--m3-on-surface-variant)",
+    margin: "8px auto 0",
+    maxWidth: 420,
+    lineHeight: 1.5,
+  },
+  emptyState: { padding: "40px 24px", textAlign: "center" },
+  // Extended FAB — M3, bottom-right, above snackbar lane.
+  fab: {
+    position: "fixed",
+    right: 16,
+    bottom: "calc(16px + env(safe-area-inset-bottom, 0px))",
+    zIndex: 50,
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    background: "var(--m3-primary)",
+    color: "var(--m3-on-primary)",
     border: "none",
-    borderRadius: 999,
-    padding: "15px 20px 15px 16px",
+    borderRadius: 18,
+    padding: "14px 20px 14px 16px",
     fontSize: 14,
     fontWeight: 600,
     cursor: "pointer",
-    boxShadow: "0 4px 14px rgba(37, 99, 235, 0.4)",
+    boxShadow: "var(--m3-elev-fab)",
+    maxWidth: "calc(100vw - 32px)",
   },
+  // Snackbar — sits ABOVE the FAB so the two never collide.
   snack: {
     position: "fixed",
     left: 16,
-    bottom: 84,
+    right: 16,
+    bottom: "calc(84px + env(safe-area-inset-bottom, 0px))",
     zIndex: 70,
-    background: "#1e293b",
-    color: "#f8fafc",
-    borderRadius: 12,
-    padding: "12px 10px 12px 14px",
+    background: "#2b2b33",
+    color: "#fff",
+    borderRadius: 8,
+    padding: "12px 8px 12px 16px",
     fontSize: 13,
     lineHeight: 1.5,
     display: "flex",
     gap: 6,
     alignItems: "flex-start",
-    maxWidth: "min(460px, calc(100vw - 32px))",
-    boxShadow: "0 6px 20px rgba(15, 23, 42, 0.35)",
+    maxWidth: "min(560px, calc(100vw - 32px))",
+    margin: "0 auto",
+    boxShadow: "var(--m3-elev-3)",
   },
   snackText: { flex: 1, wordBreak: "break-word" },
   sheet: {
-    background: "#ffffff",
-    padding: "4px 20px 24px",
+    background: "var(--m3-surface)",
+    padding: "8px 24px 24px",
     overflowY: "auto",
-    color: "#0f172a",
+    color: "var(--m3-on-surface)",
+    borderRadius: "inherit",
   },
   dragHandle: {
     width: 36,
     height: 4,
     borderRadius: 999,
-    background: "#cbd5e1",
-    margin: "8px auto 6px",
+    background: "var(--m3-outline-variant)",
+    margin: "8px auto 12px",
   },
   sheetHead: {
     display: "flex",
     alignItems: "center",
     justifyContent: "space-between",
     gap: 10,
-    marginBottom: 10,
+    marginBottom: 12,
   },
-  sheetTitle: { fontSize: 18, fontWeight: 700, margin: 0 },
+  sheetTitle: {
+    fontSize: 22,
+    fontWeight: 500,
+    margin: 0,
+    color: "var(--m3-on-surface)",
+  },
   formError: {
-    background: "#fef2f2",
-    border: "1px solid #fecaca",
-    color: "#b91c1c",
+    background: "var(--m3-error-container)",
+    border: "1px solid #ffb4ab",
+    color: "var(--m3-on-error-container)",
     borderRadius: 12,
-    padding: "10px 12px",
+    padding: "10px 14px",
     fontSize: 13,
+    lineHeight: 1.5,
     marginBottom: 12,
   },
   formGrid: {
     display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-    gap: 12,
+    gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
+    gap: 14,
   },
   sectionLabel: {
-    fontSize: 11,
-    fontWeight: 700,
-    letterSpacing: 0.6,
+    fontSize: 12,
+    fontWeight: 600,
+    letterSpacing: 0.4,
     textTransform: "uppercase",
-    color: "#94a3b8",
-    margin: "16px 0 8px",
+    color: "var(--m3-primary)",
+    margin: "20px 0 10px",
   },
-  field: { display: "flex", flexDirection: "column", gap: 5, minWidth: 0 },
-  label: { fontSize: 12, fontWeight: 600, color: "#334155" },
+  field: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 6,
+    minWidth: 0,
+  },
+  label: { fontSize: 12, fontWeight: 600, color: "var(--m3-on-surface-variant)" },
+  // Outlined text field — M3.
   textField: {
-    border: "1px solid #cbd5e1",
+    border: "1px solid var(--m3-outline-variant)",
     borderRadius: 12,
-    background: "#ffffff",
+    background: "var(--m3-surface)",
     display: "flex",
     alignItems: "center",
-    gap: 6,
-    padding: "0 10px",
+    gap: 8,
+    padding: "0 12px",
+    minHeight: 48,
   },
   textInput: {
     border: "none",
     outline: "none",
     background: "transparent",
-    fontSize: 14,
-    padding: "12px 2px",
+    fontSize: 15,
+    padding: "12px 0",
     width: "100%",
     minWidth: 0,
-    color: "#0f172a",
+    color: "var(--m3-on-surface)",
   },
-  hint: { fontSize: 11, color: "#64748b", lineHeight: 1.5 },
+  hint: { fontSize: 11, color: "var(--m3-on-surface-variant)", lineHeight: 1.5 },
   pickerHead: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 },
   countChip: {
-    background: "#eff6ff",
-    color: "#1d4ed8",
+    background: "var(--m3-primary-container)",
+    color: "var(--m3-on-primary-container)",
     borderRadius: 999,
     fontSize: 11,
     fontWeight: 700,
@@ -527,85 +676,103 @@ const S: Record<string, CSSProperties> = {
     whiteSpace: "nowrap",
   },
   pickerList: {
-    border: "1px solid #e2e8f0",
+    border: "1px solid var(--m3-outline-variant)",
     borderRadius: 12,
     maxHeight: 200,
     overflowY: "auto",
-    marginTop: 6,
-    background: "#ffffff",
+    marginTop: 8,
+    background: "var(--m3-surface)",
   },
   pickRow: {
     display: "flex",
     alignItems: "center",
-    gap: 10,
+    gap: 12,
     padding: "10px 12px",
     cursor: "pointer",
-    borderBottom: "1px solid #f1f5f9",
+    borderBottom: "1px solid var(--m3-surface-container)",
+    minHeight: 44,
   },
-  pickLabel: { fontSize: 13, color: "#0f172a", wordBreak: "break-word" },
-  pickerEmpty: { padding: 14, fontSize: 12, color: "#64748b" },
-  pinnedRow: { display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 },
+  pickLabel: { fontSize: 14, color: "var(--m3-on-surface)", wordBreak: "break-word" },
+  pickerEmpty: { padding: 16, fontSize: 13, color: "var(--m3-on-surface-variant)" },
+  pinnedRow: { display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 },
   pinnedChip: {
     display: "inline-flex",
     alignItems: "center",
     gap: 4,
-    background: "#f1f5f9",
-    border: "1px solid #e2e8f0",
+    background: "var(--m3-surface-container)",
+    border: "1px solid var(--m3-outline-variant)",
     borderRadius: 999,
-    padding: "3px 4px 3px 10px",
+    padding: "4px 4px 4px 10px",
     fontSize: 11,
-    color: "#334155",
+    color: "var(--m3-on-surface-variant)",
+    maxWidth: "100%",
   },
   pinnedX: {
     border: "none",
     background: "transparent",
-    color: "#64748b",
-    width: 20,
-    height: 20,
+    color: "var(--m3-on-surface-variant)",
+    width: 22,
+    height: 22,
     borderRadius: 999,
     cursor: "pointer",
     display: "inline-flex",
     alignItems: "center",
     justifyContent: "center",
     padding: 0,
+    flexShrink: 0,
   },
+  // Modal footer — single primary action (form sheet) or two text buttons (dialog).
   modalFooter: {
     display: "flex",
     justifyContent: "flex-end",
-    gap: 10,
-    marginTop: 18,
+    gap: 8,
+    marginTop: 24,
+    flexWrap: "wrap",
   },
+  // M3 outlined button (secondary / cancel).
   btn: {
-    border: "1px solid #cbd5e1",
-    background: "#ffffff",
-    color: "#0f172a",
+    border: "1px solid var(--m3-outline)",
+    background: "transparent",
+    color: "var(--m3-primary)",
     borderRadius: 999,
-    padding: "10px 18px",
+    padding: "10px 20px",
     fontSize: 14,
     fontWeight: 600,
     cursor: "pointer",
+    minHeight: 40,
   },
+  // M3 filled button (primary action).
   btnPrimary: {
-    border: "1px solid #2563eb",
-    background: "#2563eb",
-    color: "#ffffff",
+    border: "none",
+    background: "var(--m3-primary)",
+    color: "var(--m3-on-primary)",
     borderRadius: 999,
-    padding: "10px 20px",
+    padding: "10px 22px",
     fontSize: 14,
     fontWeight: 600,
     cursor: "pointer",
+    minHeight: 40,
+    boxShadow: "var(--m3-elev-1)",
   },
+  // M3 filled error button (destructive).
   btnDanger: {
-    border: "1px solid #dc2626",
-    background: "#dc2626",
+    border: "none",
+    background: "var(--m3-error)",
     color: "#ffffff",
     borderRadius: 999,
-    padding: "10px 20px",
+    padding: "10px 22px",
     fontSize: 14,
     fontWeight: 600,
     cursor: "pointer",
+    minHeight: 40,
+    boxShadow: "var(--m3-elev-1)",
   },
-  deleteText: { fontSize: 14, lineHeight: 1.55, color: "#334155", margin: "0 0 10px" },
+  deleteText: {
+    fontSize: 14,
+    lineHeight: 1.55,
+    color: "var(--m3-on-surface)",
+    margin: "0 0 12px",
+  },
 };
 
 /* -------------------------------------------------------------------------- */
@@ -626,9 +793,10 @@ const ICON_PATHS: Record<string, string> = {
     "M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z",
   download: "M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z",
   visibility:
-    "M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-8a3 3 0 1 0 0 6 3 3 0 0 0 0-6z",
+    "M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17a5 5 0 1 1 0-10 5 5 0 1 1 0 10zm0-8a3 3 0 1 0 0 6 3 3 0 0 0 0-6z",
   visibilityOff:
     "M12 7c2.76 0 5 2.24 5 5 0 .65-.13 1.26-.36 1.83l2.92 2.92c1.51-1.26 2.7-2.89 3.43-4.75-1.73-4.39-6-7.5-11-7.5-1.4 0-2.74.25-3.98.7l2.16 2.16C10.74 7.13 11.35 7 12 7zM2 4.27l2.28 2.28.46.46C3.08 8.3 1.78 10.02 1 12c1.73 4.39 6 7.5 11 7.5 1.55 0 3.03-.3 4.38-.84l.42.42L19.73 22 21 20.73 3.27 3 2 4.27zM7.53 9.8l1.55 1.55c-.05.21-.08.43-.08.65 0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.55 1.55c-.67.33-1.41.53-2.2.53-2.76 0-5-2.24-5-5 0-.79.2-1.53.53-2.2zm4.31-.78 3.15 3.15.02-.16c0-1.66-1.34-3-3-3l-.17.01z",
+  check: "M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z",
 };
 
 function Icon({
@@ -655,7 +823,7 @@ function Icon({
 }
 
 /* -------------------------------------------------------------------------- */
-/* Badge — all props are required strings; call sites always pass them        */
+/* Badge — Material 3 chip-style label                                        */
 /* -------------------------------------------------------------------------- */
 
 function Badge({ label, bg, fg }: { label: string; bg: string; fg: string }) {
@@ -670,6 +838,7 @@ function Badge({ label, bg, fg }: { label: string; bg: string; fg: string }) {
         background: bg,
         color: fg,
         whiteSpace: "nowrap",
+        letterSpacing: 0.2,
       }}
     >
       {label}
@@ -725,8 +894,8 @@ function IdPicker({
 
       {options.length > 0 ? (
         <>
-          <div style={{ ...S.textField, marginTop: 4 }}>
-            <Icon path={ICON_PATHS.search} size={18} style={{ color: "#94a3b8" }} />
+          <div className="ums-field ums-rowitem" style={{ ...S.textField, marginTop: 4 }}>
+            <Icon path={ICON_PATHS.search} size={18} style={{ color: "var(--m3-on-surface-variant)" }} />
             <input
               style={S.textInput}
               value={search}
@@ -771,7 +940,7 @@ function IdPicker({
         </>
       ) : (
         <>
-          <div style={{ ...S.textField, marginTop: 4 }}>
+          <div className="ums-field" style={{ ...S.textField, marginTop: 4 }}>
             <input
               style={S.textInput}
               value={fallbackText}
@@ -822,7 +991,6 @@ export default function UserManagement() {
   const loadOptions = useCallback(async (): Promise<void> => {
     setOptionsLoading(true);
     try {
-      // Courses known to be deleted (tombstoned) must not be assignable.
       let deadCourses = new Set<string>();
       try {
         deadCourses = new Set(await getDeletedIds("course"));
@@ -846,8 +1014,6 @@ export default function UserManagement() {
         .sort((a, b) => a.label.localeCompare(b.label));
       setCourseOptions(courseOpts);
 
-      // Departments: the table name has varied across schema versions —
-      // try "departments", then "department". Either may be absent.
       let departments: any[] = [];
       try {
         departments = (await (db as any).departments?.toArray()) || [];
@@ -947,7 +1113,6 @@ export default function UserManagement() {
     return "—";
   };
 
-  // Snackbar auto-dismiss — notices never block the UI for more than 6s.
   useEffect(() => {
     if (!notice) return;
     const timer = setTimeout(() => setNotice(""), 6000);
@@ -1006,8 +1171,6 @@ export default function UserManagement() {
     }));
   };
 
-  /** Cloud push through the schema-exact helper: on failure the row stays
-   *  synced:false locally and the sync job retries it later. */
   const pushToCloud = async (row: any): Promise<void> => {
     if (!tenantId) {
       setNotice(
@@ -1049,8 +1212,6 @@ export default function UserManagement() {
       );
     }
 
-    // Assignments: picker selections when the local tables have data,
-    // paste parsing while they are still empty (fresh device).
     const useCoursePicker = courseOptions.length > 0;
     const useDepartmentPicker = departmentOptions.length > 0;
     const courseIds = useCoursePicker ? [...form.courseIds] : parseIdList(form.coursePaste);
@@ -1071,8 +1232,6 @@ export default function UserManagement() {
 
     setSaving(true);
     try {
-      // Uniqueness inside the institution (case-insensitive) — mirrors the
-      // UNIQUE (tenant_id, username) index in Supabase.
       const uname = username.toLowerCase();
       const usernameClash = await db.users
         .filter(
@@ -1128,8 +1287,6 @@ export default function UserManagement() {
           throw new Error("This user is no longer in the local database — refresh the list first.");
         }
 
-        // Assignment lists are written exactly as resolved — clearing the
-        // picker (or the paste field) actually clears the assignments.
         const updated: any = {
           ...existing,
           username,
@@ -1145,15 +1302,9 @@ export default function UserManagement() {
           updated_at: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
         };
-        // The camelCase key is the canonical local shape (it is the literal
-        // column name in Supabase); drop the legacy snake_case copy so the
-        // two can never diverge.
         delete updated.assigned_departments;
-        // This edit invalidates any previous sync stamp.
         delete updated.syncedAt;
         delete updated.synced_at;
-        // Role-ledger hygiene: keep exactly the ledger that matches the role —
-        // a role change wipes the old object so stale jsonb never syncs up.
         if (form.role === "trainee") {
           updated.tuition = { expected: num(form.tuitionExpected), paid: num(form.tuitionPaid) };
           delete updated.remuneration;
@@ -1164,8 +1315,6 @@ export default function UserManagement() {
           delete updated.tuition;
           delete updated.remuneration;
         }
-        // Blank password field = keep the current password. A typed password
-        // is stored bcrypt-hashed, exactly like ProfileSettings stores it.
         if (password) {
           updated.password = hashSync(password, 10);
         }
@@ -1246,17 +1395,11 @@ export default function UserManagement() {
     try {
       if (!id) throw new Error("Missing user id.");
 
-      // Read the row BEFORE the local cascade — whether it was ever pushed
-      // decides whether a cloud delete is meaningful at all (see header).
       const localRow: any = await db.users.get(id).catch(() => null);
       const everSynced = !localRow || localRow.synced !== false;
 
-      // Tombstone FIRST — closes the resurrection race window (same as trainerDB).
       await markDeleted("user", id, tenantId, "pending");
 
-      // Local cascade — each step guarded so a missing/unindexed table cannot
-      // abort. chatMessages is purged by BOTH userId and senderId; schedules
-      // by BOTH trainerId and traineeId (guarded no-ops when absent).
       try { await db.enrollments.where("userId").equals(id).delete(); } catch { /* table may not exist */ }
       try { await db.assignmentSubmissions.where("userId").equals(id).delete(); } catch { /* table may not exist */ }
       try { await db.chatMessages.where("userId").equals(id).delete(); } catch { /* table may not exist */ }
@@ -1277,9 +1420,6 @@ export default function UserManagement() {
           );
         }
       } else {
-        // No institution linked, or the row never reached the cloud — there
-        // is nothing to delete there. Lift the tombstone so the retry loop
-        // never chases a row that cannot exist.
         await unmarkDeleted("user", id);
       }
 
@@ -1376,7 +1516,7 @@ export default function UserManagement() {
     <div style={S.screen} className="ums-root">
       <style>{UMS_CSS}</style>
 
-      {/* Top app bar */}
+      {/* M3 small top app bar */}
       <div style={S.appbar}>
         <div style={S.appbarTitles}>
           <h1 style={S.appbarTitle}>Users</h1>
@@ -1421,8 +1561,8 @@ export default function UserManagement() {
           </div>
         )}
 
-        {/* Stat pills */}
-        <div style={S.statsRow} className="ums-scroll">
+        {/* Stat tiles — responsive WRAPPING grid, no horizontal scroll. */}
+        <div style={S.statsGrid}>
           <div style={S.pill}>
             <span style={S.pillValue}>{counts.total}</span>
             <span style={S.pillLabel}>Users</span>
@@ -1445,9 +1585,9 @@ export default function UserManagement() {
           </div>
         </div>
 
-        {/* Search + role chips */}
+        {/* M3 search bar */}
         <div style={S.searchWrap}>
-          <Icon path={ICON_PATHS.search} size={20} style={{ color: "#64748b" }} />
+          <Icon path={ICON_PATHS.search} size={20} style={{ color: "var(--m3-on-surface-variant)" }} />
           <input
             style={S.searchInput}
             value={search}
@@ -1465,6 +1605,8 @@ export default function UserManagement() {
             </button>
           )}
         </div>
+
+        {/* M3 filter chips */}
         <div style={S.chipsRow}>
           {(["all", "admin", "trainer", "trainee"] as const).map((key) => {
             const labels: Record<string, string> = {
@@ -1551,13 +1693,13 @@ export default function UserManagement() {
         </div>
       </div>
 
-      {/* Extended FAB */}
+      {/* M3 extended FAB */}
       <button style={S.fab} className="ums-btn" onClick={openAdd}>
         <Icon path={ICON_PATHS.add} size={22} />
         Add user
       </button>
 
-      {/* Snackbar */}
+      {/* M3 snackbar — sits above the FAB lane */}
       {notice && (
         <div style={S.snack} className="ums-snack" role="status">
           <span style={S.snackText}>{notice}</span>
@@ -1572,7 +1714,9 @@ export default function UserManagement() {
         </div>
       )}
 
-      {/* Add / edit — bottom sheet on phones, dialog on wide screens */}
+      {/* Add / edit — M3 modal bottom sheet on phones, dialog on wide screens.
+          ONE dismiss affordance: the X close icon in the header. The footer
+          holds ONLY the primary action — no redundant "Cancel" text button. */}
       {formOpen && (
         <div className="ums-shell" onClick={closeModal}>
           <div
@@ -1599,7 +1743,7 @@ export default function UserManagement() {
             <div style={S.formGrid}>
               <div style={S.field}>
                 <label style={S.label}>Username *</label>
-                <div style={S.textField}>
+                <div className="ums-field" style={S.textField}>
                   <input
                     style={S.textInput}
                     value={form.username}
@@ -1630,7 +1774,7 @@ export default function UserManagement() {
             <div style={S.formGrid}>
               <div style={S.field}>
                 <label style={S.label}>Phone</label>
-                <div style={S.textField}>
+                <div className="ums-field" style={S.textField}>
                   <input
                     style={S.textInput}
                     value={form.phone}
@@ -1643,7 +1787,7 @@ export default function UserManagement() {
               </div>
               <div style={S.field}>
                 <label style={S.label}>Email</label>
-                <div style={S.textField}>
+                <div className="ums-field" style={S.textField}>
                   <input
                     style={S.textInput}
                     value={form.email}
@@ -1660,7 +1804,7 @@ export default function UserManagement() {
             <div style={S.formGrid}>
               <div style={S.field}>
                 <label style={S.label}>{editing ? "New password" : "Password *"}</label>
-                <div style={S.textField}>
+                <div className="ums-field" style={S.textField}>
                   <input
                     style={S.textInput}
                     type={showPassword ? "text" : "password"}
@@ -1693,7 +1837,7 @@ export default function UserManagement() {
                 <div style={S.formGrid}>
                   <div style={S.field}>
                     <label style={S.label}>Tuition expected</label>
-                    <div style={S.textField}>
+                    <div className="ums-field" style={S.textField}>
                       <input
                         style={S.textInput}
                         value={form.tuitionExpected}
@@ -1705,7 +1849,7 @@ export default function UserManagement() {
                   </div>
                   <div style={S.field}>
                     <label style={S.label}>Tuition paid</label>
-                    <div style={S.textField}>
+                    <div className="ums-field" style={S.textField}>
                       <input
                         style={S.textInput}
                         value={form.tuitionPaid}
@@ -1724,7 +1868,7 @@ export default function UserManagement() {
                 <div style={S.formGrid}>
                   <div style={S.field}>
                     <label style={S.label}>Net salary</label>
-                    <div style={S.textField}>
+                    <div className="ums-field" style={S.textField}>
                       <input
                         style={S.textInput}
                         value={form.netSalary}
@@ -1736,7 +1880,7 @@ export default function UserManagement() {
                   </div>
                   <div style={S.field}>
                     <label style={S.label}>Per diem</label>
-                    <div style={S.textField}>
+                    <div className="ums-field" style={S.textField}>
                       <input
                         style={S.textInput}
                         value={form.perDiem}
@@ -1786,10 +1930,9 @@ export default function UserManagement() {
               />
             </div>
 
+            {/* Footer — ONE primary action. The X in the header is the
+                dismiss; no redundant Cancel text button. */}
             <div style={S.modalFooter}>
-              <button className="ums-btn" style={S.btn} onClick={closeModal} disabled={saving}>
-                Cancel
-              </button>
               <button
                 className="ums-btn"
                 style={S.btnPrimary}
@@ -1805,26 +1948,18 @@ export default function UserManagement() {
         </div>
       )}
 
-      {/* Delete confirmation — same sheet/dialog behavior */}
+      {/* Delete confirmation — M3 basic dialog (centered on every viewport).
+          ONE dismiss affordance: the Cancel text button. No X close icon —
+          Cancel IS the dismiss action. */}
       {confirmTarget && (
-        <div className="ums-shell">
+        <div className="ums-shell ums-shell--center" onClick={cancelDelete}>
           <div
             className="ums-sheet"
             style={S.sheet}
             onClick={(event) => event.stopPropagation()}
           >
-            <div style={S.dragHandle} />
             <div style={S.sheetHead}>
-              <h2 style={S.sheetTitle}>Delete user</h2>
-              <button
-                className="ums-iconbtn"
-                onClick={cancelDelete}
-                disabled={working}
-                title="Close"
-                aria-label="Close delete confirmation"
-              >
-                <Icon path={ICON_PATHS.close} size={20} />
-              </button>
+              <h2 style={S.sheetTitle}>Delete user?</h2>
             </div>
             {deleteError && <div style={S.formError}>{deleteError}</div>}
             <p style={S.deleteText}>
@@ -1850,7 +1985,7 @@ export default function UserManagement() {
                 }}
                 disabled={working}
               >
-                {working ? "Deleting…" : "Delete user"}
+                {working ? "Deleting…" : "Delete"}
               </button>
             </div>
           </div>

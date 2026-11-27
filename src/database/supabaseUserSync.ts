@@ -1,9 +1,15 @@
-// src/database/supabaseUserSync.ts — v2: SCHEMA-EXACT cloud sync for public.users
+// src/database/supabaseUserSync.ts — v3: removes the "pending sync" footgun
+//
+// v3 change: adds syncUserRowToCloud — a wrapper that does the cloud upsert
+// AND invokes a caller-supplied mark-synced callback in the SAME try/catch.
+// v2 let a successful push leave the local row stranded as synced:false
+// whenever the caller forgot to flip the flag afterwards (the exact cause of
+// the "succeeded but still showing pending sync" UI state).
 //
 // v2 change: mapLocalUserToCloud now prefers the camelCase assignedCourses
 // copy (row?.assignedCourses ?? row?.assigned_courses). types.ts documents
 // that new local writes always use the camelCase key; rows that only carry
-// the snake_case copy are untouched cloud mirrors, so nothing regresses —
+// the snake_case copy are untouched cloud mirrors, so nothing regresses—
 // but a locally refreshed camelCase list can no longer be shadowed by a
 // stale snake_case mirror (which let UserManagement re-save superseded
 // assignments after AssignCourses changed them).
@@ -165,12 +171,23 @@ export function mapLocalUserToCloud(row: any, fallbackTenantId?: string): Record
 }
 
 /* -------------------------------------------------------------------------- */
-/* Push (upsert)                                                              */
+/* Push (upsert) — LOW LEVEL                                                  */
 /* -------------------------------------------------------------------------- */
 
 /**
- * Upserts one user row into public.users. Local rows are never mutated here;
- * callers flag synced:true + syncedAt themselves after this resolves.
+ * LOW-LEVEL cloud-only upsert into public.users. Local rows are NEVER
+ * mutated here.
+ *
+ * ⚠️ Prefer syncUserRowToCloud below. It wraps this call AND invokes your
+ * local mark-synced callback in the same try/catch, so a successful push
+ * can no longer strand a row as "pending sync". Direct use of this function
+ * requires the caller to flip synced:true + syncedAt themselves afterwards —
+ * which is the exact footgun that produced the stuck "pending sync" UI
+ * state (push returns 200, cloud row is correct, but the local Dexie row's
+ * synced flag was never written back, so the badge never clears).
+ *
+ * Kept exported for callers that genuinely want cloud-only behaviour (e.g.
+ * a bulk push that marks rows in a separate batched transaction).
  */
 export async function pushUserRowToSupabase(
   row: any,
@@ -181,6 +198,65 @@ export async function pushUserRowToSupabase(
     .from("users")
     .upsert([payload], { onConflict: "id" });
   if (error) throw new Error(error.message);
+}
+
+/* -------------------------------------------------------------------------- */
+/* All-in-one sync (push + local mark-synced) — v3                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Callback a caller provides to flip the LOCAL row's sync flag after the
+ * cloud upsert succeeds. Typical implementation:
+ *
+ *   async (id, syncedAt) => {
+ *     await db.users.update(id, { synced: true, syncedAt });
+ *   }
+ *
+ * If this throws (e.g. Dexie write fails), syncUserRowToCloud re-throws —
+ * the row stays synced:false, the next retry re-pushes (idempotent via
+ * onConflict:"id") and re-marks. Self-healing, no half-success state.
+ */
+export type OnUserSynced = (id: string, syncedAt: string) => Promise<void> | void;
+
+/**
+ * The recommended entry point for pushing one user to public.users.
+ *
+ * Why this exists: pushUserRowToSupabase only writes to the CLOUD and
+ * deliberately never touches the local row. That design is what lets a row
+ * show "pending sync" forever even though Supabase already has it — a
+ * caller pushes successfully and then forgets (or only updates React
+ * state, not Dexie) to flip synced:true. The badge then never clears
+ * because nothing ever wrote `synced: true, syncedAt: <now>` back to the
+ * local store.
+ *
+ * This wrapper closes that gap. It runs, in one try/catch:
+ *   1. builds the payload (throws early on bad data — row stays pending),
+ *   2. upserts to public.users (throws on PostgREST error — row stays pending),
+ *   3. on success, invokes onSynced(id, syncedAt) so the LOCAL row is
+ *      flipped in the same code path that confirmed the cloud write.
+ *
+ * If any step throws, the row remains synced:false and the sync job
+ * retries — a successful cloud push with a stale local flag is no longer
+ * possible.
+ *
+ * @returns { syncedAt } so callers can surface the timestamp in the UI.
+ */
+export async function syncUserRowToCloud(
+  row: any,
+  onSynced: OnUserSynced,
+  fallbackTenantId?: string,
+): Promise<{ syncedAt: string }> {
+  // 1 + 2: build payload + upsert. Throws on bad data or PostgREST error.
+  await pushUserRowToSupabase(row, fallbackTenantId);
+
+  // 3: cloud write confirmed — flip the local row NOW, before anything else
+  //    can interrupt. If onSynced throws, we re-throw so the caller's
+  //    catch keeps the row as synced:false and the retry loop re-pushes
+  //    (idempotent) + re-marks.
+  const syncedAt = new Date().toISOString();
+  await onSynced(String(row?.id ?? "").trim(), syncedAt);
+
+  return { syncedAt };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -229,3 +305,4 @@ export async function deleteUserRowFromSupabase(
     "Cloud delete was silently skipped — check the RLS policies on public.users.",
   );
 }
+
