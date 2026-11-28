@@ -1,30 +1,5 @@
 // src/admin/CourseManagement.tsx — v1: single-screen course CRUD + member assignment
-// Medstat — Material Design 3 (Android) redesign — master/detail course layout
-//
-// WHAT THIS SCREEN DOES
-//  • Course CRUD in one place: searchable course list, inline Details form
-//    (name, description, Free/Paid tuition + UGX amount, start date, period,
-//    logo), "+ New course" dialog, and a confirmed Delete that cascades
-//    locally and soft-deletes in the cloud.
-//  • Attaching users to courses: a Members tab per course — tick trainers and
-//    trainees, "Save roster" runs enrollmentDB.applyCourseAssignments, the
-//    canonical diff-based / tombstone-aware assignment engine. Unchecking a
-//    member REMOVES the enrollment (locally + in the cloud), so unchecked
-//    members cannot resurrect on the next pull.
-//  • Offline-first: local Dexie paints immediately; a background merge pulls
-//    courses through supabaseCourseSync.fetchCoursesFromSupabase (SHAPE-AWARE —
-//    works with the doc-store public.courses DDL and a relational table), users
-//    through public.users, and reconciles enrollments. Drafts are rebuilt from
-//    the MERGED rows while the admin has not ticked anything, so a cold
-//    deep-link can never wipe cloud-only members with one Save.
-//  • Tenant-scoped: courses, users and enrollments are filtered to the
-//    institution in localStorage.currentUser.
-//  • Currency displayed in UGX.
-//  • Deep-link support: <CourseManagement initialCourseId={id} /> opens the
-//    course directly (e.g. from UserManagement).
-//
-// All writes go through courseDB.addCourse/updateCourse/deleteCourse and
-// enrollmentDB.applyCourseAssignments — no component-local sync logic.
+
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
